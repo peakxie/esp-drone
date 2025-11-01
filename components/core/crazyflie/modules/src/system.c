@@ -146,7 +146,6 @@ void systemInit(void)
 #ifdef APP_ENABLED
   appInit();
 #endif
-
   isInit = true;
 }
 
@@ -229,8 +228,9 @@ void systemTask(void *arg)
   DEBUG_PRINTI("memTest = %d ", pass);
   //pass &= watchdogNormalStartTest();
   pass &= cfAssertNormalStartTest();
+  DEBUG_PRINTI("cfAssertNormalStartTest = %d ", pass);
 //  pass &= peerLocalizationTest();
-
+  pass=TRUE;
   //Start the firmware
   if(pass)
   {

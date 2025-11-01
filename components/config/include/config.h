@@ -76,8 +76,8 @@
 #endif
 
 
-//#define DEBUG_UDP
-//#define DEBUG_EP2
+// #define DEBUG_UDP
+// #define DEBUG_EP2
 
 // Task priorities. Higher number higher priority
 // system state tasks
