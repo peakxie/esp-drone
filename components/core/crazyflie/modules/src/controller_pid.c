@@ -106,6 +106,9 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
     }
 
     // TODO: Investigate possibility to subtract gyro drift.
+    /* 回滚: -gyro.y 是 Crazyflie 原版的数学上正确实现(d(state.pitch)/dt = -gyro.y),
+     *   因为 state.pitch=asinf(gravX), 而 gyro.y 右手定则正方向是机头上抬,
+     *   两者定义相反. 该负号与 IMU 层的方向适配无关. */
     attitudeControllerCorrectRatePID(sensors->gyro.x, -sensors->gyro.y, sensors->gyro.z,
                              rateDesired.roll, rateDesired.pitch, rateDesired.yaw);
 
@@ -123,6 +126,17 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
     r_pitch = -radians(sensors->gyro.y);
     r_yaw = radians(sensors->gyro.z);
     accelz = sensors->acc.z;
+
+    /* === 地面调试: 打印姿态解算 + setpoint + desired === */
+    static uint32_t s_ctrlDbgCnt = 0;
+    if (++s_ctrlDbgCnt >= 250) {  /* 每 ~250 次循环打印一次 */
+      s_ctrlDbgCnt = 0;
+      DEBUG_PRINT_LOCAL("CTRL_DBG st[r=%+6.1f p=%+6.1f y=%+6.1f] sp[r=%+6.1f p=%+6.1f y=%+6.1f(mode=%d) rateY=%+6.1f] desY=%+6.1f thr=%5d\n",
+        (double)state->attitude.roll, (double)state->attitude.pitch, (double)state->attitude.yaw,
+        (double)setpoint->attitude.roll, (double)setpoint->attitude.pitch, (double)setpoint->attitude.yaw,
+        (int)setpoint->mode.yaw, (double)setpoint->attitudeRate.yaw,
+        (double)attitudeDesired.yaw, (int)setpoint->thrust);
+    }
   }
 
   if (tiltCompensationEnabled)

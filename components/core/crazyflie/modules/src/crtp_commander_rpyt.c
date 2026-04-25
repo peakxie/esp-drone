@@ -257,6 +257,24 @@ void crtpCommanderRpytDecodeSetpoint(setpoint_t *setpoint, CRTPPacket *pk)
       setpoint->attitude.yaw = values->yaw;
     }
   }
+
+/* === 地面测试模式: 忽略 App 发来的 R/P/Y 姿态指令, 全部清零 ===
+ * 原因: 01studio App 在 takeoff 时可能持续下发非 0 的 yaw 速率(~11.7deg/s),
+ *       导致 attitudeDesired.yaw 在 controller_pid 中一直累积, 直到 yawError 饱和.
+ *       地面测试只需要验证 "姿态自稳" 方向是否对, 清零后只剩水平基准 (r=p=y=0).
+ * 保留: thrust (让 PID 能启动工作) 和 flight mode (保持状态机一致)
+ * 正式飞行前 **必须注释掉** 下面这个宏定义!!!
+ */
+/* [2026-04-25] 进入正式飞行: 允许 App 的 RPY 指令正常下发 */
+// #define GROUND_TEST_ZERO_RPY    1
+#if GROUND_TEST_ZERO_RPY
+  setpoint->attitude.roll       = 0;
+  setpoint->attitude.pitch      = 0;
+  setpoint->attitude.yaw        = 0;
+  setpoint->attitudeRate.roll   = 0;
+  setpoint->attitudeRate.pitch  = 0;
+  setpoint->attitudeRate.yaw    = 0;
+#endif
 }
 
 // Params for flight modes

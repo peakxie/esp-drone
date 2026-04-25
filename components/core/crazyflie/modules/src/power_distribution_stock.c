@@ -37,6 +37,20 @@
 #define DEBUG_MODULE "PWR_DIST"
 #include "debug_cf.h"
 
+/* =====================================================================
+ * 地面测试安全开关 —— MOTOR_OUTPUT_DISABLE
+ * ---------------------------------------------------------------------
+ * 打开此宏后, powerDistribution() 会强制把 M1~M4 全部输出设为 0,
+ * 即使 App 发 takeoff 或推油门也不会有任何转动, 用于:
+ *   - 插 USB 调试 IMU/姿态解算, 桨没拆时防甩桨
+ *   - 地面打印日志、调参验证
+ * 正式飞行前 **必须注释掉** 这一行!!!
+ * ===================================================================== */
+/* [2026-04-25] 所有 4 轴方向验证通过, 进入栓绳试飞阶段, 关闭此宏让电机真正输出.
+ * 注意: 仍保留 GROUND_TEST_ZERO_RPY 和 GROUND_TEST_MODE, 飞机只响应油门自稳,
+ * 不响应遥控 RPY, Ki=0 避免积分饱和. 栓绳测试通过后再逐步打开其他保护. */
+// #define MOTOR_OUTPUT_DISABLE    1
+
 static bool motorSetEnable = false;
 
 static struct {
@@ -62,6 +76,9 @@ static uint32_t idleThrust = DEFAULT_IDLE_THRUST;
 void powerDistributionInit(void)
 {
   motorsInit(platformConfigGetMotorMapping());
+#ifdef MOTOR_OUTPUT_DISABLE
+  DEBUG_PRINTW("!!! MOTOR_OUTPUT_DISABLE is ON: motors forced to 0, NO FLIGHT !!!");
+#endif
 }
 
 bool powerDistributionTest(void)
@@ -88,10 +105,10 @@ void powerDistribution(const control_t *control)
   #ifdef QUAD_FORMATION_X
     int16_t r = control->roll / 2.0f;
     int16_t p = control->pitch / 2.0f;
-    motorPower.m1 = limitThrust(control->thrust - r + p - control->yaw);
-    motorPower.m2 = limitThrust(control->thrust - r - p + control->yaw);
-    motorPower.m3 =  limitThrust(control->thrust + r - p - control->yaw);
-    motorPower.m4 =  limitThrust(control->thrust + r + p + control->yaw);
+    motorPower.m1 = limitThrust(control->thrust - r + p + control->yaw);
+    motorPower.m2 = limitThrust(control->thrust - r - p - control->yaw);
+    motorPower.m3 =  limitThrust(control->thrust + r - p + control->yaw);
+    motorPower.m4 =  limitThrust(control->thrust + r + p - control->yaw);
   #else // QUAD_FORMATION_NORMAL
     motorPower.m1 = limitThrust(control->thrust + control->pitch +
                                control->yaw);
@@ -102,6 +119,26 @@ void powerDistribution(const control_t *control)
     motorPower.m4 =  limitThrust(control->thrust + control->roll -
                                control->yaw);
   #endif
+
+#ifdef MOTOR_OUTPUT_DISABLE
+  /* ========== 地面安全模式 ==========
+   * 已经算出 motorPower.m1~m4 (可用于打印/调试), 但最终强制输出 0,
+   * 这样可以手持飞机观察 PID 反应方向是否正确, 而电机不会转动
+   */
+  static uint32_t s_pwrDbgCnt = 0;
+  if (++s_pwrDbgCnt >= 250) {   /* 约 500ms 打印一次 */
+    s_pwrDbgCnt = 0;
+    DEBUG_PRINT_LOCAL("PWR_DBG ctrl[thr=%5d r=%+5d p=%+5d y=%+5d] M[%4u %4u %4u %4u]\n",
+      (int)control->thrust, (int)control->roll, (int)control->pitch, (int)control->yaw,
+      (unsigned)motorPower.m1, (unsigned)motorPower.m2,
+      (unsigned)motorPower.m3, (unsigned)motorPower.m4);
+  }
+  motorsSetRatio(MOTOR_M1, 0);
+  motorsSetRatio(MOTOR_M2, 0);
+  motorsSetRatio(MOTOR_M3, 0);
+  motorsSetRatio(MOTOR_M4, 0);
+  return;
+#endif
 
   if (motorSetEnable)
   {

@@ -82,8 +82,8 @@
 // #define SENSORS_ENABLE_MAG_HM5883L
 // #define SENSORS_ENABLE_PRESSURE_MS5611
 // #define SENSORS_ENABLE_RANGE_VL53L0X
-// #define SENSORS_ENABLE_RANGE_VL53L1X
-// #define SENSORS_ENABLE_FLOW_PMW3901
+//#define SENSORS_ENABLE_RANGE_VL53L1X
+//#define SENSORS_ENABLE_FLOW_PMW3901
 
 #define SENSORS_GYRO_FS_CFG MPU6050_GYRO_FS_2000
 #define SENSORS_DEG_PER_LSB_CFG MPU6050_DEG_PER_LSB_2000
@@ -380,6 +380,10 @@ void processAccGyroMeasurements(const uint8_t *buffer)
     sensorData.gyro.x = -(gyroRaw.x - gyroBias.x) * SENSORS_DEG_PER_LSB_CFG;
 #endif
 
+    /* [AXIS-FIX 2026-04-25 TEST-A] 测试 A（机头下压）实测:
+     *   机头下压 -> acc.x 从 0 变负 -> 期望 state.pitch 变负 (与 acc 收敛方向一致)
+     *   但原 -gyro.y 积分后让 state.pitch 往正方向飙升到 +22°, 之后才被 acc 慢慢拉回
+     *   说明 gyro.y 方向和 acc.x 的 pitch 方向不一致, 把负号去掉让 gyro.y 与 acc 协调 */
     sensorData.gyro.y = (gyroRaw.y - gyroBias.y) * SENSORS_DEG_PER_LSB_CFG;
     sensorData.gyro.z = (gyroRaw.z - gyroBias.z) * SENSORS_DEG_PER_LSB_CFG;
     /* sensors step 2.5 low pass filter */
@@ -391,12 +395,27 @@ void processAccGyroMeasurements(const uint8_t *buffer)
     accScaled.x = -(accelRaw.x) * SENSORS_G_PER_LSB_CFG / accScale;   
 #endif
 
-    accScaled.y = (accelRaw.y) * SENSORS_G_PER_LSB_CFG / accScale;
+    /* [AXIS-FIX 2026-04-25] 实测右翼朝下 acc.y=+1, 左翼朝下 acc.y=-1,
+     *   与 esp-drone 约定(+Y 指向机身左侧)相反, 故 Y 轴取反 */
+    accScaled.y = -(accelRaw.y) * SENSORS_G_PER_LSB_CFG / accScale;
     accScaled.z = (accelRaw.z) * SENSORS_G_PER_LSB_CFG / accScale;
 
     /* sensors step 2.6 Compensate for a miss-aligned accelerometer. */
     sensorsAccAlignToGravity(&accScaled, &sensorData.acc);
     applyAxis3fLpf((lpf2pData *)(&accLpf), &sensorData.acc);
+
+    /* ======== IMU 轴向调试打印 ========
+     * 用途：静态姿态下打印 acc/gyro，用于验证 MPU6050 贴片方向是否与代码假设一致
+     * 打印频率：约 500ms 一次（假设 sensor 采样 ~500Hz，每 250 次打印一次）
+     * 验证方法：飞机不装桨，按机头朝下/朝上/左翼朝下/右翼朝下分别静止放置，观察 acc 值
+     */
+    static uint32_t s_imuDbgCnt = 0;
+    if (++s_imuDbgCnt >= 250) {
+        s_imuDbgCnt = 0;
+        DEBUG_PRINT_LOCAL("IMU_DBG acc[x=%+6.2f y=%+6.2f z=%+6.2f] gyro[x=%+7.1f y=%+7.1f z=%+7.1f]\n",
+            (double)sensorData.acc.x, (double)sensorData.acc.y, (double)sensorData.acc.z,
+            (double)sensorData.gyro.x, (double)sensorData.gyro.y, (double)sensorData.gyro.z);
+    }
 }
 static void sensorsDeviceInit(void)
 {
