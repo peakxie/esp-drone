@@ -116,7 +116,14 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
                                         &control->pitch,
                                         &control->yaw);
 
-    control->yaw = -control->yaw;
+    /* [2026-04-25] 方向修正 (仅 roll 轴):
+     *   手持静态验证: 机头下低时, 原始代码驱动 M1+M4(前侧)加油 -> 抬机头, pitch 轴方向正确, 不反号.
+     *   手持静态验证: 右翼下低时, 原始代码驱动 M3+M4(左侧)加油 (低边加油) -> 会加剧翻滚, roll 轴方向错误, 需反号.
+     * 原因: 本工程 sensfusion6 解算的 state.attitude.roll 符号约定, 与 power_distribution_stock.c
+     *   X 分配矩阵假设的 "+roll -> 左侧加油" 不一致; 而 pitch 轴恰好一致. 故只在 roll 轴吸收符号差,
+     *   保持电机分配矩阵与 Crazyflie 官方原版一致, 便于后续对照/合并上游. */
+    control->roll = -control->roll;
+    control->yaw  = -control->yaw;
 
     cmd_thrust = control->thrust;
     cmd_roll = control->roll;
