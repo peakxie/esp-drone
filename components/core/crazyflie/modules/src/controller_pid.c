@@ -89,7 +89,13 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
       attitudeDesired.pitch = setpoint->attitude.pitch;
     }
 
-    attitudeControllerCorrectAttitudePID(state->attitude.roll, state->attitude.pitch, state->attitude.yaw,
+    /* [2026-04-26] Roll 轴符号修正:
+     *   sensor 层 acc.y 取反后, state.attitude.roll 的符号约定与混控矩阵相反.
+     *   在 PID 输入端反转 state.roll, 而不是在输出端反转 control->roll,
+     *   否则遥控指令方向也会被一起反转.
+     *   反转 state.roll 后: PID error = desired - (-actual) = desired + actual,
+     *   自稳和遥控方向都正确. */
+    attitudeControllerCorrectAttitudePID(-state->attitude.roll, state->attitude.pitch, state->attitude.yaw,
                                 attitudeDesired.roll, attitudeDesired.pitch, attitudeDesired.yaw,
                                 &rateDesired.roll, &rateDesired.pitch, &rateDesired.yaw);
 
@@ -109,18 +115,16 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
     /* -gyro.y 是数学正确的: Mahony 中 d(pitch)/dt ∝ -gy (因为 gravX = 2*(qx*qz - qw*qy)),
      * rate PID 需要与姿态变化率符号一致, 所以传 -gyro.y.
      * 注意: 这与 sensor 层的轴映射无关, 是四元数微分方程的固有性质.
-     * [2026-04-26] 实测确认: pitch 全程稳定不发散 ✓ */
-    attitudeControllerCorrectRatePID(sensors->gyro.x, -sensors->gyro.y, sensors->gyro.z,
+     * [2026-04-26] 实测确认: pitch 全程稳定不发散 ✓
+     * gyro.x 取反: 与 attitude PID 中 -state.roll 配套, 保持 rate 反馈方向一致. */
+    attitudeControllerCorrectRatePID(-sensors->gyro.x, -sensors->gyro.y, sensors->gyro.z,
                              rateDesired.roll, rateDesired.pitch, rateDesired.yaw);
 
     attitudeControllerGetActuatorOutput(&control->roll,
                                         &control->pitch,
                                         &control->yaw);
 
-    /* [2026-04-26] 轴向符号修正:
-     *   roll: 实测确认必须取反 (右翼下压时原始 r>0, 取反后 r<0 → M1/M2 右侧加油 ✓)
-     *   pitch: 实测确认不需取反 (桌面静置 p≈-1900 稳定不发散 ✓) */
-    control->roll = -control->roll;
+    /* roll 取反已移到 PID 输入端 (-state.roll, -gyro.x), 输出端不再需要 */
 
     cmd_thrust = control->thrust;
     cmd_roll = control->roll;
