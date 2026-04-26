@@ -79,6 +79,13 @@
 // #define DEBUG_UDP
 // #define DEBUG_EP2
 
+/* ---- 飞控调试打印开关 (取消注释即可打开对应打印) ---- */
+// #define DEBUG_IMU_DBG       // IMU acc/gyro 原始值 (~2s/次, sensors 层)
+// #define DEBUG_CTRL_DBG      // 姿态/setpoint/desired (~2s/次, controller 层)
+#define DEBUG_PWR_DBG          // 混控输出 M1~M4 (~2s/次, power_distribution 层)
+/* 打印间隔: 采样频率约 500Hz, 计数 1000 次 ≈ 2 秒 */
+#define DEBUG_PRINT_INTERVAL  1000
+
 // Task priorities. Higher number higher priority
 // system state tasks
 #define SYSTEM_TASK_PRI         1

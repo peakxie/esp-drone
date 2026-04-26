@@ -46,10 +46,9 @@
  *   - 地面打印日志、调参验证
  * 正式飞行前 **必须注释掉** 这一行!!!
  * ===================================================================== */
-/* [2026-04-25] 所有 4 轴方向验证通过, 进入栓绳试飞阶段, 关闭此宏让电机真正输出.
- * 注意: 仍保留 GROUND_TEST_ZERO_RPY 和 GROUND_TEST_MODE, 飞机只响应油门自稳,
- * 不响应遥控 RPY, Ki=0 避免积分饱和. 栓绳测试通过后再逐步打开其他保护. */
-// #define MOTOR_OUTPUT_DISABLE    1
+/* [2026-04-26] 手持验证 roll 修复方向: 打开此宏 + DEBUG_PWR_DBG, 电机不转但能看 M1~M4 输出.
+ * 验证通过后注释回去!!! */
+#define MOTOR_OUTPUT_DISABLE    1
 
 static bool motorSetEnable = false;
 
@@ -125,14 +124,16 @@ void powerDistribution(const control_t *control)
    * 已经算出 motorPower.m1~m4 (可用于打印/调试), 但最终强制输出 0,
    * 这样可以手持飞机观察 PID 反应方向是否正确, 而电机不会转动
    */
+#ifdef DEBUG_PWR_DBG
   static uint32_t s_pwrDbgCnt = 0;
-  if (++s_pwrDbgCnt >= 250) {   /* 约 500ms 打印一次 */
+  if (++s_pwrDbgCnt >= DEBUG_PRINT_INTERVAL) {
     s_pwrDbgCnt = 0;
     DEBUG_PRINT_LOCAL("PWR_DBG ctrl[thr=%5d r=%+5d p=%+5d y=%+5d] M[%4u %4u %4u %4u]\n",
       (int)control->thrust, (int)control->roll, (int)control->pitch, (int)control->yaw,
       (unsigned)motorPower.m1, (unsigned)motorPower.m2,
       (unsigned)motorPower.m3, (unsigned)motorPower.m4);
   }
+#endif
   motorsSetRatio(MOTOR_M1, 0);
   motorsSetRatio(MOTOR_M2, 0);
   motorsSetRatio(MOTOR_M3, 0);

@@ -133,9 +133,11 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
     r_yaw = radians(sensors->gyro.z);
     accelz = sensors->acc.z;
 
-    /* === 地面调试: 打印姿态解算 + setpoint + desired === */
+    /* === 调试: 打印姿态解算 + setpoint + desired ===
+     * 打开方式: config.h 中取消注释 #define DEBUG_CTRL_DBG */
+#ifdef DEBUG_CTRL_DBG
     static uint32_t s_ctrlDbgCnt = 0;
-    if (++s_ctrlDbgCnt >= 250) {  /* 每 ~250 次循环打印一次 */
+    if (++s_ctrlDbgCnt >= DEBUG_PRINT_INTERVAL) {
       s_ctrlDbgCnt = 0;
       DEBUG_PRINT_LOCAL("CTRL_DBG st[r=%+6.1f p=%+6.1f y=%+6.1f] sp[r=%+6.1f p=%+6.1f y=%+6.1f(mode=%d) rateY=%+6.1f] desY=%+6.1f thr=%5d\n",
         (double)state->attitude.roll, (double)state->attitude.pitch, (double)state->attitude.yaw,
@@ -143,6 +145,7 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
         (int)setpoint->mode.yaw, (double)setpoint->attitudeRate.yaw,
         (double)attitudeDesired.yaw, (int)setpoint->thrust);
     }
+#endif
   }
 
   if (tiltCompensationEnabled)

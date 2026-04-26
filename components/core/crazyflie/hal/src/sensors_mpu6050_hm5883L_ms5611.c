@@ -405,17 +405,19 @@ void processAccGyroMeasurements(const uint8_t *buffer)
     applyAxis3fLpf((lpf2pData *)(&accLpf), &sensorData.acc);
 
     /* ======== IMU 轴向调试打印 ========
-     * 用途：静态姿态下打印 acc/gyro，用于验证 MPU6050 贴片方向是否与代码假设一致
-     * 打印频率：约 500ms 一次（假设 sensor 采样 ~500Hz，每 250 次打印一次）
-     * 验证方法：飞机不装桨，按机头朝下/朝上/左翼朝下/右翼朝下分别静止放置，观察 acc 值
+     * 打开方式: config.h 中取消注释 #define DEBUG_IMU_DBG
+     * 用途: 静态姿态下打印 acc/gyro, 验证 MPU6050 贴片方向是否与代码假设一致
+     * 验证方法: 飞机不装桨, 按机头朝下/左翼朝下/右翼朝下分别静止放置, 观察 acc 值
      */
+#ifdef DEBUG_IMU_DBG
     static uint32_t s_imuDbgCnt = 0;
-    if (++s_imuDbgCnt >= 250) {
+    if (++s_imuDbgCnt >= DEBUG_PRINT_INTERVAL) {
         s_imuDbgCnt = 0;
         DEBUG_PRINT_LOCAL("IMU_DBG acc[x=%+6.2f y=%+6.2f z=%+6.2f] gyro[x=%+7.1f y=%+7.1f z=%+7.1f]\n",
             (double)sensorData.acc.x, (double)sensorData.acc.y, (double)sensorData.acc.z,
             (double)sensorData.gyro.x, (double)sensorData.gyro.y, (double)sensorData.gyro.z);
     }
+#endif
 }
 static void sensorsDeviceInit(void)
 {
