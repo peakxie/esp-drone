@@ -35,7 +35,7 @@
 #include "app.h"
 
 #ifndef APP_STACKSIZE
-#define APP_STACKSIZE 300
+#define APP_STACKSIZE 2048
 #endif
 
 #ifndef APP_PRIORITY
