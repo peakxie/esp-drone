@@ -109,9 +109,9 @@
 /* ====================================================================
  * 电机最低转速 (idle thrust)
  * 防止低油门时 PID 修正量 > 油门量导致部分电机 clip 到 0, 产生不对称推力斜飞
- * 6000 ≈ 65535 的 9%, 桨低速旋转不足以离地, 但能避免单电机停转
+ * 注意: 值过大会导致 thrust=0 时电机仍转 + PID 积分累积, 先关掉排查
  * ==================================================================== */
-#define DEFAULT_IDLE_THRUST  6000
+// #define DEFAULT_IDLE_THRUST  6000
 
 // Task priorities. Higher number higher priority
 // system state tasks
