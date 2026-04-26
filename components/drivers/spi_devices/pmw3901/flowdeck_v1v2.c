@@ -94,6 +94,18 @@ static void flowdeckTask(void *param)
 
         pmw3901ReadMotion(NCS_PIN, &currentMotion);
 
+#ifdef DEBUG_SENSOR_EXT
+        {
+          static uint32_t s_flowDbgCnt = 0;
+          if (++s_flowDbgCnt >= 100) {  /* 5~10ms 周期, 100 次 ≈ 1 秒 */
+            s_flowDbgCnt = 0;
+            DEBUG_PRINT_LOCAL("FLOW dx=%+4d dy=%+4d squal=%3u shutter=%5u\n",
+              (int)currentMotion.deltaX, (int)currentMotion.deltaY,
+              (unsigned)currentMotion.squal, (unsigned)currentMotion.shutter);
+          }
+        }
+#endif
+
         // Flip motion information to comply with sensor mounting
         // (might need to be changed if mounted differently)
         int16_t accpx = -currentMotion.deltaY;
