@@ -55,6 +55,10 @@
 #include "static_mem.h"
 #include "rateSupervisor.h"
 
+#ifdef DEBUG_FULL_CHAIN
+extern uint32_t motor_ratios[];
+#endif
+
 static bool isInit;
 static bool emergencyStop = false;
 static int emergencyStopTimeout = EMERGENCY_STOP_TIMEOUT_DISABLED;
@@ -308,6 +312,25 @@ static void stabilizerTask(void* param)
       } else {
         powerDistribution(&control);
       }
+
+#ifdef DEBUG_FULL_CHAIN
+      {
+        static uint32_t s_fullDbgCnt = 0;
+        if (++s_fullDbgCnt >= DEBUG_PRINT_INTERVAL) {
+          s_fullDbgCnt = 0;
+          /* 行1: 传感器 + 姿态 */
+          DEBUG_PRINT_LOCAL("FC1 acc[%+5.2f %+5.2f %+5.2f] gyro[%+7.1f %+7.1f %+7.1f] att[r=%+6.1f p=%+6.1f y=%+6.1f]\n",
+            (double)sensorData.acc.x, (double)sensorData.acc.y, (double)sensorData.acc.z,
+            (double)sensorData.gyro.x, (double)sensorData.gyro.y, (double)sensorData.gyro.z,
+            (double)state.attitude.roll, (double)state.attitude.pitch, (double)state.attitude.yaw);
+          /* 行2: PID 输出 + 电机 */
+          DEBUG_PRINT_LOCAL("FC2 ctrl[thr=%5d r=%+6d p=%+6d y=%+6d] M[%5u %5u %5u %5u]\n",
+            (int)control.thrust, (int)control.roll, (int)control.pitch, (int)control.yaw,
+            (unsigned)motor_ratios[0], (unsigned)motor_ratios[1],
+            (unsigned)motor_ratios[2], (unsigned)motor_ratios[3]);
+        }
+      }
+#endif
 
       //TODO: Log data to uSD card if configured
       /*if (usddeckLoggingEnabled()
