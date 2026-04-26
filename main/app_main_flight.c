@@ -17,33 +17,29 @@
 void appMain(void) {
   DEBUG_PRINT("APP started!\n");
 
-  /* 第一步: 只等待, 确认不崩溃 */
+  /* 等待 30 秒: 陀螺仪校准 + 传感器稳定 */
   DEBUG_PRINT("Waiting 30s...\n");
   vTaskDelay(M2T(30000));
-  DEBUG_PRINT("Wait done. Enabling HL commander...\n");
 
-  /* 第二步: 启用 high-level commander */
+  /* 启用 high-level commander */
   paramVarId_t idHL = paramGetVarId("commander", "enHighLevel");
   paramSetInt(idHL, 1);
   vTaskDelay(M2T(500));
-  DEBUG_PRINT("enHighLevel = %d\n", paramGetInt(idHL));
 
-  /* 第三步: 起飞 */
-  DEBUG_PRINT("Takeoff...\n");
-  int ret = crtpCommanderHighLevelTakeoff(0.5f, 2.0f);
-  DEBUG_PRINT("Takeoff ret=%d\n", ret);
-  vTaskDelay(M2T(3000));
+  /* 起飞到 0.2m, 1 秒上升 */
+  DEBUG_PRINT("Takeoff 0.2m...\n");
+  crtpCommanderHighLevelTakeoff(0.2f, 1.0f);
+  vTaskDelay(M2T(1500));
 
-  /* 第四步: 悬停 */
-  DEBUG_PRINT("Hovering 3s...\n");
-  vTaskDelay(M2T(3000));
+  /* 悬停 2 秒 */
+  DEBUG_PRINT("Hover 2s...\n");
+  vTaskDelay(M2T(2000));
 
-  /* 第五步: 降落 */
-  DEBUG_PRINT("Landing...\n");
-  ret = crtpCommanderHighLevelLand(0.0f, 3.0f);
-  DEBUG_PRINT("Land ret=%d\n", ret);
-  vTaskDelay(M2T(4000));
+  /* 降落, 1.5 秒下降 */
+  DEBUG_PRINT("Land...\n");
+  crtpCommanderHighLevelLand(0.0f, 1.5f);
+  vTaskDelay(M2T(2000));
 
-  DEBUG_PRINT("Flight complete.\n");
+  DEBUG_PRINT("Done.\n");
   crtpCommanderHighLevelStop();
 }
