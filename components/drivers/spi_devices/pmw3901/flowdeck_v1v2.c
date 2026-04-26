@@ -97,11 +97,15 @@ static void flowdeckTask(void *param)
 #ifdef DEBUG_SENSOR_EXT
         {
           static uint32_t s_flowDbgCnt = 0;
-          if (++s_flowDbgCnt >= 100) {  /* 5~10ms 周期, 100 次 ≈ 1 秒 */
+          static int32_t s_sumDx = 0, s_sumDy = 0;
+          s_sumDx += currentMotion.deltaX;
+          s_sumDy += currentMotion.deltaY;
+          if (++s_flowDbgCnt >= 100) {  /* 累积 ~1 秒 */
             s_flowDbgCnt = 0;
-            DEBUG_PRINT_LOCAL("FLOW dx=%+4d dy=%+4d squal=%3u shutter=%5u\n",
-              (int)currentMotion.deltaX, (int)currentMotion.deltaY,
-              (unsigned)currentMotion.squal, (unsigned)currentMotion.shutter);
+            DEBUG_PRINT_LOCAL("FLOW sumDx=%+6d sumDy=%+6d squal=%3u\n",
+              (int)s_sumDx, (int)s_sumDy, (unsigned)currentMotion.squal);
+            s_sumDx = 0;
+            s_sumDy = 0;
           }
         }
 #endif
