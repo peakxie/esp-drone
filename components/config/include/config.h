@@ -113,6 +113,24 @@
  * ==================================================================== */
 // #define DEFAULT_IDLE_THRUST  6000
 
+/* ====================================================================
+ * PID 参数覆盖 (pydrone 硬件调优)
+ * 原始值是 Crazyflie 2.0 的参数, pydrone 更重/电机不同, 需要适配
+ * 调参思路: Rate 内环先调稳(降 Kp), 外环再调灵敏(升 Kp)
+ * ==================================================================== */
+
+/* -- 外环 Attitude (角度环): Kp 控制响应灵敏度 -- */
+#define PID_ROLL_KP   3.5f       // 原 5.3, 降低减少过冲
+#define PID_ROLL_KI   1.5f       // 原 2.5, 降低减少积分振荡
+#define PID_PITCH_KP  3.5f       // 原 5.3
+#define PID_PITCH_KI  1.5f       // 原 2.5
+
+/* -- 内环 Rate (角速度环): Kp 控制"猛"的程度 -- */
+#define PID_ROLL_RATE_KP   120.0f   // 原 190, 降低减少猛烈
+#define PID_ROLL_RATE_KI   200.0f   // 原 440, 降低减少积分累积
+#define PID_PITCH_RATE_KP  120.0f   // 原 190
+#define PID_PITCH_RATE_KI  200.0f   // 原 440
+
 // Task priorities. Higher number higher priority
 // system state tasks
 #define SYSTEM_TASK_PRI         1
