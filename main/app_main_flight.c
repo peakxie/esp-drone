@@ -14,6 +14,7 @@
 #include "task.h"
 #include "crtp_commander_high_level.h"
 #include "param.h"
+#include "stm32_legacy.h"
 #include "config.h"
 
 #define DEBUG_MODULE "APP_FLIGHT"
