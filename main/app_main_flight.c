@@ -29,7 +29,7 @@ void appMain(void) {
 
   /* 启用 high-level commander */
   paramVarId_t idHL = paramGetVarId("commander", "enHighLevel");
-  DEBUG_PRINT("enHighLevel paramId: %d.%d\n", idHL.id, idHL.index);
+  DEBUG_PRINT("enHighLevel paramId: %d\n", idHL.id);
   paramSetInt(idHL, 1);
   vTaskDelay(M2T(500));
 
