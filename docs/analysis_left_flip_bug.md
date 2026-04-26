@@ -1,4 +1,4 @@
-# 起飞左侧翻问题分析
+# 起飞侧翻问题分析
 
 ## 问题现象
 
@@ -204,6 +204,36 @@ attitudeControllerCorrectRatePID(sensors->gyro.x, -sensors->gyro.y, sensors->gyr
    - 左翼下压 → M3+M4 输出应增大
    - 机头下压 → M1+M4 输出应增大
 3. **栓绳悬停**：油门缓慢加到离地，确认不侧翻后再解绳
+
+---
+
+## [2026-04-26 更新] 实测推翻初始分析，roll 和 pitch 都需要取反
+
+### 实测数据 (MOTOR_OUTPUT_DISABLE, 手持右翼下压→水平)
+
+```
+推油门, 飞机水平:
+  thr=8082  r=+12213  p=-7096   M[0  5534  17726  10650]
+持续右翼下压:
+  thr=8410  r=+32767  p=-26318  M[0 11622  32390  18070]  ← r/p 都饱和，M1=0
+放平:
+  thr=0     r=0       p=0       M[0 0 0 0]
+```
+
+**关键发现**:
+1. **Roll 方向反**: 右翼下压 → `r` 为大正值 → `+r` 驱动 M3/M4(左侧)加油 → 抬的是左翼不是右翼
+2. **Pitch 方向也反**: 仅做 roll 动作, `p` 也发散到 -26000 → pitch 轴也是正反馈
+3. **之前分析的"双重取反"结论错误**: 实际上 sensor 层 acc.y 取反后，roll/pitch 的符号约定与混控矩阵不一致，controller 层的取反是必需的
+
+### 修正方案 (已应用)
+
+```c
+// controller_pid.c
+control->roll  = -control->roll;   // 恢复, 必需
+control->pitch = -control->pitch;  // 新增, pitch 也需要取反
+```
+
+**起飞左侧翻的真正原因**: 04-25 版本只取反了 roll 没取反 pitch → pitch 正反馈 → 任何微小的 pitch 扰动都会发散，导致飞机侧翻(侧翻方向取决于 pitch 发散叠加 roll 后哪边先失控)。
 
 ---
 

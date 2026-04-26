@@ -116,12 +116,13 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
                                         &control->pitch,
                                         &control->yaw);
 
-    /* [2026-04-26] 移除 roll 取反:
-     *   04-25 同时做了两处修正: (1) sensor 层 accScaled.y 取反 (2) 此处 control->roll 取反.
-     *   两次取反叠加后互相抵消, 导致 roll 纠偏方向仍然是反的 → 起飞左侧翻.
-     *   sensor 层的 acc.y 取反是正确的 (使 +roll = 右翼下低, 符合航空惯例),
-     *   故此处不再需要额外取反. 详见 docs/analysis_left_flip_bug.md */
-    // control->roll = -control->roll;   // 已移除: 双重取反导致起飞左侧翻
+    /* [2026-04-26] 轴向符号修正:
+     *   实测数据: 右翼下压时 r 为大正值 → M3/M4(左侧)加油 → 纠偏方向反,
+     *   说明 sensor 层 acc.y 取反后 roll 符号与混控矩阵的约定刚好相反, 必须在此取反.
+     *   pitch 同理: 右翼下压时 p 持续发散到 -26000, pitch 轴也是正反馈, 需要取反.
+     *   详见 docs/analysis_left_flip_bug.md */
+    control->roll = -control->roll;
+    control->pitch = -control->pitch;
     // control->yaw  = -control->yaw;
 
     cmd_thrust = control->thrust;

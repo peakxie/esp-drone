@@ -79,19 +79,24 @@ accScaled.y = -(accelRaw.y) * G_PER_LSB / scale;          // [AXIS-FIX] 取反
 // Rate PID 输入: pitch 轴用 -gyro.y (Crazyflie 原版约定)
 attitudeControllerCorrectRatePID(sensors->gyro.x, -sensors->gyro.y, sensors->gyro.z, ...);
 
-// Roll 输出取反 (行 125) ← 已注释移除，这是起飞左侧翻的直接原因
-// control->roll = -control->roll;
+// Roll 和 Pitch 输出取反 (实测确认必需)
+control->roll  = -control->roll;
+control->pitch = -control->pitch;
 ```
 
 ## 已知问题 & 调试历史
 
 ### [2026-04-26] 起飞左侧翻 (详见 docs/analysis_left_flip_bug.md)
 
-**根因**: Roll 轴双重取反 — sensor 层 acc.y 取反(正确) + controller 层 control->roll 取反(多余)，叠加后纠偏方向反转。
+**根因**: Roll 和 Pitch 轴符号都与混控矩阵约定不一致 — sensor 层轴映射后的符号需要在 controller 层取反。04-25 版本只取反了 roll 未取反 pitch，pitch 正反馈发散导致侧翻。
 
-**修复方案**: 删除 `controller_pid.c` 第 125 行 `control->roll = -control->roll;`
+**修复方案**: `controller_pid.c` 中同时取反 roll 和 pitch:
+```c
+control->roll  = -control->roll;   // 保留
+control->pitch = -control->pitch;  // 新增
+```
 
-**状态**: 已修复(controller_pid.c 第125行已注释), 待栓绳验证
+**状态**: roll+pitch 取反已应用, 待手持验证 + 栓绳试飞
 
 **待验证项**:
 1. gyro.x 方向一致性 (右滚时应为正值)
