@@ -377,7 +377,10 @@ void processAccGyroMeasurements(const uint8_t *buffer)
 #ifdef CONFIG_TARGET_ESPLANE_V1
     sensorData.gyro.x = (gyroRaw.x - gyroBias.x) * SENSORS_DEG_PER_LSB_CFG;
 #else
-    sensorData.gyro.x = -(gyroRaw.x - gyroBias.x) * SENSORS_DEG_PER_LSB_CFG;
+    /* [2026-04-26] 去掉取反: acc.y 取反后 roll 约定为 "右翼下=负值",
+     * gyro.x 必须与之一致 (右滚=负值), 否则 Mahony 滤波器里 gyro 与 acc 打架,
+     * 导致姿态估计发散. 实测: 去掉取反前, 手持右翼朝下 roll 从 -4858 发散到 -32767. */
+    sensorData.gyro.x = (gyroRaw.x - gyroBias.x) * SENSORS_DEG_PER_LSB_CFG;
 #endif
 
     /* [AXIS-FIX 2026-04-25 TEST-A] 测试 A（机头下压）实测:
