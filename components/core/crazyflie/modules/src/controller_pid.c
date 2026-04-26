@@ -123,7 +123,7 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
      *   X 分配矩阵假设的 "+roll -> 左侧加油" 不一致; 而 pitch 轴恰好一致. 故只在 roll 轴吸收符号差,
      *   保持电机分配矩阵与 Crazyflie 官方原版一致, 便于后续对照/合并上游. */
     control->roll = -control->roll;
-    control->yaw  = -control->yaw;
+    // control->yaw  = -control->yaw;
 
     cmd_thrust = control->thrust;
     cmd_roll = control->roll;
