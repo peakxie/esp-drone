@@ -116,13 +116,12 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
                                         &control->pitch,
                                         &control->yaw);
 
-    /* [2026-04-25] 方向修正 (仅 roll 轴):
-     *   手持静态验证: 机头下低时, 原始代码驱动 M1+M4(前侧)加油 -> 抬机头, pitch 轴方向正确, 不反号.
-     *   手持静态验证: 右翼下低时, 原始代码驱动 M3+M4(左侧)加油 (低边加油) -> 会加剧翻滚, roll 轴方向错误, 需反号.
-     * 原因: 本工程 sensfusion6 解算的 state.attitude.roll 符号约定, 与 power_distribution_stock.c
-     *   X 分配矩阵假设的 "+roll -> 左侧加油" 不一致; 而 pitch 轴恰好一致. 故只在 roll 轴吸收符号差,
-     *   保持电机分配矩阵与 Crazyflie 官方原版一致, 便于后续对照/合并上游. */
-    control->roll = -control->roll;
+    /* [2026-04-26] 移除 roll 取反:
+     *   04-25 同时做了两处修正: (1) sensor 层 accScaled.y 取反 (2) 此处 control->roll 取反.
+     *   两次取反叠加后互相抵消, 导致 roll 纠偏方向仍然是反的 → 起飞左侧翻.
+     *   sensor 层的 acc.y 取反是正确的 (使 +roll = 右翼下低, 符合航空惯例),
+     *   故此处不再需要额外取反. 详见 docs/analysis_left_flip_bug.md */
+    // control->roll = -control->roll;   // 已移除: 双重取反导致起飞左侧翻
     // control->yaw  = -control->yaw;
 
     cmd_thrust = control->thrust;
