@@ -111,9 +111,14 @@ static void flowdeckTask(void *param)
 #endif
 
         // Flip motion information to comply with sensor mounting
-        // (might need to be changed if mounted differently)
-        int16_t accpx = -currentMotion.deltaY;
-        int16_t accpy = -currentMotion.deltaX;
+        // [2026-04-26] pydrone 实测:
+        //   飞机往前推 → deltaY=+正, 飞机往右推 → deltaX=-负
+        //   Crazyflie 坐标系: 前=+X, 右=+Y
+        //   光流看地面反向: 前推→地面后移→accpx 应为负(给估计器), 估计器内部再反转
+        //   原版 accpx=-deltaY 在 Crazyflie 上正确, 但 pydrone 传感器安装旋转了 90°
+        //   实测修正: 去掉负号
+        int16_t accpx = currentMotion.deltaY;
+        int16_t accpy = currentMotion.deltaX;
 
         // Outlier removal
         if (abs(accpx) < OULIER_LIMIT && abs(accpy) < OULIER_LIMIT) {
