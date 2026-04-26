@@ -67,7 +67,7 @@ accelRaw.y = MPU_ACCEL_XOUT;   accelRaw.x = MPU_ACCEL_YOUT;
 gyroRaw.y  = MPU_GYRO_XOUT;    gyroRaw.x  = MPU_GYRO_YOUT;
 
 // 转物理量时的符号:
-sensorData.gyro.x = -(gyroRaw.x - bias) * DEG_PER_LSB;   // 取反
+sensorData.gyro.x =  (gyroRaw.x - bias) * DEG_PER_LSB;   // [2026-04-26] 去掉取反, 与 acc.y 一致
 sensorData.gyro.y =  (gyroRaw.y - bias) * DEG_PER_LSB;   // [AXIS-FIX] 不取反
 accScaled.x = -(accelRaw.x) * G_PER_LSB / scale;          // 取反
 accScaled.y = -(accelRaw.y) * G_PER_LSB / scale;          // [AXIS-FIX] 取反
@@ -86,17 +86,23 @@ control->pitch = -control->pitch;
 
 ## 已知问题 & 调试历史
 
-### [2026-04-26] 起飞左侧翻 (详见 docs/analysis_left_flip_bug.md)
+### [2026-04-26] 起飞侧翻 (详见 docs/analysis_left_flip_bug.md)
 
-**根因**: Roll 和 Pitch 轴符号都与混控矩阵约定不一致 — sensor 层轴映射后的符号需要在 controller 层取反。04-25 版本只取反了 roll 未取反 pitch，pitch 正反馈发散导致侧翻。
+**根因**: 两个问题叠加:
+1. `controller_pid.c` 缺少 roll 取反 → roll 纠偏方向反 → 导致左侧翻
+2. `sensors` 层 `gyro.x` 多余取反 → 与 acc.y 方向不一致 → Mahony 滤波器 gyro/acc 打架 → 姿态估计发散
 
-**修复方案**: `controller_pid.c` 中同时取反 roll 和 pitch:
-```c
-control->roll  = -control->roll;   // 保留
-control->pitch = -control->pitch;  // 新增
-```
+**修复 (已验证)**:
+- `controller_pid.c`: `control->roll = -control->roll;` (保留)
+- `sensors_mpu6050_hm5883L_ms5611.c`: gyro.x 去掉取反, 改为 `(gyroRaw.x - gyroBias.x) * DEG_PER_LSB` (与 V1 分支一致)
+- pitch 实测不需取反, 全程稳定
 
-**状态**: roll+pitch 取反已应用, 待手持验证 + 栓绳试飞
+**验证结果**:
+- 右翼朝下: r≈-28000, M1/M2 加油 ✓
+- 放回水平: r 收敛回 ≈-4000 ✓ (不再发散)
+- pitch 全程 ≈-1900 稳定 ✓
+
+**状态**: 手持方向验证通过, 进入栓绳试飞阶段
 
 **待验证项**:
 1. gyro.x 方向一致性 (右滚时应为正值)

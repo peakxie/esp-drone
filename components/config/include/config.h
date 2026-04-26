@@ -85,14 +85,14 @@
  * ==================================================================== */
 
 /* -- 安全开关 -- */
-#define MOTOR_OUTPUT_DISABLE    // 电机强制输出 0, 不转 (power_distribution 层)
-#define GROUND_TEST_MODE        // PID Ki=0, 只看 P+D 响应方向 (attitude_pid 层)
+// #define MOTOR_OUTPUT_DISABLE // 电机强制输出 0, 不转 (power_distribution 层)
+// #define GROUND_TEST_MODE     // PID Ki=0, 只看 P+D 响应方向 (attitude_pid 层)
 // #define GROUND_TEST_ZERO_RPY // 清零遥控 RPY 指令, 只响应油门自稳 (crtp_commander 层)
 
 /* -- 打印开关 -- */
 // #define DEBUG_IMU_DBG        // IMU acc/gyro 原始值 (sensors 层)
-// #define DEBUG_CTRL_DBG       // 姿态/setpoint/desired (controller 层)
-#define DEBUG_PWR_DBG           // 混控输出 M1~M4 (power_distribution 层)
+#define DEBUG_CTRL_DBG          // 姿态/setpoint/desired (controller 层)
+// #define DEBUG_PWR_DBG        // 混控输出 M1~M4 (power_distribution 层)
 
 /* -- 打印间隔 -- */
 #define DEBUG_PRINT_INTERVAL  1000  // 采样约 500Hz, 1000 次 ≈ 2 秒

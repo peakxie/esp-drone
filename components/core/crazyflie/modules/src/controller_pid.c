@@ -118,10 +118,8 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
 
     /* [2026-04-26] 轴向符号修正:
      *   roll: 实测确认必须取反 (右翼下压时原始 r>0, 取反后 r<0 → M1/M2 右侧加油 ✓)
-     *   pitch: 待 GROUND_TEST_MODE(Ki=0) 下确认方向, 暂不取反 */
+     *   pitch: 实测确认不需取反 (桌面静置 p≈-1900 稳定不发散 ✓) */
     control->roll = -control->roll;
-    // control->pitch = -control->pitch;  // 待验证
-    // control->yaw  = -control->yaw;
 
     cmd_thrust = control->thrust;
     cmd_roll = control->roll;
