@@ -32,17 +32,7 @@
 #include "param.h"
 #include "log.h"
 
-/* ============================================================
- * GROUND_TEST_MODE —— 地面手持测试模式
- * 打开后:
- *   - 所有 PID 的 Ki (积分项) 强制为 0, 避免电机不转时积分 windup 饱和
- *   - 只剩 P(+D) 在工作, 能干净地看到"当前姿态误差 -> 电机输出"的即时响应方向
- *   - 用于: 手持飞机 (不装桨), 搭配 MOTOR_OUTPUT_DISABLE=1,
- *          观察 PWR_DBG 打印中 M1~M4 的相对大小变化, 验证 roll/pitch/yaw 方向是否自洽
- * 正式飞行前 **必须注释掉** 这一行!!!
- * ============================================================ */
-/* [2026-04-25] 进入正式飞行: 打开 Ki 让 PID 能消静差 */
-// #define GROUND_TEST_MODE    1
+/* GROUND_TEST_MODE 开关已移至 config.h 集中管理 */
 
 #define ATTITUDE_LPF_CUTOFF_FREQ      15.0f
 #define ATTITUDE_LPF_ENABLE false

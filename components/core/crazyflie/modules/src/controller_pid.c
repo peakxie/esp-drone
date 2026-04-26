@@ -117,12 +117,10 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
                                         &control->yaw);
 
     /* [2026-04-26] 轴向符号修正:
-     *   实测数据: 右翼下压时 r 为大正值 → M3/M4(左侧)加油 → 纠偏方向反,
-     *   说明 sensor 层 acc.y 取反后 roll 符号与混控矩阵的约定刚好相反, 必须在此取反.
-     *   pitch 同理: 右翼下压时 p 持续发散到 -26000, pitch 轴也是正反馈, 需要取反.
-     *   详见 docs/analysis_left_flip_bug.md */
+     *   roll: 实测确认必须取反 (右翼下压时原始 r>0, 取反后 r<0 → M1/M2 右侧加油 ✓)
+     *   pitch: 待 GROUND_TEST_MODE(Ki=0) 下确认方向, 暂不取反 */
     control->roll = -control->roll;
-    control->pitch = -control->pitch;
+    // control->pitch = -control->pitch;  // 待验证
     // control->yaw  = -control->yaw;
 
     cmd_thrust = control->thrust;

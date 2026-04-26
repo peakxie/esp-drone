@@ -79,12 +79,23 @@
 // #define DEBUG_UDP
 // #define DEBUG_EP2
 
-/* ---- 飞控调试打印开关 (取消注释即可打开对应打印) ---- */
-// #define DEBUG_IMU_DBG       // IMU acc/gyro 原始值 (~2s/次, sensors 层)
-// #define DEBUG_CTRL_DBG      // 姿态/setpoint/desired (~2s/次, controller 层)
-#define DEBUG_PWR_DBG          // 混控输出 M1~M4 (~2s/次, power_distribution 层)
-/* 打印间隔: 采样频率约 500Hz, 计数 1000 次 ≈ 2 秒 */
-#define DEBUG_PRINT_INTERVAL  1000
+/* ====================================================================
+ * 地面测试 & 调试开关 (全部集中在此, 取消注释即可打开)
+ * 正式飞行前: 确保以下全部注释掉!!!
+ * ==================================================================== */
+
+/* -- 安全开关 -- */
+#define MOTOR_OUTPUT_DISABLE    // 电机强制输出 0, 不转 (power_distribution 层)
+#define GROUND_TEST_MODE        // PID Ki=0, 只看 P+D 响应方向 (attitude_pid 层)
+// #define GROUND_TEST_ZERO_RPY // 清零遥控 RPY 指令, 只响应油门自稳 (crtp_commander 层)
+
+/* -- 打印开关 -- */
+// #define DEBUG_IMU_DBG        // IMU acc/gyro 原始值 (sensors 层)
+// #define DEBUG_CTRL_DBG       // 姿态/setpoint/desired (controller 层)
+#define DEBUG_PWR_DBG           // 混控输出 M1~M4 (power_distribution 层)
+
+/* -- 打印间隔 -- */
+#define DEBUG_PRINT_INTERVAL  1000  // 采样约 500Hz, 1000 次 ≈ 2 秒
 
 // Task priorities. Higher number higher priority
 // system state tasks
