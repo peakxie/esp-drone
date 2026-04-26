@@ -78,6 +78,14 @@ void estimatorComplementary(state_t *state, sensorData_t *sensorData, control_t 
     // Save attitude, adjusted for the legacy CF2 body coordinate system
     sensfusion6GetEulerRPY(&state->attitude.roll, &state->attitude.pitch, &state->attitude.yaw);
 
+    // IMU 零偏补偿 (trim), 参数定义在 config.h
+#ifdef IMU_TRIM_ROLL
+    state->attitude.roll  -= IMU_TRIM_ROLL;
+#endif
+#ifdef IMU_TRIM_PITCH
+    state->attitude.pitch -= IMU_TRIM_PITCH;
+#endif
+
     // Save quaternion, hopefully one day this could be used in a better controller.
     // Note that this is not adjusted for the legacy coordinate system
     sensfusion6GetQuaternion(

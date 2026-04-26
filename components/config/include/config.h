@@ -97,6 +97,14 @@
 /* -- 打印间隔 -- */
 #define DEBUG_PRINT_INTERVAL  1000  // 采样约 500Hz, 1000 次 ≈ 2 秒
 
+/* ====================================================================
+ * IMU 零偏补偿 (姿态 trim)
+ * 四朝向桌面静置测得: roll≈-3.9°, pitch≈+1.78°
+ * 补偿后 state.attitude 输出应接近 0
+ * ==================================================================== */
+#define IMU_TRIM_ROLL   (-3.9f)   // 度, 水平静置时 roll 的平均读数
+#define IMU_TRIM_PITCH  (+1.78f)  // 度, 水平静置时 pitch 的平均读数
+
 // Task priorities. Higher number higher priority
 // system state tasks
 #define SYSTEM_TASK_PRI         1
