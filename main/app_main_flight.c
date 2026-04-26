@@ -32,7 +32,7 @@ void appMain(void) {
 
   /* 起飞到 0.2m, 用 2 秒缓慢上升 */
   DEBUG_PRINT("Takeoff to 0.2m...\n");
-  crtpCommanderHighLevelTakeoff(0.2f, 2.0f);
+  crtpCommanderHighLevelTakeoff(0.5f, 2.0f);
   vTaskDelay(M2T(3000)); /* 等起飞完成, 多留 1 秒余量 */
 
   /* 悬停 3 秒 */
