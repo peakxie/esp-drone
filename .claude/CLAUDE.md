@@ -102,19 +102,25 @@ control->pitch = -control->pitch;
 - 放回水平: r 收敛回 ≈-4000 ✓ (不再发散)
 - pitch 全程 ≈-1900 稳定 ✓
 
-**状态**: 手持方向验证通过, 进入栓绳试飞阶段
+**状态**: 方向验证通过, 栓绳试飞已起飞, 调优中
 
-**待验证项**:
-1. gyro.x 方向一致性 (右滚时应为正值)
-2. pitch 轴纠偏方向
-3. GPIO 引脚与实物接线对应关系
+**已验证完毕**:
+1. gyro.x 去掉取反 → Mahony roll 轴收敛 ✓
+2. pitch 轴: `-gyro.y` 在 rate PID 中是数学正确的, 实测稳定不发散 ✓
+3. roll 取反(`control->roll = -control->roll`) 实测确认必需 ✓
+4. IMU trim: roll=-3.9°, pitch=+1.78° 已补偿 ✓
 
-### [2026-04-25] 地面调试工具 (已关闭)
+### [2026-04-26] 慢推油门斜飞
 
-以下宏已全部注释，进入飞行阶段：
-- `MOTOR_OUTPUT_DISABLE` (power_distribution_stock.c) — 强制电机输出为 0
-- `GROUND_TEST_MODE` (attitude_pid_controller.c) — 关闭所有 Ki
-- `GROUND_TEST_ZERO_RPY` (crtp_commander_rpyt.c) — 清零遥控 RPY 指令
+**根因**: `DEFAULT_IDLE_THRUST=0` → 低油门时 PID 修正量 > 油门量 → 部分电机 clip 到 0 → 不对称推力
+**修复**: `config.h` 中 `#define DEFAULT_IDLE_THRUST 6000`
+
+### [2026-04-25] 地面调试工具 (集中在 config.h)
+
+以下宏全部在 `config.h` 管理：
+- `MOTOR_OUTPUT_DISABLE` — 强制电机输出为 0
+- `GROUND_TEST_MODE` — 关闭所有 Ki
+- `GROUND_TEST_ZERO_RPY` — 清零遥控 RPY 指令
 
 ## 电机混控公式 (X 构型, QUAD_FORMATION_X)
 

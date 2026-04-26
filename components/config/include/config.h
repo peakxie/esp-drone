@@ -105,6 +105,13 @@
 #define IMU_TRIM_ROLL   (-3.9f)   // 度, 水平静置时 roll 的平均读数
 #define IMU_TRIM_PITCH  (+1.78f)  // 度, 水平静置时 pitch 的平均读数
 
+/* ====================================================================
+ * 电机最低转速 (idle thrust)
+ * 防止低油门时 PID 修正量 > 油门量导致部分电机 clip 到 0, 产生不对称推力斜飞
+ * 6000 ≈ 65535 的 9%, 桨低速旋转不足以离地, 但能避免单电机停转
+ * ==================================================================== */
+#define DEFAULT_IDLE_THRUST  6000
+
 // Task priorities. Higher number higher priority
 // system state tasks
 #define SYSTEM_TASK_PRI         1

@@ -106,9 +106,10 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
     }
 
     // TODO: Investigate possibility to subtract gyro drift.
-    /* 回滚: -gyro.y 是 Crazyflie 原版的数学上正确实现(d(state.pitch)/dt = -gyro.y),
-     *   因为 state.pitch=asinf(gravX), 而 gyro.y 右手定则正方向是机头上抬,
-     *   两者定义相反. 该负号与 IMU 层的方向适配无关. */
+    /* -gyro.y 是数学正确的: Mahony 中 d(pitch)/dt ∝ -gy (因为 gravX = 2*(qx*qz - qw*qy)),
+     * rate PID 需要与姿态变化率符号一致, 所以传 -gyro.y.
+     * 注意: 这与 sensor 层的轴映射无关, 是四元数微分方程的固有性质.
+     * [2026-04-26] 实测确认: pitch 全程稳定不发散 ✓ */
     attitudeControllerCorrectRatePID(sensors->gyro.x, -sensors->gyro.y, sensors->gyro.z,
                              rateDesired.roll, rateDesired.pitch, rateDesired.yaw);
 

@@ -1,0 +1,210 @@
+================================================================================
+ESP-DRONE SLOW THROTTLE RAMP-UP ISSUE - QUICK REFERENCE
+================================================================================
+
+PROBLEM: Drone slides sideways instead of lifting during slow throttle ramp-up
+
+ROOT CAUSE: Combination of motor clipping + integral windup
+
+================================================================================
+1. MOTOR CLIPPING PROBLEM
+================================================================================
+
+File: /data/project/source/peakxie/esp-drone/components/core/crazyflie/modules/src/power_distribution_stock.c
+
+Line 81-82: Define limitThrust macro
+    #define limitThrust(VAL) limitUint16(VAL)
+
+Lines 85-109: Motor mixing formulas that produce negative values when 
+              PID corrections > available thrust
+
+QUAD_FORMATION_X example (lines 93-99):
+    motorPower.m1 = limitThrust(control->thrust - r + p + control->yaw);
+    motorPower.m2 = limitThrust(control->thrust - r - p - control->yaw);
+    motorPower.m3 = limitThrust(control->thrust + r - p + control->yaw);
+    motorPower.m4 = limitThrust(control->thrust + r + p - control->yaw);
+
+Problem: When "thrust - correction" is negative, limitThrust() clips to 0
+
+File: /data/project/source/peakxie/esp-drone/components/core/crazyflie/utils/src/num.c
+
+Lines 85-97: limitUint16() implementation
+    uint16_t limitUint16(int32_t value)
+    {
+      if(value > UINT16_MAX) value = UINT16_MAX;
+      else if(value < 0) value = 0;              ← HARD CLIP TO ZERO!
+      return (uint16_t)value;
+    }
+
+Lines 142-159 (power_distribution_stock.c): idleThrust check AFTER clipping
+    if (motorPower.m1 < idleThrust) {
+      motorPower.m1 = idleThrust;
+    }
+    // ... M2, M3, M4 ...
+    
+Problem: Clipping happens first, then idleThrust check (too late)
+
+Lines 58-62 (power_distribution_stock.c): Default idle thrust is ZERO
+    #ifndef DEFAULT_IDLE_THRUST
+    #define DEFAULT_IDLE_THRUST 0               ← DEFAULT IS ZERO!
+    #endif
+    static uint32_t idleThrust = DEFAULT_IDLE_THRUST;
+
+================================================================================
+2. INTEGRAL WINDUP PROBLEM
+================================================================================
+
+File: /data/project/source/peakxie/esp-drone/components/core/crazyflie/modules/src/pid.c
+
+Lines 56-102: pidUpdate() function - integral ALWAYS accumulates
+    float pidUpdate(PidObject* pid, const float measured, const bool updateError)
+    {
+        // ...
+        pid->integ += pid->error * pid->dt;     ← LINE 81: ALWAYS ACCUMULATES!
+        
+        if(pid->iLimit != 0)
+        {
+            pid->integ = constrain(pid->integ, -pid->iLimit, pid->iLimit);
+        }
+        
+        pid->outI = pid->ki * pid->integ;
+        output += pid->outI;
+        // ...
+    }
+
+Problem: During slow ramp-up (thrust < weight), integral accumulates for 
+         extended time before liftoff, causing saturation.
+
+File: /data/project/source/peakxie/esp-drone/components/core/crazyflie/modules/interface/pid.h
+
+Lines 34-36: VERY HIGH integral gains (ESP32-S2 variant)
+    #define PID_ROLL_RATE_KI  440.0           ← VERY HIGH!
+    #define PID_PITCH_RATE_KI  440.0          ← VERY HIGH!
+
+Line 37, 42: Integration limits
+    #define PID_ROLL_RATE_INTEGRATION_LIMIT    33.3
+    #define PID_PITCH_RATE_INTEGRATION_LIMIT   33.3
+
+Impact: Max correction = 440 × 33.3 ≈ 14,652
+        This correction >> available thrust during slow ramp-up
+        → Motor clipping → Asymmetric → Sliding!
+
+================================================================================
+3. PID RESET LOGIC
+================================================================================
+
+File: /data/project/source/peakxie/esp-drone/components/core/crazyflie/modules/src/controller_pid.c
+
+Lines 157-174: PID reset ONLY when thrust == 0
+    if (control->thrust == 0)
+    {
+        control->thrust = 0;
+        // ... set all controls to 0 ...
+        attitudeControllerResetAllPID();        ← LINE 169: ONLY RESETS HERE
+        positionControllerResetAllPID();
+    }
+
+Problem: During slow ramp-up from 0 to flight thrust, the condition
+         "control->thrust == 0" becomes false, so PID never resets!
+         
+         Integral accumulates the entire ramp-up period.
+
+================================================================================
+4. NO ANTI-WINDUP IN RATE PID
+================================================================================
+
+File: /data/project/source/peakxie/esp-drone/components/core/crazyflie/modules/src/attitude_pid_controller.c
+
+Lines 113-125: attitudeControllerCorrectRatePID()
+    void attitudeControllerCorrectRatePID(...)
+    {
+      pidSetDesired(&pidRollRate, rollRateDesired);
+      rollOutput = saturateSignedInt16(pidUpdate(&pidRollRate, rollRateActual, true));
+      // ... similar for pitch and yaw ...
+    }
+
+Lines 43-52: saturateSignedInt16() - saturation AFTER PID calculation
+    static inline int16_t saturateSignedInt16(float in)
+    {
+      if (in > INT16_MAX) return INT16_MAX;
+      else if (in < -INT16_MAX) return -INT16_MAX;
+      else return (int16_t)in;
+    }
+
+Problem: Output is saturated, but integral in PidObject keeps accumulating.
+         This is classic integral windup - the integrator doesn't know 
+         the output is saturated.
+
+================================================================================
+5. SEQUENCE OF EVENTS DURING SLOW RAMP-UP
+================================================================================
+
+Phase 1: Throttle Ramp (drone on ground, thrust < weight)
+  - User slowly increases throttle: 0 → 50 → 100 → 150 → 200
+  - Drone has slight attitude error (e.g., tilted right)
+  - Rate PID integral accumulates: integ += error × dt
+  - By time thrust reaches 200:
+    * Integral is close to saturation (±33.3)
+    * Rate PID output = 440 × 33.3 ≈ 14,652 correction needed
+
+Phase 2: Liftoff (thrust crosses weight threshold)
+  - Drone starts lifting with thrust ≈ 230
+  - Motor mixing with saturated PID:
+    * M1 = 230 - 14,652 = -14,422 → limitThrust() clips to 0
+    * M2 = 230 + 14,652 = 14,882 → limitThrust() clips to UINT16_MAX
+    * M3 = 230 - 14,652 = -14,422 → clips to 0
+    * M4 = 230 + 14,652 = 14,882 → clips to UINT16_MAX
+
+Phase 3: Motor Asymmetry
+  - Motors 1&3 off (clipped to 0)
+  - Motors 2&4 maxed out
+  - Result: Extreme roll moment
+  - Drone slides sideways instead of lifting
+
+Why fast throttle works: Less time for integral to accumulate
+
+================================================================================
+6. ALL PROBLEM LOCATIONS SUMMARY
+================================================================================
+
+ISSUE 1 - Motor Clipping:
+  File: power_distribution_stock.c
+  Lines: 81, 96-108 (motor formula)
+  Impact: Negative motor values clipped to 0
+
+ISSUE 2 - Hard Clip Function:
+  File: num.c
+  Lines: 85-97 (limitUint16 implementation)
+  Impact: No minimum floor enforcement
+
+ISSUE 3 - Default Idle Thrust:
+  File: power_distribution_stock.c
+  Lines: 58-62
+  Impact: DEFAULT_IDLE_THRUST = 0, allows motors to stop
+
+ISSUE 4 - Idle Thrust Check Order:
+  File: power_distribution_stock.c
+  Lines: 142-159
+  Impact: Check happens AFTER clipping, not before
+
+ISSUE 5 - Integral Always Accumulates:
+  File: pid.c
+  Line: 81 (pid->integ += pid->error * pid->dt;)
+  Impact: No conditional accumulation during low thrust
+
+ISSUE 6 - No Reset During Ramp-Up:
+  File: controller_pid.c
+  Line: 157 (if (control->thrust == 0))
+  Impact: PID never resets during slow ramp-up
+
+ISSUE 7 - No Anti-Windup:
+  File: attitude_pid_controller.c
+  Lines: 113-125 (attitudeControllerCorrectRatePID)
+  Impact: Integral keeps growing when output saturates
+
+ISSUE 8 - Aggressive Integral Gains:
+  File: pid.h
+  Lines: 35-36 (KI = 440.0)
+  Impact: Large corrections trigger motor clipping
+
+================================================================================
