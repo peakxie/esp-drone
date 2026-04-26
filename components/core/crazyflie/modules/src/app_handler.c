@@ -29,13 +29,13 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
-#include "system.h"
 #include "static_mem.h"
+#include "system.h"
 
 #include "app.h"
 
 #ifndef APP_STACKSIZE
-#define APP_STACKSIZE 2048
+#define APP_STACKSIZE 4096
 #endif
 
 #ifndef APP_PRIORITY
@@ -48,8 +48,7 @@ STATIC_MEM_TASK_ALLOC(appTask, APP_STACKSIZE);
 
 static void appTask(void *param);
 
-void __attribute__((weak)) appInit()
-{
+void __attribute__((weak)) appInit() {
   if (isInit) {
     return;
   }
@@ -58,13 +57,12 @@ void __attribute__((weak)) appInit()
   isInit = true;
 }
 
-static void appTask(void *param)
-{
+static void appTask(void *param) {
   systemWaitStart();
 
   appMain();
 
-  while(1) {
+  while (1) {
     vTaskDelay(portMAX_DELAY);
   }
 }

@@ -1,12 +1,5 @@
 /**
  * app_main_flight.c - 自动飞行序列
- *
- * 开机校准后等待 30s → 起飞到 20cm → 悬停 3s → 缓慢降落
- *
- * 前置条件:
- *   - config.h 中定义 APP_ENABLED
- *   - VL53L1X + PMW3901 传感器已连接且初始化 OK
- *   - Kalman 估计器由 PMW3901 自动注册
  */
 
 #include "FreeRTOS.h"
@@ -22,38 +15,35 @@
 #include "debug_cf.h"
 
 void appMain(void) {
-  /* 等待 30 秒: 陀螺仪校准 + 传感器稳定 */
-  DEBUG_PRINT("Waiting 30s for calibration...\n");
-  vTaskDelay(M2T(30000));
-  DEBUG_PRINT("Calibration wait done.\n");
+  DEBUG_PRINT("APP started!\n");
 
-  /* 启用 high-level commander */
+  /* 第一步: 只等待, 确认不崩溃 */
+  DEBUG_PRINT("Waiting 30s...\n");
+  vTaskDelay(M2T(30000));
+  DEBUG_PRINT("Wait done. Enabling HL commander...\n");
+
+  /* 第二步: 启用 high-level commander */
   paramVarId_t idHL = paramGetVarId("commander", "enHighLevel");
-  DEBUG_PRINT("enHighLevel paramId: %d\n", idHL.id);
   paramSetInt(idHL, 1);
   vTaskDelay(M2T(500));
+  DEBUG_PRINT("enHighLevel = %d\n", paramGetInt(idHL));
 
-  /* 确认 enableHighLevel 已设为 1 */
-  int hlVal = paramGetInt(idHL);
-  DEBUG_PRINT("enHighLevel = %d\n", hlVal);
+  /* 第三步: 起飞 */
+  DEBUG_PRINT("Takeoff...\n");
+  int ret = crtpCommanderHighLevelTakeoff(0.5f, 2.0f);
+  DEBUG_PRINT("Takeoff ret=%d\n", ret);
+  vTaskDelay(M2T(3000));
 
-  /* 起飞到 0.2m, 用 2 秒缓慢上升 */
-  DEBUG_PRINT("Takeoff to 0.2m...\n");
-  int ret = crtpCommanderHighLevelTakeoff(0.2f, 2.0f);
-  DEBUG_PRINT("Takeoff ret = %d\n", ret);
-  vTaskDelay(M2T(3000)); /* 等起飞完成, 多留 1 秒余量 */
-
-  /* 悬停 3 秒 */
+  /* 第四步: 悬停 */
   DEBUG_PRINT("Hovering 3s...\n");
   vTaskDelay(M2T(3000));
 
-  /* 降落到 0m, 用 3 秒缓慢下降 */
+  /* 第五步: 降落 */
   DEBUG_PRINT("Landing...\n");
   ret = crtpCommanderHighLevelLand(0.0f, 3.0f);
-  DEBUG_PRINT("Land ret = %d\n", ret);
-  vTaskDelay(M2T(4000)); /* 等降落完成, 多留 1 秒余量 */
+  DEBUG_PRINT("Land ret=%d\n", ret);
+  vTaskDelay(M2T(4000));
 
-  /* 停止 */
   DEBUG_PRINT("Flight complete.\n");
   crtpCommanderHighLevelStop();
 }
