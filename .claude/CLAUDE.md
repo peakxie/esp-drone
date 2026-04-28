@@ -1,8 +1,77 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # ESP-Drone (pydrone 硬件) 项目上下文
+
+这是一个基于 **ESP-IDF** 的四旋翼无人机固件, 控制代码移植自 **Crazyflie 2021.01** (GPL-3.0)。
+当前仓库针对 **pydrone 自制硬件** (ESP32 + MPU6050 + 有刷电机) 做了适配与调试。
+
+## 构建 & 烧录 (ESP-IDF)
+
+必须使用 **ESP-IDF release/v5.0** (CI 亦测试 v4.4)。默认 target 是 `esp32`；也支持 `esp32s2` / `esp32s3` (有对应 `sdkconfig.defaults.*`)。
+
+```bash
+# 首次配置 / 切换芯片 (会重写 sdkconfig)
+idf.py set-target esp32          # 本项目 pydrone 用这个
+# idf.py set-target esp32s2
+# idf.py set-target esp32s3
+
+idf.py menuconfig                # 进 ESP-Drone Config 改硬件/引脚/target 类型
+idf.py build                     # 编译
+idf.py -p /dev/ttyUSB0 flash     # 烧录
+idf.py -p /dev/ttyUSB0 monitor   # 串口监视 (Ctrl+]) 退出
+idf.py -p /dev/ttyUSB0 flash monitor
+idf.py fullclean                 # 切 target 前先跑这个
+```
+
+本项目没有 host 单元测试套件, 验证靠: 编译通过 + `monitor` 日志 + 地面 PID 响应方向测试 (见 `config.h` 中的 `GROUND_TEST_*` 宏) + 栓绳试飞。
+
+## 高层架构
+
+`main/main.c` 里的 `app_main()` 只做两件事: `platformInit()` → `systemLaunch()`。
+之后一切都跑在 FreeRTOS 任务里, 由 `components/core/crazyflie/hal/src/system.c` 启动。
+`main/app_main_flight.c` 里的 `appMain()` 是可选的自动飞行脚本 (当 `APP_ENABLED` 定义时被 `system` 任务调用)。
+
+### 组件布局
+
+- `components/core/crazyflie/` — **移植自 Crazyflie 2021.01**, 是所有飞控逻辑的所在地
+  - `modules/` — 控制器 (PID/Mellinger/INDI)、估计器 (complementary/Kalman)、stabilizer 主循环、commander、power distribution
+  - `hal/` — 传感器 (MPU6050/HMC5883L/MS5611)、平台抽象、system 启动
+  - `utils/` — CRTP 协议、log/param 系统、数学/滤波
+- `components/drivers/` — ESP32 专属驱动: `general/motors/` (LEDC PWM), `i2c_bus/`, `i2c_devices/` (VL53L1X ToF), `spi_devices/` (PMW3901 光流)
+- `components/config/include/config.h` — **所有手动调参/调试开关集中在这里** (见下)
+- `components/platform/` — ESP32 平台初始化
+- `components/lib/dsp_lib/` — STM32 DSP 库的移植 (Mellinger/Kalman 依赖)
+- `main/Kconfig.projbuild` — 电机 GPIO / 硬件选型的 Kconfig (行 307-349)
+
+### 任务模型 (FreeRTOS)
+
+稳定化走的是一条经典的 sensor→estimator→controller→mixer 流水线, 由 **stabilizer 任务 (优先级 7, 最高)** 驱动, **1kHz** 主循环 (`RATE_MAIN_LOOP = RATE_1000_HZ`, 见 `stabilizer_types.h`):
+
+- `SENSORS_TASK` (prio 6) 把 MPU6050 数据 push 到队列
+- `STABILIZER_TASK` (prio 7) 被 `sensorsWaitDataReady()` 解锁后:
+  `stateEstimator()` → `commanderGetSetpoint()` → `controller()` → `powerDistribution()`
+- 通讯层 (UDP/CRTP/WiFi) 跑在 prio 2, 不抢占飞控
+- Kalman 在单核 SoC 上降到 prio 1 防饿死飞控
+
+任务优先级/栈大小全在 `config.h` 第 147-232 行。
+
+### 参数/日志系统 (CRTP)
+
+Crazyflie 的 `PARAM_GROUP`/`LOG_GROUP` 宏让 C 代码里的变量能被 cfclient/APP 通过 CRTP 协议远程读写, 不需要改 firmware。加新调参变量时用这个机制, 不要 hard-code。
+
+### 目标硬件判别
+
+`config.h` 用 Kconfig 选项区分三套硬件:
+- `CONFIG_TARGET_ESPLANE_V1` (ESP32)
+- `CONFIG_TARGET_ESPLANE_V2_S2` (ESP32-S2)
+- `CONFIG_TARGET_ESP32_S2_DRONE_V1_2` (ESP32-S2/S3)
+- **本仓库 pydrone 三个都不选, 走 `else` 分支** — 修改传感器/电机代码时务必注意这一点 (V1 分支 vs else 分支的轴映射不同)
 
 ## 硬件配置
 
-- 主控: ESP32 系列 (非 V1，非 S2_DRONE_V1_2，走 else 分支)
+- 主控: ESP32 系列 (非 V1, 非 S2_DRONE_V1_2, 走 else 分支)
 - IMU: MPU6050
 - 电机: 有刷电机, PWM 驱动
 - 构型: X 四轴
@@ -34,6 +103,7 @@ M3(左后,CW)  ↗   ↖ M2(右后,CCW)
 | 遥控指令解析 | `components/core/crazyflie/modules/src/crtp_commander_rpyt.c` |
 | 全局配置(QUAD_FORMATION_X等) | `components/config/include/config.h` |
 | 电机 GPIO Kconfig | `main/Kconfig.projbuild` (行 307-349) |
+| 自动飞行脚本 | `main/app_main_flight.c` (`appMain()`) |
 
 ## 信号链路 (IMU → 电机)
 
@@ -121,6 +191,8 @@ control->pitch = -control->pitch;
 - `MOTOR_OUTPUT_DISABLE` — 强制电机输出为 0
 - `GROUND_TEST_MODE` — 关闭所有 Ki
 - `GROUND_TEST_ZERO_RPY` — 清零遥控 RPY 指令
+
+**正式飞行前务必全部注释掉** (`config.h` 第 82-97 行的安全开关 + 打印开关)。
 
 ## 电机混控公式 (X 构型, QUAD_FORMATION_X)
 
