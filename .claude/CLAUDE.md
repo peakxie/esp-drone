@@ -67,13 +67,15 @@ Crazyflie 的 `PARAM_GROUP`/`LOG_GROUP` 宏让 C 代码里的变量能被 cfclie
 - `CONFIG_TARGET_ESPLANE_V1` (ESP32)
 - `CONFIG_TARGET_ESPLANE_V2_S2` (ESP32-S2)
 - `CONFIG_TARGET_ESP32_S2_DRONE_V1_2` (ESP32-S2/S3)
-- **本仓库 pydrone 三个都不选, 走 `else` 分支** — 修改传感器/电机代码时务必注意这一点 (V1 分支 vs else 分支的轴映射不同)
+- **本仓库 pydrone 走 `CONFIG_TARGET_ESP32_S2_DRONE_V1_2` 分支** (sdkconfig: `CONFIG_TARGET_ESP32_S2_DRONE_V1_2=y` + `CONFIG_MOTOR_BRUSHED_715=y`)
+- 修改传感器/电机代码时用 `#if defined(CONFIG_TARGET_ESP32_S2_DRONE_V1_2)` 条件分支,不要动 V1 / V2_S2 / else 其他分支的代码
 
 ## 硬件配置
 
-- 主控: ESP32 系列 (非 V1, 走S2_DRONE_V1_2分支)
-- IMU: MPU6050
-- 电机: 有刷电机, PWM 驱动
+- 主控: ESP32-S3 (走 `CONFIG_TARGET_ESP32_S2_DRONE_V1_2` 分支, sdkconfig `CONFIG_IDF_TARGET_ESP32S3=y`)
+- 电机类型: `CONFIG_MOTOR_BRUSHED_715=y` (有刷 715 空心杯)
+- IMU: MPU6050 (I2C)
+- 高度/位置: VL53L1X (ToF) + PMW3901 (光流)
 - 构型: X 四轴
 
 ## 电机布局
@@ -127,7 +129,7 @@ motorPower.m1~m4
 物理电机 M1~M4
 ```
 
-## IMU 轴映射现状 (pydrone 硬件, 非 V1 分支)
+## IMU 轴映射现状 (pydrone 硬件, CONFIG_TARGET_ESP32_S2_DRONE_V1_2 分支)
 
 ### sensors_mpu6050_hm5883L_ms5611.c 中的映射
 
@@ -184,6 +186,36 @@ control->pitch = -control->pitch;
 
 **根因**: `DEFAULT_IDLE_THRUST=0` → 低油门时 PID 修正量 > 油门量 → 部分电机 clip 到 0 → 不对称推力
 **修复**: `config.h` 中 `#define DEFAULT_IDLE_THRUST 6000`
+
+### [2026-04-30] WiFi/cfclient 调试基建
+
+调试 auto takeoff 时发现飞机只能收到 ~20 个 log packet 就停推,cfclient 几秒后 Flight Control 数据停止更新。
+
+**根因 1** (cfclient 卡住的原因): `wifilink.c:65` 的 `wifilinkIsConnected()` 沿用 Crazyflie NRF radio 假设——"1s 没收到 client 包 = 断开",但 UDP 是 full-duplex, client 订阅完 log 后纯被动收不再发包,约 2s 后触发 `log.c:863` 的 `logReset()+crtpReset()`, 永久停止推送。
+**修复**: `wifilink.c` 的 `wifilinkIsConnected()` 改成永远 `return true`, UDP 没有"断开"概念, 断连由应用层 timeout 处理。
+
+**根因 2** (起飞侧翻的新发现): `appMain()` 原先先切 Kalman 再 `vTaskDelay(10000)`,但切 Kalman 瞬间陀螺仪零偏还没校准完,Kalman 用带偏 gyro 数据积累 10 秒,起飞瞬间姿态已错,必翻。
+**修复**: appMain 里先 `while (!sensorsAreCalibrated()) vTaskDelay(100);` 等 sensors 校准完成,再切 Kalman,再等 3s Kalman 收敛。
+
+**副发现 - pm.vbat 读数错**: pydrone 硬件用 40k+10k 分压 (1/5),但 `pm_esplane.c:120` 的 multiplier 是 Crazyflie 原版的 2 (1/2 分压)。正确值应该是 5 (用万用表实测 ADC 脚 vs 电池端电压比确认)。不影响飞行, 只影响 vbat 读数。
+
+### [2026-04-30] 调试工具链 (cfclient over WiFi)
+
+| 工具 | 位置 | 用途 |
+|------|------|------|
+| `/data/project/source/peakxie/crazyflie-clients-python` | Linux 源码镜像 | cfclient leeebo fork, 有 udp driver |
+| `D:\work\peakxie\crazyflie-clients-python` | Windows 实际运行 | 同上 Windows 端 editable install |
+| `D:\work\flight_recorder.py` | Windows 诊断脚本 | 50Hz 订阅 14 变量, 存 CSV 到 `D:\work\flight_logs\` |
+| `D:\work\drone_diag.py` | Windows 诊断脚本 | 监测 log packet 推送频率, 卡死时用 |
+
+**WiFi 配置** (`idf.py menuconfig → ESPDrone Config → wireless config`):
+- APSTA 混合模式已实现 (`WIFI_STA_ENABLE=y`), 飞机可同时当 AP 和连外部路由
+- mDNS 已实现 (`MDNS_ENABLE=y`), 可用 `udp://esp-drone.local` 连接
+
+**cfclient 连接 URI**: 
+- AP 模式: `udp://192.168.43.42:2390` (cfclient 默认)
+- STA 模式: `udp://<路由分配的IP>:2390` 或 `udp://esp-drone.local:2390`
+- cfclient 源码 `main.py:foundInterfaces()` 已改,用 config.json 里的 `link_uri` 优先
 
 ### [2026-04-25] 地面调试工具 (集中在 config.h)
 
