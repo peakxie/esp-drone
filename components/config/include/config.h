@@ -155,10 +155,12 @@
 #define PID_PITCH_KP  4.5f       // 原 5.3
 #define PID_PITCH_KI  1.5f       // 原 2.5
 
-/* -- 内环 Rate (角速度环): Kp 控制"猛"的程度 -- */
-#define PID_ROLL_RATE_KP   120.0f   // 原 190, 降低减少猛烈
+/* -- 内环 Rate (角速度环): Kp 控制"猛"的程度 --
+ * [2026-04-30] 从 120 升到 160. 上次飞 CSV 看到 roll 从 -10° 摆到 +8°, 命令
+ * 饱和在 ±12° 但 rate 追不上, 典型欠阻尼. 原版 190 太激进, 120 太软, 取 160. */
+#define PID_ROLL_RATE_KP   160.0f   // 原 190, 实测调试 120 过软 -> 160
 #define PID_ROLL_RATE_KI   200.0f   // 原 440, 降低减少积分累积
-#define PID_PITCH_RATE_KP  120.0f   // 原 190
+#define PID_PITCH_RATE_KP  160.0f   // 原 190
 #define PID_PITCH_RATE_KI  200.0f   // 原 440
 
 // Task priorities. Higher number higher priority

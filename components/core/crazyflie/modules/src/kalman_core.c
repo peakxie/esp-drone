@@ -492,8 +492,13 @@ void kalmanCoreUpdateWithFlow(kalmanCoreData_t* this, const flowMeasurement_t *f
   float dy_g = this->S[KC_STATE_PY];
   float z_g = 0.0;
   // Saturate elevation in prediction and correction to avoid singularities
-  if ( this->S[KC_STATE_Z] < 0.1f ) {
-      z_g = 0.1;
+  /* [2026-04-30] pydrone 调试: z_g 下限从 0.1 改到 0.2.
+   * 起飞瞬间 z=0-5cm, 光流方程 dy_g/z_g 被 z_g=0.1 放大 10 倍 ->
+   * Kalman 速度估计被电机振动的像素读数瞬间推到 5m/s 假值 -> 位置环
+   * 命令大倾斜 -> 真的失控飞走. 把下限拉到 0.2m 让低空增益减半, 同时
+   * 让位置环需要等 z>15cm 才有意义的响应. */
+  if ( this->S[KC_STATE_Z] < 0.2f ) {
+      z_g = 0.2;
   } else {
       z_g = this->S[KC_STATE_Z];
   }

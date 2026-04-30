@@ -90,13 +90,33 @@ void powerStop()
 
 void powerDistribution(const control_t *control)
 {
+  /* [2026-04-30] Per-motor thrust trim.
+   * pydrone 硬件电机不完全对称, 起飞瞬间飞机向固定方向倾斜 (CSV 显示
+   * 向左 roll -10°). 对偏弱的电机加一点百分比补偿, 偏强的减一点.
+   * 参考数据: 上次飞 roll 从 -2.5 平稳增到 -10° 用时 ~1s, 推算左侧
+   * (M3 M4) 推力比右侧 (M1 M2) 大约弱 5-8%.
+   *
+   * 值的含义: motorTrim[i] = 1.0 表示不变, 1.05 = 增 5%, 0.95 = 减 5%.
+   * 调试时先试 ±3%, 看倾斜方向是否减轻.
+   *
+   * 注意: 总推力被乘系数改变会影响 hover thrustBase 的校准, 但幅度很小
+   * (±3% 对 thrustBase 42000 只有 ±1260, 可忽略).
+   *
+   * [TODO] 改成 PARAM 可 cfclient 动态调. */
+  const float motorTrim[4] = {
+      1.00f,   // M1 (右前 CW)
+      1.00f,   // M2 (右后 CCW)
+      1.03f,   // M3 (左后 CW)  - 左侧稍弱, 加 3%
+      1.03f,   // M4 (左前 CCW) - 左侧稍弱, 加 3%
+  };
+
   #ifdef QUAD_FORMATION_X
     int16_t r = control->roll / 2.0f;
     int16_t p = control->pitch / 2.0f;
-    motorPower.m1 = limitThrust(control->thrust - r + p + control->yaw);
-    motorPower.m2 = limitThrust(control->thrust - r - p - control->yaw);
-    motorPower.m3 =  limitThrust(control->thrust + r - p + control->yaw);
-    motorPower.m4 =  limitThrust(control->thrust + r + p - control->yaw);
+    motorPower.m1 = limitThrust((int32_t)((control->thrust - r + p + control->yaw) * motorTrim[0]));
+    motorPower.m2 = limitThrust((int32_t)((control->thrust - r - p - control->yaw) * motorTrim[1]));
+    motorPower.m3 = limitThrust((int32_t)((control->thrust + r - p + control->yaw) * motorTrim[2]));
+    motorPower.m4 = limitThrust((int32_t)((control->thrust + r + p - control->yaw) * motorTrim[3]));
   #else // QUAD_FORMATION_NORMAL
     motorPower.m1 = limitThrust(control->thrust + control->pitch +
                                control->yaw);

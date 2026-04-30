@@ -72,9 +72,10 @@ struct this_s {
 
 // Maximum roll/pitch angle permited
 /* [调试] 首飞 pydrone 起飞瞬间 pitch 冲到 9.6°, 20° 给电机不对称的空间太大.
- * 降到 12° 强制早早饱和, 起飞异常时更容易被人观察到 / 栓绳拽住.
- * 稳定飞行后可以放回 20° 做机动动作. */
-static float rpLimit  = 12;
+ * [2026-04-30 re-tune] rpLimit 12 -> 8: 上次 CSV 显示 cr 一直饱和在 12°,
+ * 说明位置环太"拼命" + 电机不对称 -> 摆振. 限 8° 让机动更柔和, 给 rate 环
+ * 留时间跟上. 稳定飞行后可以放回 12-20° 做机动动作. */
+static float rpLimit  = 8;
 static float rpLimitOverhead = 1.10f;
 // Velocity maximums
 static float xyVelMax = 1.0f;
