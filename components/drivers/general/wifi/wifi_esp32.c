@@ -127,8 +127,18 @@ bool wifiSendData(uint32_t size, uint8_t *data)
     UDPPacket outStage = {0};
     outStage.size = size;
     memcpy(outStage.data, data, size);
-    // Dont' block when sending
-    return (xQueueSend(udpDataTx, &outStage, M2T(100)) == pdTRUE);
+    // Don't block when sending
+    bool ok = (xQueueSend(udpDataTx, &outStage, M2T(100)) == pdTRUE);
+    if (!ok) {
+        /* 队列满 / 发送阻塞. 每 256 次丢包打一行, 避免日志淹没 */
+        static uint32_t s_drop_cnt = 0;
+        s_drop_cnt++;
+        if ((s_drop_cnt & 0xFF) == 0) {
+            DEBUG_PRINT_LOCAL("wifi TX queue full, dropped %u pkts", (unsigned)s_drop_cnt);
+        }
+    }
+    return ok;
+};
 };
 
 static esp_err_t udp_server_create(void *arg)
@@ -284,10 +294,12 @@ void wifiInit(void)
     if (isInit) {
         return;
     }
-    // This should probably be reduced to a CRTP packet size
-    udpDataRx = xQueueCreate(16, sizeof(UDPPacket));
+    /* Queue depth 64: cfclient log blocks 订阅多变量 + 50Hz 时原来的 16
+     * 会被打满, 导致 xQueueSend(..., M2T(100)) 超时丢包, 前端表现为
+     * 连上之后画了几条曲线就不动. 64 × 33 字节 ≈ 2KB RAM, 不贵. */
+    udpDataRx = xQueueCreate(64, sizeof(UDPPacket));
     DEBUG_QUEUE_MONITOR_REGISTER(udpDataRx);
-    udpDataTx = xQueueCreate(16, sizeof(UDPPacket));
+    udpDataTx = xQueueCreate(64, sizeof(UDPPacket));
     DEBUG_QUEUE_MONITOR_REGISTER(udpDataTx);
 
     espnow_storage_init();

@@ -108,7 +108,7 @@
 // #define DEBUG_CTRL_DBG       // 姿态/setpoint/desired (controller 层)
 // #define DEBUG_PWR_DBG        // 混控输出 M1~M4 (power_distribution 层)
 // #define DEBUG_FULL_CHAIN     // 全链路综合打印 (acc+gyro+attitude+ctrl+motor)
-#define DEBUG_SENSOR_EXT     // VL53L1X 测距 + PMW3901 光流 数据验证  [地面验证]
+// #define DEBUG_SENSOR_EXT     // VL53L1X/PMW3901 (关闭: 调试 cfclient WiFi 链路时减少 console 流量)
 
 /* -- 打印间隔 -- */
 #define DEBUG_PRINT_INTERVAL  1000  // 采样约 500Hz, 1000 次 ≈ 2 秒
@@ -137,7 +137,7 @@
 /* ====================================================================
  * 自动飞行 App
  * ==================================================================== */
-#define APP_ENABLED                   // 启用 appMain() 入口
+// #define APP_ENABLED                   // 临时关闭自动起飞 (调试 WiFi/cfclient 连接)
 #define APP_STACKSIZE  4096           // app 任务栈大小 (word), 加大防栈溢出
 
 /* ====================================================================
