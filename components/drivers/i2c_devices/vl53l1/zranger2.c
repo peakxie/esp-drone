@@ -129,7 +129,17 @@ void zRanger2Task(void* arg)
     vTaskDelayUntil(&lastWakeTime, M2T(25));
 
     range_last = zRanger2GetMeasurementAndRestart(&dev);
-    rangeSet(rangeDown, range_last / 1000.0f);
+
+    /* [2026-04-30] VL53L1 近场无效值过滤.
+     * 实测: 传感器贴地或过近 (< 50mm) 时返回 0 或不稳定的小值, 不能作为
+     * 真实高度. 让 rangeDown 保持上一次有效读数, 避免 0 被下游误当成"贴地"
+     * 状态 -> 控制器误判高度 -> 低空锁死 attitudeDesired=0 -> 飞不高.
+     * 同样不推给 Kalman, 避免把 z 估计拉到 0. */
+    const int16_t RANGE_MIN_VALID_MM = 50;
+    if (range_last >= RANGE_MIN_VALID_MM && range_last < RANGE_OUTLIER_LIMIT) {
+      rangeSet(rangeDown, range_last / 1000.0f);
+    }
+    /* range_last < 50mm 或 > 5m: 不更新 rangeDown, 保持上次值 */
 
 #ifdef DEBUG_SENSOR_EXT
     {
@@ -144,7 +154,9 @@ void zRanger2Task(void* arg)
     // check if range is feasible and push into the estimator
     // the sensor should not be able to measure >5 [m], and outliers typically
     // occur as >8 [m] measurements
-    if (range_last < RANGE_OUTLIER_LIMIT) {
+    /* [2026-04-30] 同样过滤 < 20mm 的无效读数不推给 Kalman, 避免贴地误读
+     * 把 Kalman 的 z 估计拉到 0 导致控制器误判. */
+    if (range_last >= RANGE_MIN_VALID_MM && range_last < RANGE_OUTLIER_LIMIT) {
       float distance = (float)range_last * 0.001f; // Scale from [mm] to [m]
       float stdDev = expStdA * (1.0f  + expf( expCoeff * (distance - expPointA)));
       rangeEnqueueDownRangeInEstimator(distance, stdDev, xTaskGetTickCount());

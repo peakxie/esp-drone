@@ -97,17 +97,17 @@ void powerDistribution(const control_t *control)
    * (M3 M4) 推力比右侧 (M1 M2) 大约弱 5-8%.
    *
    * 值的含义: motorTrim[i] = 1.0 表示不变, 1.05 = 增 5%, 0.95 = 减 5%.
-   * 调试时先试 ±3%, 看倾斜方向是否减轻.
+   * [2026-04-30 re-tune] +3% 不够, 升到 +6%. 还是左飞再升 +10%.
    *
    * 注意: 总推力被乘系数改变会影响 hover thrustBase 的校准, 但幅度很小
-   * (±3% 对 thrustBase 42000 只有 ±1260, 可忽略).
+   * (±6% 对 thrustBase 42000 只有 ±2500, 可忽略).
    *
-   * [TODO] 改成 PARAM 可 cfclient 动态调. */
+   * [TODO] 改成 PARAM 可 cfclient 动态调, 不用每次重烧. */
   const float motorTrim[4] = {
       1.00f,   // M1 (右前 CW)
       1.00f,   // M2 (右后 CCW)
-      1.03f,   // M3 (左后 CW)  - 左侧稍弱, 加 3%
-      1.03f,   // M4 (左前 CCW) - 左侧稍弱, 加 3%
+      1.06f,   // M3 (左后 CW)  - 左侧偏弱, 加 6%
+      1.06f,   // M4 (左前 CCW) - 左侧偏弱, 加 6%
   };
 
   #ifdef QUAD_FORMATION_X

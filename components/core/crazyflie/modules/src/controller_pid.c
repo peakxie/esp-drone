@@ -3,6 +3,7 @@
 #include "stabilizer_types.h"
 
 #include "attitude_controller.h"
+#include "range.h"
 #include "sensfusion6.h"
 #include "position_controller.h"
 #include "controller_pid.h"
@@ -92,13 +93,20 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
     /* [2026-04-30] 低空水平位置环禁用 (PMW3901 光流失效区).
      * PMW3901 工作范围 ~80mm-3m, 起飞瞬间 z=0~8cm 光流读数是噪声,
      * Kalman 被误导让 pos.y 乱跳到 ±1m, position controller 命令大倾斜
-     * 导致飞机真的被带飞走. 解决: z < 15cm 时 attitudeDesired.roll/pitch
-     * 强制为 0, 飞机只做姿态自稳不追位置. 高度 z 环 (VL53L1) 不受影响.
+     * 导致飞机真的被带飞走. 解决: 低空时 attitudeDesired.roll/pitch
+     * 强制为 0, 飞机只做姿态自稳不追位置.
      *
-     * 阈值 0.15m 选择: PMW3901 在 8cm 开始有效, 加 7cm 余量避开近场干扰.
-     * 一旦离开低空区 (z>=0.15), 位置环恢复生效, Kalman pos 也此时收敛. */
+     * 判断来源用 rangeGet(rangeDown) 而不是 state.position.z:
+     * state.z 在起飞早期 VL53L1 还没报数 (<50mm 不推 Kalman) 时只靠 acc
+     * 积分, 不可靠. rangeDown 直接是 VL53L1 最新有效读数 (>50mm 才更新),
+     * 如果 <50mm 期间 rangeDown 保持 0, 那我们就认为飞机还贴地, 锁 rp=0;
+     * 一旦 VL53L1 报出 >=50mm 的读数, rangeDown 更新到真实高度,
+     * 再比较 >= 0.15m 时解锁位置环.
+     *
+     * 阈值 0.15m: PMW3901 在 80mm 开始有效, 加 70mm 余量避开近场干扰. */
     #define POS_CTRL_MIN_HEIGHT  0.15f
-    if (state->position.z < POS_CTRL_MIN_HEIGHT) {
+    float rangeDown_m = rangeGet(rangeDown);
+    if (rangeDown_m < POS_CTRL_MIN_HEIGHT) {
       attitudeDesired.roll = 0.0f;
       attitudeDesired.pitch = 0.0f;
     }

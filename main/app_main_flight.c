@@ -102,14 +102,13 @@ void appMain(void) {
   vTaskDelay(M2T(500));
 
   const float takeoff_height = 0.3f;
-  /* takeoff duration 8s: pydrone 起飞瞬间电池压降 0.6V (4.1V -> 3.5V), 怀疑
-   * 主电容不够 + 电源去耦不足. 软件层缓解: 延长爬升时间, thrust 斜率更平, 避免
-   * 瞬时大电流导致 3.3V LDO 掉压, 进而导致 IMU 读数毛刺 -> Kalman 姿态发散.
-   * 根治需要硬件改进 (检查主电容 / 电机 MOSFET 走线粗细).
-   * 稳定后可以缩回 3-5s. */
-  DEBUG_PRINTI("Takeoff %.2fm in 8s...\n", (double)takeoff_height);
-  crtpCommanderHighLevelTakeoff(takeoff_height, 8.0f);
-  vTaskDelay(M2T(8500));  /* 爬升完 + 0.5s 裕量 */
+  /* [2026-04-30 re-tune] takeoff 8s -> 5s.
+   * 前一版用 8s 是担心 vbat 压降, 但实测前 1-2s VL53L1 在盲区 (<50mm 返回
+   * 无效), Kalman 只能靠 acc 积分估高度, 时间越长积分漂移越多. 5s 是
+   * takeoff 常见值, 电池压降风险小幅增加但 Kalman 高度更稳. */
+  DEBUG_PRINTI("Takeoff %.2fm in 5s...\n", (double)takeoff_height);
+  crtpCommanderHighLevelTakeoff(takeoff_height, 5.0f);
+  vTaskDelay(M2T(5500));  /* 爬升完 + 0.5s 裕量 */
 
   DEBUG_PRINTI("Hover 5s...\n");
   /* 悬停期间每秒打印一次状态, 便于观察漂移.

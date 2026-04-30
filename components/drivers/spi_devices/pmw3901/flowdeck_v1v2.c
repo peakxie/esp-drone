@@ -179,16 +179,18 @@ static void flowdeckTask(void *param)
 
             // Push measurements into the estimator
             /* [2026-04-30] 低空禁用光流 enqueue.
-             * PMW3901 有效工作范围 ~80mm 起, 飞机在 <8cm 时光流看不清地面
-             * (视距太近 + 桨叶气流扰动 + 视野被自身遮挡). 低于 8cm 时
+             * PMW3901 有效工作范围 ~80mm 起, 飞机在 <50mm 时光流看不清地面
+             * (视距太近 + 桨叶气流扰动 + 视野被自身遮挡). 低于阈值时
              * Kalman 拿到的光流是纯噪声 -> pos.x/y 乱跳 -> 位置环命令飞机
              * 大倾斜 -> 起飞瞬间就被带飞走.
-             * 用 rangeDown 而不是 Kalman 的 state.z, 因为这个判断要在
-             * Kalman 收敛前也能正确工作 (state.z 需要光流+VL53L1 融合,
-             * 起飞瞬间不可靠). VL53L1 直读高度足够准. */
+             *
+             * 阈值 50mm 选择: VL53L1 <50mm 返回无效值 (已在 zranger2.c 过滤),
+             * 所以 rangeDown 在飞机贴地时保持 0. 这里判断 rangeDown > 0 且
+             * >= 50mm 才有效, 否则不推光流. 一旦 VL53L1 报出合法读数
+             * (>=50mm), 光流开始进 Kalman, 位置估计才慢慢收敛. */
             float rangeDown_m = rangeGet(rangeDown);
-            const float FLOW_MIN_HEIGHT = 0.08f;  // PMW3901 最小有效高度
-            bool flowTooLow = (rangeDown_m > 0.001f && rangeDown_m < FLOW_MIN_HEIGHT);
+            const float FLOW_MIN_HEIGHT = 0.05f;  // 50mm
+            bool flowTooLow = (rangeDown_m < FLOW_MIN_HEIGHT);
 
             if (!useFlowDisabled && !flowTooLow && currentMotion.motion == 0xB0) {
                 flowData.dt = (float)(usecTimestamp()-lastTime)/1000000.0f;
