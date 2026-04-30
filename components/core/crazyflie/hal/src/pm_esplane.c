@@ -117,7 +117,11 @@ void pmInit(void)
     return;
   }
 
-    pmEnableExtBatteryVoltMeasuring(CONFIG_ADC1_PIN, 2); // ADC1 PIN is fixed to ADC channel
+    /* ADC 分压系数.
+     * pydrone 硬件: 40k (上) + 10k (下) -> 分压比 1/5 -> multiplier = 5
+     * 官方 ESP-Drone:                 1/2                              2
+     * 如果读数明显低于真实电池电压, 先用万用表量分压电阻确认. */
+    pmEnableExtBatteryVoltMeasuring(CONFIG_ADC1_PIN, 5.0f); // ADC1 PIN is fixed to ADC channel
 
     pmSyslinkInfo.pgood = false;
     pmSyslinkInfo.chg = false;
