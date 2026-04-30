@@ -62,7 +62,21 @@ STATIC_MEM_TASK_ALLOC(wifilinkTask, WIFILINK_TASK_STACKSIZE);
 
 static bool wifilinkIsConnected(void)
 {
-    return (xTaskGetTickCount() - lastPacketTick) < M2T(WIFI_ACTIVITY_TIMEOUT_MS);
+    /* Crazyflie 原版用 NRF radio, half-duplex, 必须 client 轮询才能收, 所以
+     * "1s 没收到 client 包 = 断开" 是合理的. ESP-Drone 用 UDP 全双工, client 订阅
+     * 完 log block 之后是纯被动收包, 不再主动发任何东西. 如果沿用时间窗判断, ~2s 后
+     * log.c 会调 logReset() + crtpReset() 把所有订阅清掉, 飞机永久停止推送 ---
+     * 这就是 cfclient / diag script 稳定收到 ~20 个 log packet 后卡死的根因.
+     *
+     * UDP 语义里没有"断开", socket 要么 open 要么 close. 只要 wifiInit 初始化过, 就
+     * 认为链路有效. 真正的断连由 udp_server_rx_task 检测(对端消失 UDP 是感知不到的,
+     * 靠应用层判断, 但这件事由 cfclient 自己超时处理, 不是飞机端的责任).
+     *
+     * 如果保留时间窗行为, 用 cfclient 调试必须依赖 Flight Control tab 不停往飞机推
+     * setpoint 才能维持 link, 而单独做 log 观察 / python 脚本订阅时链路会自杀.
+     */
+    (void)lastPacketTick;  /* 保留字段仅供诊断, 不再用于判断 */
+    return true;
 }
 
 static struct crtpLinkOperations wifilinkOp = {
