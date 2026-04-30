@@ -85,7 +85,11 @@
  * ==================================================================== */
 
 /* -- 安全开关 -- */
-#define MOTOR_OUTPUT_DISABLE // 电机强制输出 0, 不转 (power_distribution 层)  [地面验证 PMW3901/VL53L1]
+// #define MOTOR_OUTPUT_DISABLE // 电机强制输出 0, 不转 (power_distribution 层)
+                                // [2026-04-30] Phase 2a 验证通过: Kalman 收敛正常,
+                                //   pmw3901 符号对(前推->pos.x+, 右推->pos.y-), VL53L1 正常
+                                //   静置 Kalman att[r=-3.5 p=+2.0]: IMU mounting tilt, 依赖 Kalman+光流闭环自动抵消
+                                // 进 Phase 2b: 栓绳起飞 0.5m
 // #define GROUND_TEST_MODE     // PID Ki=0, 只看 P+D 响应方向 (attitude_pid 层)
 // #define GROUND_TEST_ZERO_RPY // 清零遥控 RPY 指令, 只响应油门自稳 (crtp_commander 层)
 
