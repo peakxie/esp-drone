@@ -73,6 +73,43 @@ menu "ESPDrone Config"
             default 3
             help
                 Wi-Fi Max Station Connection, 1-6
+
+        config WIFI_STA_ENABLE
+            bool "Enable WiFi STA (connect to external router) in addition to AP"
+            default n
+            help
+                Run WiFi in APSTA mixed mode. The drone keeps its own AP
+                (for fallback) and also joins an external router/hotspot.
+                Both cfclient and the drone connect to the same router so
+                the host computer keeps internet access.
+
+        config WIFI_STA_SSID
+            string "External router SSID"
+            default "MyRouter"
+            depends on WIFI_STA_ENABLE
+            help
+                SSID of the external router/hotspot to join.
+
+        config WIFI_STA_PASSWORD
+            string "External router password"
+            default "password"
+            depends on WIFI_STA_ENABLE
+            help
+                Password of the external router. Leave empty for open network.
+
+        config MDNS_ENABLE
+            bool "Advertise drone via mDNS (esp-drone.local)"
+            default y if WIFI_STA_ENABLE
+            default n
+            help
+                Publish an mDNS service so cfclient can reach the drone at
+                udp://esp-drone.local without knowing the DHCP-assigned IP.
+                macOS / Linux / modern Windows support .local natively.
+
+        config MDNS_HOSTNAME
+            string "mDNS hostname (without .local suffix)"
+            default "esp-drone"
+            depends on MDNS_ENABLE
     endmenu
 
     menu "calibration angle"

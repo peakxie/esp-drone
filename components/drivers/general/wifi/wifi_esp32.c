@@ -26,6 +26,10 @@
 #include "espnow_ctrl.h"
 #include "espnow_utils.h"
 
+#ifdef CONFIG_MDNS_ENABLE
+#include "mdns.h"
+#endif
+
 #define UDP_SERVER_PORT         2390
 #define UDP_SERVER_BUFSIZE      64
 
@@ -35,6 +39,12 @@ static char WIFI_SSID[32] = "";
 static char WIFI_PWD[64] = CONFIG_WIFI_PASSWORD;
 static uint8_t WIFI_CH = CONFIG_WIFI_CHANNEL;
 #define WIFI_MAX_STA_CONN CONFIG_WIFI_MAX_STA_CONN
+
+#ifdef CONFIG_WIFI_STA_ENABLE
+#define WIFI_STA_MAXIMUM_RETRY 10
+static int s_sta_retry_num = 0;
+static bool s_sta_got_ip = false;
+#endif
 
 #ifndef MAC2STR
 #define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
@@ -67,14 +77,34 @@ static uint8_t calculate_cksum(void *data, size_t len)
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
 {
-    if (event_id == WIFI_EVENT_AP_STACONNECTED) {
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STACONNECTED) {
         wifi_event_ap_staconnected_t *event = (wifi_event_ap_staconnected_t *) event_data;
         DEBUG_PRINT_LOCAL("station" MACSTR "join, AID=%d", MAC2STR(event->mac), event->aid);
 
-    } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STADISCONNECTED) {
         wifi_event_ap_stadisconnected_t *event = (wifi_event_ap_stadisconnected_t *) event_data;
         DEBUG_PRINT_LOCAL("station" MACSTR "leave, AID=%d", MAC2STR(event->mac), event->aid);
     }
+#ifdef CONFIG_WIFI_STA_ENABLE
+    else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        /* 连外部路由 */
+        esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        s_sta_got_ip = false;
+        if (s_sta_retry_num < WIFI_STA_MAXIMUM_RETRY) {
+            esp_wifi_connect();
+            s_sta_retry_num++;
+            DEBUG_PRINT_LOCAL("STA retry %d/%d", s_sta_retry_num, WIFI_STA_MAXIMUM_RETRY);
+        } else {
+            DEBUG_PRINT_LOCAL("STA connect failed, giving up; AP still works");
+        }
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *) event_data;
+        DEBUG_PRINT_LOCAL("STA got ip: " IPSTR, IP2STR(&event->ip_info.ip));
+        s_sta_retry_num = 0;
+        s_sta_got_ip = true;
+    }
+#endif
 }
 
 bool wifiTest(void)
@@ -265,6 +295,10 @@ void wifiInit(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ap_netif = esp_netif_create_default_wifi_ap();
+#ifdef CONFIG_WIFI_STA_ENABLE
+    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+    (void)sta_netif;
+#endif
     uint8_t mac[6];
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -275,30 +309,55 @@ void wifiInit(void)
                     &wifi_event_handler,
                     NULL,
                     NULL));
+#ifdef CONFIG_WIFI_STA_ENABLE
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
+                    IP_EVENT_STA_GOT_IP,
+                    &wifi_event_handler,
+                    NULL,
+                    NULL));
+#endif
 
     ESP_ERROR_CHECK(esp_wifi_get_mac(ESP_IF_WIFI_AP, mac));
     sprintf(WIFI_SSID, "%s_%02X%02X%02X%02X%02X%02X", CONFIG_WIFI_BASE_SSID, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-    wifi_config_t wifi_config = {
+    /* ---- AP config (飞机自己的 AP, 始终存在作为 fallback) ---- */
+    wifi_config_t ap_config = {
         .ap = {
             .channel = WIFI_CH,
             .max_connection = WIFI_MAX_STA_CONN,
             .authmode = WIFI_AUTH_WPA_WPA2_PSK,
         },
     };
-
-    memcpy(wifi_config.ap.ssid, WIFI_SSID, strlen(WIFI_SSID) + 1) ;
-    wifi_config.ap.ssid_len = strlen(WIFI_SSID);
-    memcpy(wifi_config.ap.password, WIFI_PWD, strlen(WIFI_PWD) + 1) ;
-
+    memcpy(ap_config.ap.ssid, WIFI_SSID, strlen(WIFI_SSID) + 1);
+    ap_config.ap.ssid_len = strlen(WIFI_SSID);
+    memcpy(ap_config.ap.password, WIFI_PWD, strlen(WIFI_PWD) + 1);
     if (strlen(WIFI_PWD) == 0) {
-        wifi_config.ap.authmode = WIFI_AUTH_OPEN;
+        ap_config.ap.authmode = WIFI_AUTH_OPEN;
     }
 
+#ifdef CONFIG_WIFI_STA_ENABLE
+    /* ---- STA config (连接外部路由) ----
+     * 在 APSTA 模式下, ESP32 AP 的信道必须跟 STA 连上的路由器信道一致
+     * (单射频限制). 这里先起 APSTA, esp_wifi 会在 STA 连上后自动调整 AP 信道. */
+    wifi_config_t sta_config = { 0 };
+    strncpy((char *)sta_config.sta.ssid, CONFIG_WIFI_STA_SSID, sizeof(sta_config.sta.ssid) - 1);
+    strncpy((char *)sta_config.sta.password, CONFIG_WIFI_STA_PASSWORD, sizeof(sta_config.sta.password) - 1);
+    sta_config.sta.threshold.authmode = strlen(CONFIG_WIFI_STA_PASSWORD) == 0
+                                        ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, &ap_config));
+    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &sta_config));
+#else
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, &ap_config));
+#endif
     ESP_ERROR_CHECK(esp_wifi_start());
+#ifndef CONFIG_WIFI_STA_ENABLE
+    /* APSTA 模式下不能硬设信道, ESP-WiFi 会跟随 STA 连上的路由信道.
+     * 纯 AP 模式保持原来的行为. */
     esp_wifi_set_channel(WIFI_CH, WIFI_SECOND_CHAN_NONE);
+#endif
     espnow_config_t espnow_config = ESPNOW_INIT_CONFIG_DEFAULT();
     espnow_init(&espnow_config);
     esp_event_handler_register(ESP_EVENT_ESPNOW, ESP_EVENT_ANY_ID, app_espnow_event_handler, NULL);
@@ -313,6 +372,21 @@ void wifiInit(void)
     ESP_ERROR_CHECK(esp_netif_set_ip_info(ap_netif, &ip_info));
     ESP_ERROR_CHECK(esp_netif_dhcps_start(ap_netif));
     DEBUG_PRINT_LOCAL("wifi_init_softap complete.SSID:%s password:%s", WIFI_SSID, WIFI_PWD);
+
+#ifdef CONFIG_WIFI_STA_ENABLE
+    DEBUG_PRINT_LOCAL("WiFi STA enabled, joining '%s'...", CONFIG_WIFI_STA_SSID);
+#endif
+
+#ifdef CONFIG_MDNS_ENABLE
+    /* mDNS: cfclient 可以通过 udp://<hostname>.local 找飞机, 不用管 DHCP IP.
+     * 注意: AP 模式和 STA 模式都会广播, 所以在 AP 上连也生效. */
+    ESP_ERROR_CHECK(mdns_init());
+    ESP_ERROR_CHECK(mdns_hostname_set(CONFIG_MDNS_HOSTNAME));
+    mdns_instance_name_set("ESP-Drone CRTP");
+    mdns_service_add(NULL, "_crtp", "_udp", UDP_SERVER_PORT, NULL, 0);
+    DEBUG_PRINT_LOCAL("mDNS hostname: %s.local (UDP port %d)",
+                      CONFIG_MDNS_HOSTNAME, UDP_SERVER_PORT);
+#endif
 
     if (udp_server_create(NULL) == ESP_FAIL) {
         DEBUG_PRINT_LOCAL("UDP server create socket failed");

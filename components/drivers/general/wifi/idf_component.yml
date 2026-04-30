@@ -1,5 +1,6 @@
 dependencies:
   espressif/esp-now: "*"
+  espressif/mdns: "^1.2.0"
   idf:
     version: ">=4.1.0"
 
