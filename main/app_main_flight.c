@@ -18,6 +18,7 @@
 #include "crtp_commander_high_level.h"
 #include "log.h"
 #include "param.h"
+#include "sensors.h"
 #include "stabilizer.h"
 #include "stabilizer_types.h"
 #include "stm32_legacy.h"
@@ -31,16 +32,39 @@
 void appMain(void) {
   DEBUG_PRINTI("APP started!\n");
 
-  /* 切到 Kalman 估计器. stabilizer 任务会在下个 tick 检测到并切换,
-   * 切换时会重新 init Kalman, 清所有状态为 0. */
+  /* [1] 先等陀螺仪零偏校准完成.
+   *
+   * 顺序非常关键: 如果在 gyro 还带偏置的时候切 Kalman, Kalman 会用
+   * 带偏 gyro 数据积累 N 秒, 起飞瞬间必翻. 必须先让 sensors 层把 gyro bias
+   * 算出来, 再切 Kalman, Kalman 拿到的就是无偏数据.
+   *
+   * sensorsAreCalibrated() 的实现: 收集 SENSORS_BIAS_SAMPLES 个静置样本
+   * 算均值作为 bias. 飞机必须水平静置, 通常 ~2 秒内完成. */
+  DEBUG_PRINTI("Waiting for gyro bias calibration (KEEP STILL)...\n");
+  uint32_t waited_ms = 0;
+  while (!sensorsAreCalibrated()) {
+    vTaskDelay(M2T(100));
+    waited_ms += 100;
+    if (waited_ms % 1000 == 0) {
+      DEBUG_PRINTI("  ... still calibrating (%u ms)\n", (unsigned)waited_ms);
+    }
+    if (waited_ms > 30000) {
+      DEBUG_PRINTI("ERROR: gyro calibration timeout, abort\n");
+      return;
+    }
+  }
+  DEBUG_PRINTI("Gyro calibrated after %u ms\n", (unsigned)waited_ms);
+
+  /* [2] 再切 Kalman 估计器. 此时 gyro 已无偏, Kalman 用干净数据起步. */
   paramVarId_t idEst = paramGetVarId("stabilizer", "estimator");
   paramSetInt(idEst, ESTIMATOR_KALMAN);
   DEBUG_PRINTI("Requested Kalman estimator\n");
   vTaskDelay(M2T(500));
 
-  /* 等 10 秒: 陀螺仪偏置校准 + Kalman 静置收敛 (飞机必须水平放稳) */
-  DEBUG_PRINTI("Waiting 10s for Kalman to converge (KEEP STILL)...\n");
-  vTaskDelay(M2T(10000));
+  /* [3] Kalman 收敛: 用干净 gyro + acc + 光流/ToF 收敛到 (0,0,0).
+   * 以前要 10 秒是因为在吃含偏数据, 需要反复纠正. 现在 3 秒够了. */
+  DEBUG_PRINTI("Waiting 3s for Kalman to converge (KEEP STILL)...\n");
+  vTaskDelay(M2T(3000));
 
 #ifdef MOTOR_OUTPUT_DISABLE
   /* === Phase 2a: 电机锁死, 手推验证 Kalman 位置估计方向 ===
