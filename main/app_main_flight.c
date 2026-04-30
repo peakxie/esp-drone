@@ -62,19 +62,25 @@ void appMain(void) {
   DEBUG_PRINTI("=== Phase 2a window closed, motors still disabled, bye ===\n");
   return;
 #else
-  /* === Phase 2b: 真起飞 === */
+  /* === Phase 2b: 真起飞 ===
+   * 首次 PID 调试用 0.3m 高度 + 5 秒悬停.
+   * 起飞/降落 duration=3s 是 Crazyflie 经验值, 更快飞机跟不上, 更慢反而在过渡期
+   * 积累位置误差. 5s hover 够观察稳态振荡/漂移. */
   paramVarId_t idHL = paramGetVarId("commander", "enHighLevel");
   paramSetInt(idHL, 1);
   vTaskDelay(M2T(500));
 
-  DEBUG_PRINTI("Takeoff 0.5m in 3s...\n");
-  crtpCommanderHighLevelTakeoff(0.5f, 3.0f);
+  const float takeoff_height = 0.3f;
+  DEBUG_PRINTI("Takeoff %.2fm in 3s...\n", (double)takeoff_height);
+  crtpCommanderHighLevelTakeoff(takeoff_height, 3.0f);
   vTaskDelay(M2T(3500));  /* 爬升完 + 0.5s 裕量 */
 
-  DEBUG_PRINTI("Hover 3s...\n");
-  /* 悬停期间每秒打印一次状态, 便于观察漂移 */
+  DEBUG_PRINTI("Hover 5s...\n");
+  /* 悬停期间每秒打印一次状态, 便于观察漂移.
+   * 注: 同样数据用 cfclient Plotter 看波形更直观, 这里的 DEBUG_PRINTI
+   * 只是在没连 cfclient 时备用. */
   state_t s;
-  for (int i = 0; i < 3; ++i) {
+  for (int i = 0; i < 5; ++i) {
     stabilizerGetState(&s);
     DEBUG_PRINTI("hover t=%d pos[x=%+5.2f y=%+5.2f z=%+5.2f] att[r=%+5.1f p=%+5.1f]\n",
                 i,
