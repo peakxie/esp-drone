@@ -89,6 +89,20 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
       attitudeDesired.pitch = setpoint->attitude.pitch;
     }
 
+    /* [2026-04-30] 低空水平位置环禁用 (PMW3901 光流失效区).
+     * PMW3901 工作范围 ~80mm-3m, 起飞瞬间 z=0~8cm 光流读数是噪声,
+     * Kalman 被误导让 pos.y 乱跳到 ±1m, position controller 命令大倾斜
+     * 导致飞机真的被带飞走. 解决: z < 15cm 时 attitudeDesired.roll/pitch
+     * 强制为 0, 飞机只做姿态自稳不追位置. 高度 z 环 (VL53L1) 不受影响.
+     *
+     * 阈值 0.15m 选择: PMW3901 在 8cm 开始有效, 加 7cm 余量避开近场干扰.
+     * 一旦离开低空区 (z>=0.15), 位置环恢复生效, Kalman pos 也此时收敛. */
+    #define POS_CTRL_MIN_HEIGHT  0.15f
+    if (state->position.z < POS_CTRL_MIN_HEIGHT) {
+      attitudeDesired.roll = 0.0f;
+      attitudeDesired.pitch = 0.0f;
+    }
+
     /* [2026-04-26] Roll 轴符号修正:
      *   sensor 层 acc.y 取反后, state.attitude.roll 的符号约定与混控矩阵相反.
      *   在 PID 输入端反转 state.roll, 而不是在输出端反转 control->roll,

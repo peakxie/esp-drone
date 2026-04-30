@@ -61,6 +61,13 @@ void appMain(void) {
   DEBUG_PRINTI("Requested Kalman estimator\n");
   vTaskDelay(M2T(500));
 
+  /* [2b] 强制 reset Kalman estimation, 清掉任何可能残留的 pos/vel 状态.
+   * 切 Kalman 时内部已经调 estimatorKalmanInit, 这里再 reset 一次确保干净. */
+  paramVarId_t idReset = paramGetVarId("kalman", "resetEstimation");
+  paramSetInt(idReset, 1);
+  vTaskDelay(M2T(200));
+  DEBUG_PRINTI("Kalman state reset\n");
+
   /* [3] Kalman 收敛: 用干净 gyro + acc + 光流/ToF 收敛到 (0,0,0).
    * 以前要 10 秒是因为在吃含偏数据, 需要反复纠正. 现在 3 秒够了. */
   DEBUG_PRINTI("Waiting 3s for Kalman to converge (KEEP STILL)...\n");
