@@ -247,6 +247,26 @@ void velocityController(float* thrust, attitude_t *attitude, setpoint_t *setpoin
   if (*thrust < this.thrustMin) {
     *thrust = this.thrustMin;
   }
+
+  /* [2026-04-30] Thrust slew rate limit.
+   * pydrone 硬件没有足够的主电容吸收电机起动瞬态电流, Kalman 一旦因为姿态
+   * 估计误差让位置环命令 thrust 从 42000 暴冲到 65000, vbat 会瞬间跌到 2.7V,
+   * 3.3V LDO 掉压 -> MPU6050 挂 -> Kalman 发散 -> 翻机 死循环.
+   *
+   * 限制 thrust 每 POSITION_RATE (100Hz) 周期最多变化 MAX_THRUST_SLEW 单位,
+   * 相当于每秒最多变化 MAX_THRUST_SLEW * 100. 以 300 为例, 1 秒最多 ±30000,
+   * 从 thrustBase 42000 起最多 1 秒到达 65000 (原来是 <0.1 秒).
+   *
+   * 硬件加主电容后可以放开这个限制. */
+  static float prevThrust = 0;
+  const float MAX_THRUST_SLEW = 300.0f;  /* 每 10ms 最多变化 300, 即每秒 30000 */
+  float thrustDelta = *thrust - prevThrust;
+  if (thrustDelta > MAX_THRUST_SLEW) {
+    *thrust = prevThrust + MAX_THRUST_SLEW;
+  } else if (thrustDelta < -MAX_THRUST_SLEW) {
+    *thrust = prevThrust - MAX_THRUST_SLEW;
+  }
+  prevThrust = *thrust;
 }
 
 void positionControllerResetAllPID()
