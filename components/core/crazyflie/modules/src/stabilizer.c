@@ -225,6 +225,15 @@ bool stabilizerTest(void)
   return pass;
 }
 
+/* 用于 appMain/调试: 把最近一次估计器输出拷出去. 字段级 copy 不加锁,
+ * 够用于 1Hz 人工打印场景. 飞控内部不要调这个 getter. */
+void stabilizerGetState(state_t *out)
+{
+  if (out) {
+    *out = state;
+  }
+}
+
 static void checkEmergencyStopTimeout()
 {
   if (emergencyStopTimeout >= 0) {

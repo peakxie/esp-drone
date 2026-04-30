@@ -30,6 +30,7 @@
 #include <stdint.h>
 
 #include "estimator.h"
+#include "stabilizer_types.h"
 
 #define EMERGENCY_STOP_TIMEOUT_DISABLED (-1)
 
@@ -38,6 +39,14 @@
  * The stabilizer loop task will wait on systemWaitStart() before running.
  */
 void stabilizerInit(StateEstimatorType estimator);
+
+/**
+ * Read-only snapshot of the latest estimator state (position, velocity,
+ * attitude, ...). Useful for app/debug code that does not go through the
+ * CRTP log group. Not thread-safe beyond primitive field copies, but good
+ * enough for human-paced diagnostic printing.
+ */
+void stabilizerGetState(state_t *out);
 
 /**
  * Test the stabilizer subsystem. Calls test for all the stabilizer related
