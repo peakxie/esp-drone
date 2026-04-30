@@ -95,13 +95,14 @@ void appMain(void) {
   vTaskDelay(M2T(500));
 
   const float takeoff_height = 0.3f;
-  /* takeoff duration 5s: 首飞 pydrone 电池压降大 (4.0V->3.4V 瞬时),
-   * 慢速爬升让电流更均匀, 避免电压跌到 3.3V LDO 边缘导致 IMU/Kalman 乱跳.
-   * Crazyflie 原版 3s 对它的 40mAh/大 C 值电池是够的, 但 pydrone 电池 C 值小.
-   * 稳定后可以调回 3s. */
-  DEBUG_PRINTI("Takeoff %.2fm in 5s...\n", (double)takeoff_height);
-  crtpCommanderHighLevelTakeoff(takeoff_height, 5.0f);
-  vTaskDelay(M2T(5500));  /* 爬升完 + 0.5s 裕量 */
+  /* takeoff duration 8s: pydrone 起飞瞬间电池压降 0.6V (4.1V -> 3.5V), 怀疑
+   * 主电容不够 + 电源去耦不足. 软件层缓解: 延长爬升时间, thrust 斜率更平, 避免
+   * 瞬时大电流导致 3.3V LDO 掉压, 进而导致 IMU 读数毛刺 -> Kalman 姿态发散.
+   * 根治需要硬件改进 (检查主电容 / 电机 MOSFET 走线粗细).
+   * 稳定后可以缩回 3-5s. */
+  DEBUG_PRINTI("Takeoff %.2fm in 8s...\n", (double)takeoff_height);
+  crtpCommanderHighLevelTakeoff(takeoff_height, 8.0f);
+  vTaskDelay(M2T(8500));  /* 爬升完 + 0.5s 裕量 */
 
   DEBUG_PRINTI("Hover 5s...\n");
   /* 悬停期间每秒打印一次状态, 便于观察漂移.

@@ -90,7 +90,10 @@ static const float thrustScale = 1000.0f;
 static struct this_s this = {
   .pidVX = {
     .init = {
-      .kp = 25.0f,
+      /* [2026-04-30] Kp 25 -> 12: pydrone 起飞瞬间 vbat 掉压 -> IMU 毛刺 ->
+       * Kalman 速度估计毛刺 -> 25*毛刺 直接让 pitch 命令饱和到 rpLimit -> 翻机.
+       * 降到 12 让速度环对毛刺不那么敏感, 稳定后再调回 Crazyflie 原版 25. */
+      .kp = 12.0f,
       .ki = 1.0f,
       .kd = 0.0f,
     },
@@ -99,7 +102,7 @@ static struct this_s this = {
 
   .pidVY = {
     .init = {
-      .kp = 25.0f,
+      .kp = 12.0f,       // 同 vxKp, 从 25 降到 12
       .ki = 1.0f,
       .kd = 0.0f,
     },
