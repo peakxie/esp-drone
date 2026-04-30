@@ -120,7 +120,10 @@ static struct this_s this = {
 
   .pidX = {
     .init = {
-      .kp = 1.9f,
+      /* [2026-04-30] Kp 1.9 -> 1.0: Crazyflie 原版 1.9 对 pydrone 光流不够稳的
+       * 速度估计太激进, 位置偏 10cm 就命令大倾斜 -> 飞偏 -> 越飞越远.
+       * 稳定后可以往回加. */
+      .kp = 1.0f,
       .ki = 0.1f,
       .kd = 0,
     },
@@ -129,7 +132,7 @@ static struct this_s this = {
 
   .pidY = {
     .init = {
-      .kp = 1.9f,
+      .kp = 1.0f,     // 同 xKp, 从 1.9 降到 1.0
       .ki = 0.1f,
       .kd = 0,
     },
@@ -138,8 +141,11 @@ static struct this_s this = {
 
   .pidZ = {
     .init = {
-      .kp = 1.6f,
-      .ki = 0.5,
+      /* [2026-04-30] Kp 1.6 -> 1.2, Ki 0.5 -> 0.3:
+       * 上次爬升期末端 z 超过目标 (tz=0.30 但 z 冲到 0.33), Ki 积饱
+       * 让整个 z 环响应滞后 + 过冲. 降 Kp 和 Ki 换更平滑的爬升. */
+      .kp = 1.2f,
+      .ki = 0.3f,
       .kd = 0,
     },
     .pid.dt = DT,
