@@ -71,7 +71,7 @@ Crazyflie 的 `PARAM_GROUP`/`LOG_GROUP` 宏让 C 代码里的变量能被 cfclie
 
 ## 硬件配置
 
-- 主控: ESP32 系列 (非 V1, 非 S2_DRONE_V1_2, 走 else 分支)
+- 主控: ESP32 系列 (非 V1, 走S2_DRONE_V1_2分支)
 - IMU: MPU6050
 - 电机: 有刷电机, PWM 驱动
 - 构型: X 四轴
