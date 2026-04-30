@@ -86,8 +86,11 @@
  *   经 WiFi UDP 转发到 cfclient 的 Console tab. 飞行时能看到.
  * 注: DEBUG_PRINT 本体仍走串口 (ESP_LOG), 重量级调试还是串口看;
  *     DEBUG_PRINTI/W/E 走 CRTP, 用于飞行状态点报.
+ *
+ * [临时] 排查 cfclient 显示卡住的问题, 先关掉 CRTP console 流, 只保留
+ * log block 这一条 UDP 推送链路. 排查完再打开.
  * ==================================================================== */
-#define DEBUG_PRINT_ON_CONSOLE
+// #define DEBUG_PRINT_ON_CONSOLE
 
 /* ====================================================================
  * 地面测试 & 调试开关 (全部集中在此, 取消注释即可打开)
