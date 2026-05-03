@@ -14,6 +14,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "app.h"
+#include "commander.h"
 #include "config.h"
 #include "crtp_commander_high_level.h"
 #include "log.h"
@@ -22,6 +23,7 @@
 #include "stabilizer.h"
 #include "stabilizer_types.h"
 #include "stm32_legacy.h"
+#include <string.h>
 
 #define DEBUG_MODULE "APP_FLIGHT"
 #include "debug_cf.h"
@@ -109,11 +111,17 @@ void appMain(void) {
    * (crtp_commander_high_level.c:436) 会把这个漂移值作为起飞原点锁住,
    * 整场飞行追幽灵坐标 -> 姿态指令饱和 ±8° -> 翻机.
    *
-   * 修复: takeoff 前最后 100ms 再 reset 一次. kalmanCoreInit 会把状态直接
+   * 修复: takeoff 前最后一刻再 reset 一次. kalmanCoreInit 会把状态直接
    * 设为 (initialX, initialY, initialZ) = (0,0,0) 并重置 P 矩阵, 同时清
-   * flowDataQueue/tofDataQueue. 不需要再等收敛, 再等只会重新引入漂移.
-   * 100ms 够 Kalman task (100Hz PREDICT_RATE) 跑 >=10 轮处理 resetEstimation
-   * (estimator_kalman.c:309).
+   * flowDataQueue/tofDataQueue.
+   *
+   * [2026-05-05 再调] 100ms -> 300ms. 100ms 够让 Kalman 处理完 reset 指令,
+   * 但不够它通过 gravity correction 吸收飞机 1~3° 的安装倾斜 (Kalman reset
+   * 时姿态被初始化成 identity quaternion, 实际飞机如果有轻微倾斜, Kalman
+   * 会把 sin(倾斜) * g 当成真实水平加速度, 积分出来就是空中持续漂移).
+   * 300ms 让 acc update 跑 30 次, 足够姿态收敛到真实水平. 这 300ms 内
+   * 位置还是会有一点漂移, 但下面 TellState 会把位置强制同步掉, 姿态收敛
+   * 反而更重要 (位置漂移可以用定速 hover 规避, 姿态错了就是炸机).
    *
    * 单独调 crtpCommanderHighLevelTellState 是因为 HL commander 有自己内部
    * 的 pos 缓存 (crtp_commander_high_level.c:305), takeoff2 持 lockTraj
@@ -121,7 +129,7 @@ void appMain(void) {
    * 显式 TellState 把这个窗口堵死, 保证 takeoff 看到的起飞原点是 (0,0,0). */
   DEBUG_PRINTI("Final Kalman reset before takeoff...\n");
   paramSetInt(idReset, 1);
-  vTaskDelay(M2T(100));
+  vTaskDelay(M2T(300));
 
   state_t s_zero;
   stabilizerGetState(&s_zero);
@@ -130,30 +138,75 @@ void appMain(void) {
               (double)s_zero.velocity.x, (double)s_zero.velocity.y, (double)s_zero.velocity.z);
   crtpCommanderHighLevelTellState(&s_zero);
 
-  const float takeoff_height = 0.3f;
+  const float takeoff_height = 0.15f;
   /* [2026-04-30 re-tune] takeoff 8s -> 5s.
    * 前一版用 8s 是担心 vbat 压降, 但实测前 1-2s VL53L1 在盲区 (<50mm 返回
    * 无效), Kalman 只能靠 acc 积分估高度, 时间越长积分漂移越多. 5s 是
-   * takeoff 常见值, 电池压降风险小幅增加但 Kalman 高度更稳. */
+   * takeoff 常见值, 电池压降风险小幅增加但 Kalman 高度更稳.
+   *
+   * [2026-05-05 再调] 0.3m -> 0.15m. 上次修好幽灵目标后飞机起飞没翻,
+   * 但推重比不够 + 电池塌压 (vbat 从 4.0V -> 2.7V), 油门一直饱和也只爬到
+   * 0.13~0.20m; VL53L1 在 <50mm 也是盲区. 0.15m 是 "刚好出盲区, 油门不
+   * 饱和, 电池不会瞬间崩" 的最低可行点. 等硬件 (电池/电容) 升级后再加高. */
   DEBUG_PRINTI("Takeoff %.2fm in 5s...\n", (double)takeoff_height);
   crtpCommanderHighLevelTakeoff(takeoff_height, 5.0f);
   vTaskDelay(M2T(5500));  /* 爬升完 + 0.5s 裕量 */
 
-  DEBUG_PRINTI("Hover 5s...\n");
-  /* 悬停期间每秒打印一次状态, 便于观察漂移.
-   * 注: 同样数据用 cfclient Plotter 看波形更直观, 这里的 DEBUG_PRINTI
-   * 只是在没连 cfclient 时备用. */
+  DEBUG_PRINTI("Hover 5s (velocity-hold mode, NOT position-hold)...\n");
+  /* [2026-05-05] 悬停从 "HL position hold" 改成 "手动 velocity = 0 hold".
+   *
+   * 为什么: HL takeoff 结束后默认进入 position hold, 会用起飞原点 (0,0,z)
+   * 作为目标. 但 pydrone 硬件存在系统性问题:
+   *   - 姿态有 1~3° 安装倾斜 -> Kalman 认为有水平 acc -> 位置估计持续漂
+   *   - 光流 squal 在低空经常 < 80 (PMW3901 需要纹理地面才准)
+   *   - ToF 在 < 50mm 盲区, 起飞初期高度也不准
+   * 结果: state 一直漂, 位置环拼命纠偏 -> 姿态指令 ±5° 抖 -> 越纠偏越飘.
+   *
+   * 改成 velocity hold: setpoint 直接给 vx=vy=vz=0, 控制器目标是 "速度为零"
+   * 而不是 "位置不变". 飞机位置会被风/漂移慢慢带跑, 但不会因为位置估计
+   * 漂移就拉大角度. 姿态稳 >> 位置稳 (栓绳试飞阶段飞机被栓着, 漂一点没
+   * 关系, 但翻机就完蛋).
+   *
+   * commanderSetSetpoint 的副作用: 会调 crtpCommanderHighLevelStop() 把
+   * HL planner 踢回 idle (commander.c:87), 之后 HL 不会再往 setpoint
+   * 里塞东西, 完全由我们这里每 20ms 的 setpoint 主导.
+   *
+   * WDT 要求: commander 的 watchdog 超时 500ms 就进入稳定化模式, 2000ms
+   * 切到 null setpoint (commander.h:35-36). 20ms 一次的刷新远远够. */
   state_t s;
-  for (int i = 0; i < 5; ++i) {
-    stabilizerGetState(&s);
-    DEBUG_PRINTI("hover t=%d pos[x=%+5.2f y=%+5.2f z=%+5.2f] att[r=%+5.1f p=%+5.1f]\n",
-                i,
-                (double)s.position.x, (double)s.position.y, (double)s.position.z,
-                (double)s.attitude.roll, (double)s.attitude.pitch);
-    vTaskDelay(M2T(1000));
+  setpoint_t sp;
+  for (int i = 0; i < 250; ++i) {  /* 250 * 20ms = 5s */
+    memset(&sp, 0, sizeof(sp));
+    sp.mode.x = modeVelocity;
+    sp.mode.y = modeVelocity;
+    sp.mode.z = modeVelocity;
+    sp.mode.yaw = modeAbs;
+    sp.velocity.x = 0.0f;
+    sp.velocity.y = 0.0f;
+    sp.velocity.z = 0.0f;
+    sp.attitude.yaw = 0.0f;
+    sp.velocity_body = false;  /* world frame */
+    commanderSetSetpoint(&sp, COMMANDER_PRIORITY_EXTRX);
+
+    /* 每 1s 打印一次状态 */
+    if (i % 50 == 0) {
+      stabilizerGetState(&s);
+      DEBUG_PRINTI("hover t=%ds pos[x=%+5.2f y=%+5.2f z=%+5.2f] vel[%+5.2f %+5.2f %+5.2f] att[r=%+5.1f p=%+5.1f]\n",
+                  i / 50,
+                  (double)s.position.x, (double)s.position.y, (double)s.position.z,
+                  (double)s.velocity.x, (double)s.velocity.y, (double)s.velocity.z,
+                  (double)s.attitude.roll, (double)s.attitude.pitch);
+    }
+    vTaskDelay(M2T(20));
   }
 
+  /* 降落前先把控制权还给 HL (land 是 HL 指令), 并把 HL 内部 pos 同步到
+   * 当前真实位置 - 否则 land() 会用 hover 开始时的 stale pos 作为降落
+   * 起点 (crtp_commander_high_level.c:473), 降落轨迹会跳变. */
   DEBUG_PRINTI("Land in 3s...\n");
+  stabilizerGetState(&s);
+  crtpCommanderHighLevelTellState(&s);
+  vTaskDelay(M2T(50));
   crtpCommanderHighLevelLand(0.0f, 3.0f);
   vTaskDelay(M2T(3500));
 
