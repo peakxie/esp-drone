@@ -101,6 +101,35 @@ void appMain(void) {
   paramSetInt(idHL, 1);
   vTaskDelay(M2T(500));
 
+  /* [2c] TAKEOFF 前最后一刻再 reset 一次 Kalman + 同步 HL commander.
+   *
+   * 起因 (2026-05-03 栓绳试飞翻机分析): [2b] 第一次 reset 到这里还有 ~3.7s
+   * 空窗 (3s 收敛 + 0.5s enHighLevel + 其它同步延迟), Kalman 这段时间在吃
+   * 光流+acc 噪声积分, 位置会漂到 (2, -3.76, 0) m 级别. 接着 takeoff2()
+   * (crtp_commander_high_level.c:436) 会把这个漂移值作为起飞原点锁住,
+   * 整场飞行追幽灵坐标 -> 姿态指令饱和 ±8° -> 翻机.
+   *
+   * 修复: takeoff 前最后 100ms 再 reset 一次. kalmanCoreInit 会把状态直接
+   * 设为 (initialX, initialY, initialZ) = (0,0,0) 并重置 P 矩阵, 同时清
+   * flowDataQueue/tofDataQueue. 不需要再等收敛, 再等只会重新引入漂移.
+   * 100ms 够 Kalman task (100Hz PREDICT_RATE) 跑 >=10 轮处理 resetEstimation
+   * (estimator_kalman.c:309).
+   *
+   * 单独调 crtpCommanderHighLevelTellState 是因为 HL commander 有自己内部
+   * 的 pos 缓存 (crtp_commander_high_level.c:305), takeoff2 持 lockTraj
+   * 读它时不保证 stabilizer 主循环已经跑过 GetSetpoint 的兜底同步分支.
+   * 显式 TellState 把这个窗口堵死, 保证 takeoff 看到的起飞原点是 (0,0,0). */
+  DEBUG_PRINTI("Final Kalman reset before takeoff...\n");
+  paramSetInt(idReset, 1);
+  vTaskDelay(M2T(100));
+
+  state_t s_zero;
+  stabilizerGetState(&s_zero);
+  DEBUG_PRINTI("Pre-takeoff state: pos[%+5.2f %+5.2f %+5.2f] vel[%+5.2f %+5.2f %+5.2f]\n",
+              (double)s_zero.position.x, (double)s_zero.position.y, (double)s_zero.position.z,
+              (double)s_zero.velocity.x, (double)s_zero.velocity.y, (double)s_zero.velocity.z);
+  crtpCommanderHighLevelTellState(&s_zero);
+
   const float takeoff_height = 0.3f;
   /* [2026-04-30 re-tune] takeoff 8s -> 5s.
    * 前一版用 8s 是担心 vbat 压降, 但实测前 1-2s VL53L1 在盲区 (<50mm 返回

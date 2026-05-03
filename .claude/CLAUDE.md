@@ -197,8 +197,6 @@ control->pitch = -control->pitch;
 **根因 2** (起飞侧翻的新发现): `appMain()` 原先先切 Kalman 再 `vTaskDelay(10000)`,但切 Kalman 瞬间陀螺仪零偏还没校准完,Kalman 用带偏 gyro 数据积累 10 秒,起飞瞬间姿态已错,必翻。
 **修复**: appMain 里先 `while (!sensorsAreCalibrated()) vTaskDelay(100);` 等 sensors 校准完成,再切 Kalman,再等 3s Kalman 收敛。
 
-**副发现 - pm.vbat 读数错**: pydrone 硬件用 40k+10k 分压 (1/5),但 `pm_esplane.c:120` 的 multiplier 是 Crazyflie 原版的 2 (1/2 分压)。正确值应该是 5 (用万用表实测 ADC 脚 vs 电池端电压比确认)。不影响飞行, 只影响 vbat 读数。
-
 ### [2026-04-30] 调试工具链 (cfclient over WiFi)
 
 | 工具 | 位置 | 用途 |
@@ -216,6 +214,14 @@ control->pitch = -control->pitch;
 - AP 模式: `udp://192.168.43.42:2390` (cfclient 默认)
 - STA 模式: `udp://<路由分配的IP>:2390` 或 `udp://esp-drone.local:2390`
 - cfclient 源码 `main.py:foundInterfaces()` 已改,用 config.json 里的 `link_uri` 优先
+
+### [2026-05-03] 起飞翻机 (幽灵目标)
+
+栓绳试飞飞机起飞即向侧 + 后方向失控,CSV 日志显示起飞前 `stateEstimate.x/y/z` 在地面静止 3.7s 内从 (0,0,0) 漂到 **(+1.99, −3.76, −0.15)m**。起飞瞬间 `posCtl.target` 被锁为这个漂移值,位置环外推出 ±8° 饱和的 attitude setpoint, roll 发散到 −98° 翻机。
+
+**根因**: `appMain()` 在 Phase 2b 的时序有 ~3.7s 空窗 (第一次 `kalman.resetEstimation` → 3s 收敛 → `enHighLevel=1` (0.5s) → takeoff),Kalman 这段时间吃光流 + acc 噪声,位置漂到 (2, −3.76) 级别。`takeoff2()` (`crtp_commander_high_level.c:436`) 直接把此刻的 HL commander 内部 `pos` 当作起飞原点锁住。
+
+**修复** (`main/app_main_flight.c`): takeoff 前最后 100ms 再 reset 一次 Kalman,然后显式调 `crtpCommanderHighLevelTellState(&state)` 把 HL commander 内部 `pos` 同步为 (0,0,0)。reset 后不再等收敛 (100ms 够 Kalman task 处理 resetEstimation 就行),避免重新引入漂移。
 
 ### [2026-04-25] 地面调试工具 (集中在 config.h)
 
