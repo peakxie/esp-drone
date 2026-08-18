@@ -34,6 +34,7 @@
 #include "num.h"
 #include "platform.h"
 #include "motors.h"
+#include "sdkconfig.h"
 #define DEBUG_MODULE "PWR_DIST"
 #include "debug_cf.h"
 
@@ -88,6 +89,12 @@ void powerDistribution(const control_t *control)
   #ifdef QUAD_FORMATION_X
     int16_t r = control->roll / 2.0f;
     int16_t p = control->pitch / 2.0f;
+  #ifdef CONFIG_PITCH_DISTRIBUTION_INVERTED
+    // Pitch mixed the other way round, as 01Studio's py-drone does. Roll and
+    // yaw are unchanged. Verify on a bench with the props off - see
+    // CONFIG_PITCH_DISTRIBUTION_INVERTED.
+    p = -p;
+  #endif
     motorPower.m1 = limitThrust(control->thrust - r + p + control->yaw);
     motorPower.m2 = limitThrust(control->thrust - r - p - control->yaw);
     motorPower.m3 =  limitThrust(control->thrust + r - p + control->yaw);

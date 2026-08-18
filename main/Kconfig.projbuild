@@ -15,6 +15,15 @@ menu "ESPDrone Config"
         config TARGET_ESP32_S2_DRONE_V1_2
             bool "esp-drone with ESP32-S2/ESP32-S3 onboard"
 
+        config TARGET_PYDRONE_S3
+            bool "01Studio pyDrone with ESP32-S3 onboard"
+            depends on IDF_TARGET_ESP32S3
+            help
+                01Studio pyDrone v1.0 (ESP32-S3-WROOM-1 N8R8).
+                MPU6050 + SPL06-001 barometer + QMC5883L magnetometer on the
+                MPU6050 AUX bus. No buzzer, no EEPROM, no Flow Deck (the SPI
+                pins are consumed by the Octal PSRAM), only 2 controllable LEDs.
+
     endchoice
 
     choice
@@ -38,14 +47,26 @@ menu "ESPDrone Config"
                 This enables the udp_server_rx2_task of wifi.
         config ENABLE_POSITION_HOLD_MODE
             bool "Enable position hold mode"
+            default n if TARGET_PYDRONE_S3
             default y
             help
                 This enables position hold mode when pmw3901 sensors available.
+                pyDrone has no Flow Deck (its SPI pins are used by the Octal
+                PSRAM), so leave this off and fly self-stabilised.
+        config ENABLE_ALT_HOLD_MODE
+            bool "Enable barometric altitude hold mode"
+            default y if TARGET_PYDRONE_S3
+            default n
+            help
+                Switches to altitude hold when a barometer is present but no
+                optical flow deck is. Requires ENABLE_COMMAND_MODE_SET.
+                Without flow there is no horizontal observation, so only the
+                Z axis can be held; roll/pitch stay in attitude mode.
         config ENABLE_COMMAND_MODE_SET
             bool "Enable \'setCommandermode\' to transform command"
-            depends on ENABLE_POSITION_HOLD_MODE
-            default y if ENABLE_POSITION_HOLD_MODE
-            default n if !ENABLE_POSITION_HOLD_MODE
+            depends on ENABLE_POSITION_HOLD_MODE || ENABLE_ALT_HOLD_MODE
+            default y if ENABLE_POSITION_HOLD_MODE || ENABLE_ALT_HOLD_MODE
+            default n
             help
                 This enables assit mode when use old version app.
     endmenu
@@ -91,6 +112,27 @@ menu "ESPDrone Config"
                 if ROLL error angle is 0.90,set this 90
     endmenu
 
+    menu "power distribution"
+        config PITCH_DISTRIBUTION_INVERTED
+            bool "Invert the pitch term in the motor mix"
+            default n
+            help
+                Flips the sign of the pitch contribution in
+                power_distribution_stock.c, i.e.
+
+                  off: m1 = T - r + p + y   (ESP-Drone stock)
+                  on:  m1 = T - r - p + y   (01Studio py-drone)
+
+                The two firmwares differ only in this sign; roll and yaw are
+                mixed identically. Whether the difference comes from the motor
+                numbering or from the IMU mounting orientation cannot be told
+                from the source, so this MUST be established on a bench with
+                the propellers removed (test T3) rather than assumed.
+
+                Getting it wrong makes the pitch channel positive-feedback:
+                the aircraft flips as soon as the stick moves.
+    endmenu
+
     menu "system"
 
         config BASE_STACK_SIZE
@@ -106,6 +148,7 @@ menu "ESPDrone Config"
 
         config BUZZER_ON
             bool "enable buzzer to play sound"
+            default n if TARGET_PYDRONE_S3
             default y
 
         config BUZ1_PIN_POS
@@ -116,6 +159,8 @@ menu "ESPDrone Config"
             default 39 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 39 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 39 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) BUZ1_PIN_POS
 
@@ -127,12 +172,66 @@ menu "ESPDrone Config"
             default 38 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 38 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 38 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) BUZ2_PIN_NEG
 
     endmenu
 
     menu "sensors config"
+        config SENSORS_ENABLE_MAG
+            bool "Enable the magnetometer on the MPU6050 AUX bus"
+            default y if TARGET_PYDRONE_S3
+            default n
+            help
+                Reads the magnetometer through the MPU6050 I2C-master slave
+                registers. pyDrone carries a QMC5883L, the ESP-Drone reference
+                board an HMC5883L; the driver picks one at compile time.
+
+        choice
+            prompt "Magnetometer type"
+            depends on SENSORS_ENABLE_MAG
+            default MAG_QMC5883L if TARGET_PYDRONE_S3
+            default MAG_HMC5883L
+
+            config MAG_HMC5883L
+                bool "HMC5883L (0x1E, big endian X/Z/Y)"
+
+            config MAG_QMC5883L
+                bool "QMC5883L (0x0D, little endian X/Y/Z)"
+        endchoice
+
+        config SENSORS_ENABLE_PRESSURE
+            bool "Enable the barometer on the MPU6050 AUX bus"
+            default y if TARGET_PYDRONE_S3
+            default n
+            help
+                Needed for barometric altitude hold. pyDrone carries an
+                SPL06-001; the ESP-Drone reference board an MS5611 (whose
+                read path is unfinished upstream).
+
+        choice
+            prompt "Barometer type"
+            depends on SENSORS_ENABLE_PRESSURE
+            default PRESSURE_SPL06 if TARGET_PYDRONE_S3
+            default PRESSURE_MS5611
+
+            config PRESSURE_MS5611
+                bool "MS5611 (0x77)"
+
+            config PRESSURE_SPL06
+                bool "SPL06-001 (0x76)"
+        endchoice
+
+        config SENSORS_ENABLE_DECK
+            bool "Enable the Flow Deck sensors (VL53L1X range + PMW3901 flow)"
+            default n if TARGET_PYDRONE_S3
+            default y
+            help
+                pyDrone has no expansion deck and its SPI pins are consumed by
+                the Octal PSRAM, so this must stay off there.
+
         config I2C0_PIN_SDA
             int "I2C0_PIN_SDA GPIO number"
             range 0 34 if TARGET_ESPLANE_V1
@@ -141,6 +240,8 @@ menu "ESPDrone Config"
             default 11 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 11 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 16 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) I2C0_PIN_SDA
 
@@ -152,6 +253,8 @@ menu "ESPDrone Config"
             default 10 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 10 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 15 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) I2C0_PIN_SCL
 
@@ -163,8 +266,13 @@ menu "ESPDrone Config"
             default 40 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 40 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 6 if TARGET_PYDRONE_S3
             help
-                GPIO number (IOxx) I2C1_PIN_SDA
+                GPIO number (IOxx) I2C1_PIN_SDA.
+                DANGER for pyDrone: GPIO40/41 drive the M3/M4 motor MOSFETs.
+                Never point the deck bus at them - the open-drain + pull-up
+                config would spin those motors during init.
 
         config I2C1_PIN_SCL
             int "I2C1_PIN_SCL GPIO number"
@@ -174,8 +282,11 @@ menu "ESPDrone Config"
             default 41 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 41 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 1 if TARGET_PYDRONE_S3
             help
-                GPIO number (IOxx) I2C1_PIN_SCL
+                GPIO number (IOxx) I2C1_PIN_SCL.
+                See the I2C1_PIN_SDA warning about GPIO40/41 on pyDrone.
 
         config SPI_PIN_MISO
             int "SPI_PIN_MISO GPIO number"
@@ -185,8 +296,12 @@ menu "ESPDrone Config"
             default 37 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 37 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 37 if TARGET_PYDRONE_S3
             help
-                GPIO number (IOxx) SPI_PIN_MISO
+                GPIO number (IOxx) SPI_PIN_MISO.
+                Unused on pyDrone: GPIO35/36/37 are taken by the Octal PSRAM,
+                so no Flow Deck can be attached.
 
         config SPI_PIN_MOSI
             int "SPI_PIN_MOSI GPIO number"
@@ -196,6 +311,8 @@ menu "ESPDrone Config"
             default 35 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 35 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 35 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) SPI_PIN_MOSI
 
@@ -207,6 +324,8 @@ menu "ESPDrone Config"
             default 36 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 36 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 36 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) SPI_PIN_CLK
 
@@ -218,6 +337,8 @@ menu "ESPDrone Config"
             default 34 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 34 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 34 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) SPI_PIN_CS0
 
@@ -229,6 +350,8 @@ menu "ESPDrone Config"
             default 12 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 12 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 7 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) MPU_PIN_INT
 
@@ -240,8 +363,30 @@ menu "ESPDrone Config"
             default 2 if TARGET_ESPLANE_V2_S2
             range 1 10 if TARGET_ESP32_S2_DRONE_V1_2
             default 2 if TARGET_ESP32_S2_DRONE_V1_2
+            range 1 10 if TARGET_PYDRONE_S3
+            default 2 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) ADC1_PIN
+
+        config BAT_DIVIDER_RATIO
+            int "Battery divider ratio (Vbat/Vadc) * 100"
+            range 100 2000
+            default 502 if TARGET_PYDRONE_S3
+            default 200
+            help
+                Resistor divider ratio on the battery sense node, scaled by 100.
+                pyDrone uses R4 40.2k / R7 10k -> (40.2 + 10) / 10 = 5.02, so
+                set 502. Boards with a 1:1 divider use 200.
+
+        config BAT_ADC_ATTEN_0DB
+            bool "Use 0 dB ADC attenuation for battery sense"
+            default y if TARGET_PYDRONE_S3
+            default n
+            help
+                With the pyDrone 5.02 divider a full 4.2 V battery lands at
+                0.836 V, inside the 0 dB (~1.1 V) full scale, so 0 dB keeps the
+                best resolution. Boards with a 1:1 divider need the default
+                11/12 dB attenuation to reach ~2.1 V.
 
         config EXT01_PIN
             int "EXT01_PIN GPIO number"
@@ -251,6 +396,8 @@ menu "ESPDrone Config"
             default 1 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 1 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 1 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) EXT01_PIN
     endmenu
@@ -264,6 +411,8 @@ menu "ESPDrone Config"
             default 7 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 7 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 46 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) LED_PIN_BLUE
 
@@ -275,11 +424,14 @@ menu "ESPDrone Config"
             default 9 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 9 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 42 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) LED_PIN_GREEN
 
         config LED_PIN_RED
             int "LED_PIN_RED GPIO number"
+            depends on !TARGET_PYDRONE_S3
             range 0 34 if TARGET_ESPLANE_V1
             default 23 if TARGET_ESPLANE_V1
             range 0 43 if TARGET_ESPLANE_V2_S2
@@ -287,7 +439,9 @@ menu "ESPDrone Config"
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 8 if TARGET_ESP32_S2_DRONE_V1_2
             help
-                GPIO number (IOxx) LED_PIN_RED
+                GPIO number (IOxx) LED_PIN_RED.
+                pyDrone has no programmable red LED: the red one is hard-wired
+                to the power rail and the yellow one is the charger STAT pin.
 
     endmenu
 
@@ -296,10 +450,11 @@ menu "ESPDrone Config"
             prompt "Motor type"
             default MOTOR_BRUSHED_715 if TARGET_ESPLANE_V1 || TARGET_ESPLANE_V2_S2
             default MOTOR_BRUSHED_720 if TARGET_ESP32_S2_DRONE_V1_2
-            
+            default MOTOR_BRUSHED_715 if TARGET_PYDRONE_S3
+
             config MOTOR_BRUSHED_715
                 bool "brushed 715 motor"
-    
+
             config MOTOR_BRUSHED_720
                 bool "brushed 720 motor"
         endchoice
@@ -312,6 +467,8 @@ menu "ESPDrone Config"
             default 3 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 5 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 4 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) MOTOR01_PIN
 
@@ -323,6 +480,8 @@ menu "ESPDrone Config"
             default 4 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 6 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 5 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) MOTOR02_PIN
 
@@ -334,6 +493,8 @@ menu "ESPDrone Config"
             default 5 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 3 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 40 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) MOTOR03_PIN
 
@@ -345,6 +506,8 @@ menu "ESPDrone Config"
             default 6 if TARGET_ESPLANE_V2_S2
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 4 if TARGET_ESP32_S2_DRONE_V1_2
+            range 0 48 if TARGET_PYDRONE_S3
+            default 41 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) MOTOR04_PIN
     endmenu

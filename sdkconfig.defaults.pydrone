@@ -1,0 +1,33 @@
+# sdkconfig for the 01Studio pyDrone v1.0 board (ESP32-S3-WROOM-1 N8R8).
+#
+# Use with:
+#   idf.py set-target esp32s3
+#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.defaults.pydrone" reconfigure
+#
+# or simply select "01Studio pyDrone with ESP32-S3 onboard" in
+# `idf.py menuconfig` -> ESPDrone Config and set the flash/PSRAM options below.
+
+CONFIG_TARGET_PYDRONE_S3=y
+
+# 8MB flash
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+
+# N8R8 carries Octal (not Quad) PSRAM. Getting this wrong leaves PSRAM
+# unusable. Octal PSRAM occupies GPIO35/36/37, which is why no Flow Deck can
+# be attached on this board.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+# Keep task stacks and DMA-capable buffers in internal RAM: the flight control
+# tasks are latency sensitive and PSRAM access jitters.
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+
+CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
+
+# pyDrone has no USB-UART bridge - GPIO19/20 go straight to the native USB
+# peripheral, so the console must run over USB-Serial-JTAG (a /dev/ttyACM*
+# device on Linux).
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_UART_DEFAULT=n

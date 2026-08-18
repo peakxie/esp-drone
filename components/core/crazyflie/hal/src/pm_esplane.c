@@ -117,7 +117,9 @@ void pmInit(void)
     return;
   }
 
-    pmEnableExtBatteryVoltMeasuring(CONFIG_ADC1_PIN, 2); // ADC1 PIN is fixed to ADC channel
+    // ADC1 PIN is fixed to ADC channel. The multiplier is the resistor divider
+    // ratio on the battery sense node (Vbat / Vadc), see CONFIG_BAT_DIVIDER_RATIO.
+    pmEnableExtBatteryVoltMeasuring(CONFIG_ADC1_PIN, CONFIG_BAT_DIVIDER_RATIO / 100.0f);
 
     pmSyslinkInfo.pgood = false;
     pmSyslinkInfo.chg = false;

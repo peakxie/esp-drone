@@ -29,13 +29,17 @@
 #include "stm32_legacy.h"
 
 static unsigned int led_pin[] = {
-    [LED_BLUE] = LED_GPIO_BLUE,
+    [LED_BLUE]  = LED_GPIO_BLUE,
+#ifndef CONFIG_TARGET_PYDRONE_S3
     [LED_RED]   = LED_GPIO_RED,
+#endif
     [LED_GREEN] = LED_GPIO_GREEN,
 };
 static int led_polarity[] = {
-    [LED_BLUE] = LED_POL_BLUE,
+    [LED_BLUE]  = LED_POL_BLUE,
+#ifndef CONFIG_TARGET_PYDRONE_S3
     [LED_RED]   = LED_POL_RED,
+#endif
     [LED_GREEN] = LED_POL_GREEN,
 };
 

@@ -45,6 +45,13 @@ static platformConfig_t configs[] = {
         .physicalLayoutAntennasAreClose = false,
         .motorMap = motorMapDefaultBrushed,
     },
+    {
+        .deviceType = "PYD1",
+        .deviceTypeName = "01Studio pyDrone v1.0",
+        .sensorImplementation = SensorImplementation_mpu6050_HMC5883L_MS5611,
+        .physicalLayoutAntennasAreClose = false,
+        .motorMap = motorMapDefaultBrushed,
+    },
 
 };
 
@@ -64,5 +71,9 @@ bool platformInitHardware()
 
 const char *platformConfigGetPlatformName()
 {
+#ifdef CONFIG_TARGET_PYDRONE_S3
+    return "PYD1";
+#else
     return "ED12";
+#endif
 }

@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "platform.h"
+#include "sdkconfig.h"
 
 #define PLATFORM_INFO_OTP_NR_OF_BLOCKS 16
 #define PLATFORM_INFO_OTP_BLOCK_LEN 32
@@ -31,7 +32,11 @@
 #error
 #endif
 
+#ifdef CONFIG_TARGET_PYDRONE_S3
+#define DEFAULT_PLATFORM_STRING "0;PYD1"
+#else
 #define DEFAULT_PLATFORM_STRING "0;EP20"
+#endif
 
 //     //TODO:
 // #ifndef UNIT_TEST_MODE

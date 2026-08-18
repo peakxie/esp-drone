@@ -23,10 +23,40 @@
 #define __LED_H__
 
 #include <stdbool.h>
+#include "sdkconfig.h"
 
 //Led polarity configuration constant
 #define LED_POL_POS 0
 #define LED_POL_NEG 1
+
+#ifdef CONFIG_TARGET_PYDRONE_S3
+
+/* pyDrone only exposes two programmable LEDs: blue on GPIO46 and green on
+ * GPIO42. The red LED is hard-wired to the power rail and the yellow one is
+ * the charger STAT output, so neither can be driven from firmware. Both
+ * programmable LEDs are GPIO -> 1k -> anode, cathode to GND: active high.
+ */
+#define LED_GPIO_BLUE  CONFIG_LED_PIN_BLUE
+#define LED_POL_BLUE   LED_POL_POS
+#define LED_GPIO_GREEN CONFIG_LED_PIN_GREEN
+#define LED_POL_GREEN  LED_POL_POS
+
+#define LED_NUM 2
+
+typedef enum {LED_BLUE = 0, LED_GREEN} led_t;
+
+/* No red LED on this board - remap every red role onto an existing LED. */
+#define LED_RED          LED_GREEN
+
+#define LINK_LED         LED_GREEN
+#define CHG_LED          LED_BLUE
+#define LOWBAT_LED       LED_BLUE
+#define LINK_DOWN_LED    LED_BLUE
+#define SYS_LED          LED_BLUE
+#define ERR_LED1         LED_GREEN
+#define ERR_LED2         LED_GREEN
+
+#else
 
 #define LED_GPIO_BLUE  CONFIG_LED_PIN_BLUE
 #define LED_POL_BLUE   LED_POL_POS
@@ -46,6 +76,8 @@
 #define LED_NUM 3
 
 typedef enum {LED_BLUE = 0, LED_RED, LED_GREEN} led_t;
+
+#endif
 
 void ledInit();
 bool ledTest();

@@ -58,6 +58,10 @@
 #ifdef CONFIG_IDF_TARGET_ESP32
 #error "ESP32_S2_DRONE_V1_2 hardware with ESP32S2/S3 onboard"
 #endif
+#elif defined(CONFIG_TARGET_PYDRONE_S3)
+#ifndef CONFIG_IDF_TARGET_ESP32S3
+#error "pyDrone hardware with ESP32-S3 onboard"
+#endif
 #endif
 
 #ifdef STM32F4XX 

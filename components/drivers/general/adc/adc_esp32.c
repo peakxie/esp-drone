@@ -41,7 +41,14 @@ static const adc_channel_t channel = ADC_CHANNEL_1;     // GPIO2 if ADC1
 #endif
 
 static const adc_bits_width_t width = ADC_WIDTH_MAX-1;
+#ifdef CONFIG_BAT_ADC_ATTEN_0DB
+// With a large divider ratio (e.g. pyDrone's 5.02) a full 4.2V battery lands
+// at ~0.84V, inside the 0dB full scale (~1.1V). Using 11dB there would throw
+// away most of the resolution.
+static const adc_atten_t atten = ADC_ATTEN_DB_0;
+#else
 static const adc_atten_t atten = 3; // we directly set the attenuation to 3(11dB/12dB) to avoid the build warning
+#endif
 static const adc_unit_t unit = ADC_UNIT_1;
 #define DEFAULT_VREF 1100 //Use adc2_vref_to_gpio() to obtain a better estimate
 #define NO_OF_SAMPLES   30          //Multisampling
