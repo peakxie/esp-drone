@@ -14,8 +14,9 @@ CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
 
 # N8R8 carries Octal (not Quad) PSRAM. Getting this wrong leaves PSRAM
-# unusable. Octal PSRAM occupies GPIO35/36/37, which is why no Flow Deck can
-# be attached on this board.
+# unusable. Octal PSRAM occupies GPIO35/36/37; the onboard PMW3901 flow
+# sensor uses a separate, dedicated SPI bus (GPIO17/21/18/8) and does not
+# conflict with these pins.
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y

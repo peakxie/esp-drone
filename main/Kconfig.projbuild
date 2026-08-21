@@ -21,8 +21,11 @@ menu "ESPDrone Config"
             help
                 01Studio pyDrone v1.0 (ESP32-S3-WROOM-1 N8R8).
                 MPU6050 + SPL06-001 barometer + QMC5883L magnetometer on the
-                MPU6050 AUX bus. No buzzer, no EEPROM, no Flow Deck (the SPI
-                pins are consumed by the Octal PSRAM), only 2 controllable LEDs.
+                MPU6050 AUX bus. No buzzer, no EEPROM, only 2 controllable LEDs.
+                Carries an onboard VL53L1X ToF (on deck I2C1, GPIO1/6) and a
+                PMW3901 optical flow sensor on a dedicated SPI bus
+                (GPIO17/21/18/8), separate from the Octal PSRAM pins
+                (GPIO35/36/37).
 
     endchoice
 
@@ -47,15 +50,11 @@ menu "ESPDrone Config"
                 This enables the udp_server_rx2_task of wifi.
         config ENABLE_POSITION_HOLD_MODE
             bool "Enable position hold mode"
-            default n if TARGET_PYDRONE_S3
             default y
             help
                 This enables position hold mode when pmw3901 sensors available.
-                pyDrone has no Flow Deck (its SPI pins are used by the Octal
-                PSRAM), so leave this off and fly self-stabilised.
         config ENABLE_ALT_HOLD_MODE
             bool "Enable barometric altitude hold mode"
-            default y if TARGET_PYDRONE_S3
             default n
             help
                 Switches to altitude hold when a barometer is present but no
@@ -226,11 +225,11 @@ menu "ESPDrone Config"
 
         config SENSORS_ENABLE_DECK
             bool "Enable the Flow Deck sensors (VL53L1X range + PMW3901 flow)"
-            default n if TARGET_PYDRONE_S3
             default y
             help
-                pyDrone has no expansion deck and its SPI pins are consumed by
-                the Octal PSRAM, so this must stay off there.
+                pyDrone carries the VL53L1X on the deck I2C1 bus and the
+                PMW3901 on a dedicated SPI bus, separate from the Octal
+                PSRAM pins.
 
         config I2C0_PIN_SDA
             int "I2C0_PIN_SDA GPIO number"
@@ -297,11 +296,12 @@ menu "ESPDrone Config"
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 37 if TARGET_ESP32_S2_DRONE_V1_2
             range 0 48 if TARGET_PYDRONE_S3
-            default 37 if TARGET_PYDRONE_S3
+            default 17 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) SPI_PIN_MISO.
-                Unused on pyDrone: GPIO35/36/37 are taken by the Octal PSRAM,
-                so no Flow Deck can be attached.
+                pyDrone's onboard PMW3901 uses a dedicated SPI bus
+                (GPIO17/21/18/8), separate from the Octal PSRAM pins
+                (GPIO35/36/37).
 
         config SPI_PIN_MOSI
             int "SPI_PIN_MOSI GPIO number"
@@ -312,7 +312,7 @@ menu "ESPDrone Config"
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 35 if TARGET_ESP32_S2_DRONE_V1_2
             range 0 48 if TARGET_PYDRONE_S3
-            default 35 if TARGET_PYDRONE_S3
+            default 21 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) SPI_PIN_MOSI
 
@@ -325,7 +325,7 @@ menu "ESPDrone Config"
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 36 if TARGET_ESP32_S2_DRONE_V1_2
             range 0 48 if TARGET_PYDRONE_S3
-            default 36 if TARGET_PYDRONE_S3
+            default 18 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) SPI_PIN_CLK
 
@@ -338,7 +338,7 @@ menu "ESPDrone Config"
             range 0 43 if TARGET_ESP32_S2_DRONE_V1_2
             default 34 if TARGET_ESP32_S2_DRONE_V1_2
             range 0 48 if TARGET_PYDRONE_S3
-            default 34 if TARGET_PYDRONE_S3
+            default 8 if TARGET_PYDRONE_S3
             help
                 GPIO number (IOxx) SPI_PIN_CS0
 
