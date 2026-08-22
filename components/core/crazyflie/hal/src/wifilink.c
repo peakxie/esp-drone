@@ -46,13 +46,10 @@
 #include "debug_cf.h"
 #include "static_mem.h"
 
-#define WIFI_ACTIVITY_TIMEOUT_MS (5000)
-
 static bool isInit = false;
 static xQueueHandle crtpPacketDelivery;
 STATIC_MEM_QUEUE_ALLOC(crtpPacketDelivery, 16, sizeof(CRTPPacket));
 static UDPPacket wifiIn;
-static uint32_t lastPacketTick;
 
 static int wifilinkSendPacket(CRTPPacket *p);
 static int wifilinkSetEnable(bool enable);
@@ -62,7 +59,12 @@ STATIC_MEM_TASK_ALLOC(wifilinkTask, WIFILINK_TASK_STACKSIZE);
 
 static bool wifilinkIsConnected(void)
 {
-    return (xTaskGetTickCount() - lastPacketTick) < M2T(WIFI_ACTIVITY_TIMEOUT_MS);
+    // UDP is connectionless - the PC client legitimately goes quiet for long
+    // stretches while just watching telemetry (no setpoints/commands to send).
+    // Gating log persistence on recent RX activity (as done for the radio
+    // link, which has hardware ACKs) falsely triggers logReset()/crtpReset()
+    // during normal idle periods, so always report connected here.
+    return true;
 }
 
 static struct crtpLinkOperations wifilinkOp = {
@@ -100,7 +102,6 @@ static void wifilinkTask(void *param)
     while (1) {
         /* command step - receive  03 Fetch a wifi packet off the queue */
         wifiGetDataBlocking(&wifiIn);
-        lastPacketTick = xTaskGetTickCount();
         uint16_t sendWaitMs = 0;
 #ifdef CONFIG_ENABLE_LEGACY_APP
         float rch, pch, ych;
