@@ -46,7 +46,7 @@
 #include "debug_cf.h"
 #include "static_mem.h"
 
-#define WIFI_ACTIVITY_TIMEOUT_MS (1000)
+#define WIFI_ACTIVITY_TIMEOUT_MS (5000)
 
 static bool isInit = false;
 static xQueueHandle crtpPacketDelivery;
