@@ -172,16 +172,12 @@ void paramTask(void * prm)
 	while(1) {
 		crtpReceivePacketBlock(CRTP_PORT_PARAM, &p);
 
-		DEBUG_PRINTI("[DBG] PARAM pkt: port=%d channel=%d size=%d\n", p.port, p.channel, p.size);
-
 		if (p.channel==TOC_CH)
 		  paramTOCProcess(p.data[0]);
 	  else if (p.channel==READ_CH)
 		  paramReadProcess();
-		else if (p.channel==WRITE_CH) {
-		  DEBUG_PRINTI("[DBG] WRITE_CH pkt recv, size=%d useV2=%d\n", p.size, useV2);
+		else if (p.channel==WRITE_CH)
 		  paramWriteProcess();
-		}
     else if (p.channel==MISC_CH) {
       if (p.data[0] == MISC_SETBYNAME) {
         int i, nzero = 0;
@@ -336,8 +332,6 @@ static void paramWriteProcess()
 
     id = variableGetIndex(ident);
 
-    DEBUG_PRINTI("[DBG] V2 write ident=%d id=%d val0=%d val1=%d\n", ident, id, p.data[2], p.data[3]);
-
     if (id<0) {
       p.data[2] = ENOENT;
       p.size = 3;
@@ -346,10 +340,8 @@ static void paramWriteProcess()
       return;
     }
 
-    if (params[id].type & PARAM_RONLY) {
-      DEBUG_PRINTI("[DBG] V2 write id=%d is RONLY, dropped\n", id);
+    if (params[id].type & PARAM_RONLY)
       return;
-    }
 
     switch (params[id].type & PARAM_BYTES_MASK)
     {
@@ -375,8 +367,6 @@ static void paramWriteProcess()
 
     id = variableGetIndex(ident);
 
-    DEBUG_PRINTI("[DBG] V1 write ident=%d id=%d val0=%d\n", ident, id, p.data[1]);
-
     if (id<0) {
       p.data[0] = -1;
       p.data[1] = ident;
@@ -387,10 +377,8 @@ static void paramWriteProcess()
       return;
     }
 
-  	if (params[id].type & PARAM_RONLY) {
-  		DEBUG_PRINTI("[DBG] V1 write id=%d is RONLY, dropped\n", id);
+  	if (params[id].type & PARAM_RONLY)
   		return;
-  	}
 
     switch (params[id].type & PARAM_BYTES_MASK)
     {

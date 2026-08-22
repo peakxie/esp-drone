@@ -181,8 +181,6 @@ void crtpRxTask(void *param)
     {
       if (!link->receivePacket(&p))
       {
-        printf("[DBG] CRTP RX any: port=%d channel=%d size=%d\n", p.port, p.channel, p.size);
-
         if (queues[p.port])
         {
           if (xQueueSend(queues[p.port], &p, 0) == errQUEUE_FULL)
