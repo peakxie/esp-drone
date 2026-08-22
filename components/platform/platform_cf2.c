@@ -47,7 +47,7 @@ static platformConfig_t configs[] = {
     },
     {
         .deviceType = "PYD1",
-        .deviceTypeName = "01Studio pyDrone v1.0",
+        .deviceTypeName = "01Studio pyDroneV1",
         .sensorImplementation = SensorImplementation_mpu6050_HMC5883L_MS5611,
         .physicalLayoutAntennasAreClose = false,
         .motorMap = motorMapDefaultBrushed,
