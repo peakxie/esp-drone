@@ -27,6 +27,7 @@
 
 #include <stdbool.h>
 #include <inttypes.h>
+#include "esp_system.h"
 /* FreeRtos includes */
 #include "FreeRTOS.h"
 #include "task.h"
@@ -85,6 +86,7 @@ static bool canFly;
 static bool armed = ARM_INIT;
 static bool forceArm;
 static bool isInit;
+static uint8_t resetReason;
 
 STATIC_MEM_TASK_ALLOC(systemTask, SYSTEM_TASK_STACKSIZE);
 
@@ -107,8 +109,11 @@ void systemInit(void)
   if(isInit)
     return;
 
+  resetReason = (uint8_t)esp_reset_reason();
+
   DEBUG_PRINT_LOCAL("----------------------------\n");
   DEBUG_PRINT_LOCAL("%s is up and running!\n", platformConfigGetDeviceTypeName());
+  DEBUG_PRINT_LOCAL("Reset reason: %d\n", resetReason);
 
   canStartMutex = xSemaphoreCreateMutexStatic(&canStartMutexBuffer);
   xSemaphoreTake(canStartMutex, portMAX_DELAY);
@@ -350,4 +355,5 @@ PARAM_GROUP_STOP(sytem)
 LOG_GROUP_START(sys)
 LOG_ADD(LOG_INT8, canfly, &canFly)
 LOG_ADD(LOG_INT8, armed, &armed)
+LOG_ADD(LOG_UINT8, resetReason, &resetReason)
 LOG_GROUP_STOP(sys)
