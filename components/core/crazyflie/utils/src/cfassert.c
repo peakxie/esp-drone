@@ -78,9 +78,12 @@ SNAPSHOT_DATA snapshot = { // __attribute__((section(".nzds"))) = {
 
 void assertFail(char *exp, char *file, int line)
 {
+  // Logging takes locks and may allocate, so it must happen before
+  // interrupts are disabled below - doing it afterwards can itself abort().
+  DEBUG_PRINTE("Assert failed %s:%d\n", file, line);
+
   portDISABLE_INTERRUPTS();
   storeAssertFileData(file, line);
-  DEBUG_PRINTE("Assert failed %s:%d\n", file, line);
 
   ledClearAll();
   ledSet(ERR_LED1, 1);
