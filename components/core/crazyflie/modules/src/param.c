@@ -172,6 +172,8 @@ void paramTask(void * prm)
 	while(1) {
 		crtpReceivePacketBlock(CRTP_PORT_PARAM, &p);
 
+		DEBUG_PRINTI("[DBG] PARAM pkt: port=%d channel=%d size=%d\n", p.port, p.channel, p.size);
+
 		if (p.channel==TOC_CH)
 		  paramTOCProcess(p.data[0]);
 	  else if (p.channel==READ_CH)
