@@ -1,0 +1,417 @@
+分析powerDistribution(control: &control)的motor输出的过程？同时分析control的赋值过程？
+
+一、control 的赋值过程（从传感器到控制量生成）
+
+  调用链发生在 stabilizerTask()（1kHz 主循环）中：components/core/crazyflie/modules/src/stabilizer.c:293-310
+
+  stateEstimator(&state, &sensorData, &control, tick);   // 293 估计姿态/位置状态
+  commanderGetSetpoint(&setpoint, &state);                // 296 取遥控/上位机期望值
+  controller(&control, &setpoint, &sensorData, &state, tick);  // 302 生成 control
+  ...
+  powerDistribution(&control);                             // 310 分配到电机
+
+  control 是模块级静态变量 control_t control;（stabilizer.c:73），类型定义在 stabilizer_types.h:162-167：
+
+  typedef struct control_s {
+    int16_t roll;
+    int16_t pitch;
+    int16_t yaw;
+    float   thrust;
+  } control_t;
+
+  controller()（controller.c:64）按 controllerType（默认 ControllerTypePID）分发给
+  controllerPid()（controller_pid.c:62），该函数分两个频率通道给 control 各字段赋值：
+
+  1. thrust（推力，float，位置/速度环）
+  - POSITION_RATE 周期：positionController(&actuatorThrust, ...)（controller_pid.c:79）根据位置/速度 PID 算出 actuatorThrust。
+  - 若 setpoint->mode.z == modeDisable（手动油门模式），直接用遥控器油门 actuatorThrust = setpoint->thrust（controller_pid.c:85）。
+  - 最终写入 control->thrust，如果开启倾斜补偿 tiltCompensationEnabled，会除以 sensfusion6GetInvThrustCompensationForTilt()
+    做倾角补偿（controller_pid.c:128-135）。
+
+  2. roll / pitch / yaw（int16_t，姿态/角速度环）
+  - ATTITUDE_RATE 周期：先算姿态期望角 attitudeDesired（yaw 由 setpoint 累积或直接赋值，roll/pitch 若非解锁位置控制模式则直接取自
+    setpoint，controller_pid.c:67-90）。
+  - 用外环 attitudeControllerCorrectAttitudePID() 把姿态误差转成期望角速度 rateDesired（controller_pid.c:92-94）。
+  - 若是速率模式（modeVelocity），rateDesired 直接被遥控角速度覆盖，并重置对应 PID 避免积分累积（controller_pid.c:99-106）。
+  - 内环 attitudeControllerCorrectRatePID() 用陀螺仪实测角速度算出执行器输出（controller_pid.c:109-110）。
+  - attitudeControllerGetActuatorOutput(&control->roll, &control->pitch, &control->yaw) 把内部 rollOutput/pitchOutput/yawOutput（PID 的
+    P+I+D 累加结果）写入 control（controller_pid.c:112-116，attitude_pid_controller.c:158-163）；随后 control->yaw = -control->yaw
+    做符号翻转。
+  - 若最终 thrust==0（未解锁/急停），则强制 roll=pitch=yaw=0 并重置所有
+    PID（controller_pid.c:137-154），防止解锁前积分误差导致电机异常输出。
+
+  二、powerDistribution 的电机输出过程
+
+  power_distribution_stock.c:87-140，输入是刚才生成的 control。ESP-Drone 在 config.h:47 定义了 QUAD_FORMATION_X（X
+  型布局），所以走这条分支（power_distribution_stock.c:89-101）：
+
+  r = roll / 2;  p = pitch / 2;          // 若 CONFIG_PITCH_DISTRIBUTION_INVERTED 则 p = -p（本项目 sdkconfig 未开启，见 sdkconfig:445）
+  m1 = limitThrust(thrust - r + p + yaw);
+  m2 = limitThrust(thrust - r - p - yaw);
+  m3 = limitThrust(thrust + r - p + yaw);
+  m4 = limitThrust(thrust + r + p - yaw);
+
+  即经典的四旋翼 X 构型混控矩阵：每个电机 = 基础推力 ± 一半的横滚分量 ± 一半的俯仰分量 ±
+  偏航分量，四个电机符号组合互不相同以产生绕三轴的力矩。limitThrust 即 limitUint16（num.c:85-95），把结果饱和裁剪到 [0,
+  65535]（float/负值截断为 0，超上限截断为 UINT16_MAX）。
+
+  之后分两条路径写入实际 PWM（power_distribution_stock.c:113-139）：
+
+  - 调试直控模式（motorSetEnable 为真，通过 motorPowerSet 参数组从外部/CFClient 手动指定）：直接用 motorPowerSet.m1~m4
+    覆盖计算结果，用于电机测试，跳过飞控算法。
+  - 正常飞行模式：
+    - 先做 idleThrust 下限保护——任何电机分配值低于 idleThrust（默认 0，可通过 powerDist.idleThrust
+      参数调）都被抬高到该值，防止某电机在大姿态修正时被算成 0 而完全停转（影响响应/失速）。
+    - 最后调用 motorsSetRatio(MOTOR_Mx, motorPower.mx) 写入实际占空比/转速，完成到电机驱动层的输出。
+
+  motorPower.m1~m4 同时通过 LOG_GROUP_START(motor)（power_distribution_stock.c:154-159）暴露给日志系统，可在地面站实时查看。
+
+  小结路径：遥控/上位机 setpoint → controllerPid 位置环+姿态环+角速度环 PID → 写入 control.{roll,pitch,yaw,thrust} → powerDistribution
+  按 X 构型混控矩阵分配并裁剪 → idleThrust 保护 → motorsSetRatio 输出到四个电机。
+
+✻ Crunched for 1m 38s
+
+
+做这种计算的原理是什么？（即经典的四旋翼 X 构型混控矩阵：每个电机 = 基础推力 ± 一半的横滚分量 ± 一半的俯仰分量 ±
+    偏航分量，四个电机符号组合互不相同以产生绕三轴的力矩。limitThrust 即 limitUint16（num.c:85-95），把结果饱和裁剪到 [0,
+    65535]（float/负值截断为 0，超上限截断为 UINT16_MAX）。）
+
+  Thought for 1m 20s, searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● 混控矩阵背后的原理
+
+  1. 物理布局：X 构型 + 电机编号
+
+  docs/_static/motors_direction.png 给出了实际布局（俯视图，箭头方向朝前）：
+
+        Front
+    M4 ⟲        ⟳ M1
+        \      /
+         [板子]
+        /      \
+    M3 ⟳        ⟲ M2
+
+  - M1 = 前右，M2 = 后右，M3 = 后左，M4 = 前左
+  - 对角线上的两个电机（M1&M3、M2&M4）转向相同（图中同斜向箭头），相邻电机转向相反 —— 这是所有四旋翼的标准设计，原因见下面第 4 点。
+
+  反过来看代码里的符号组合，正好能"反推"出这个布局，说明混控公式不是随便定的，而是严格对应几何位置：
+
+  m1 = thrust - r + p + yaw   // -r（右侧组）+p（前侧组）
+  m2 = thrust - r - p - yaw   // -r（右侧组）-p（后侧组）
+  m3 = thrust + r - p + yaw   // +r（左侧组）-p（后侧组）
+  m4 = thrust + r + p - yaw   // +r（左侧组）+p（前侧组）
+
+  按 r 的符号分组：{m1,m2} 同为 -r → 右侧两个电机；{m3,m4} 同为 +r → 左侧两个电机。
+  按 p 的符号分组：{m1,m4} 同为 +p → 前侧两个电机；{m2,m3} 同为 -p → 后侧两个电机。
+  两两交叉正好得到 M1=前右、M2=后右、M3=后左、M4=前左，与图片完全一致。
+
+  2. thrust（推力）—— 独立于姿态的"共模"分量
+
+  四个电机的转速（推力）之和决定总升力，与机身重力平衡，控制上升/下降/悬停。它对四个电机同号叠加（4 个
+  +thrust），不参与任何力矩产生，是一个纯粹的"共模偏置"。
+
+  3. roll / pitch —— 用差分推力产生绕机体轴的力矩
+
+  - Roll（绕机头指向的 X 轴转动）：靠左右两侧电机的推力差产生滚转力矩。右侧两电机减少 r，左侧两电机增加 r，合力矩 τ_roll ∝ (F_left −
+    F_right) × 臂长，方向绕 X 轴。
+  - Pitch（绕左右 Y 轴转动）：同理靠前后两侧电机的推力差，前侧 +p，后侧 -p。
+
+  为什么除以 2？ 因为每一侧涉及的是 2 个电机而不是 1 个，要把"总的 roll
+  修正量"平摊到该侧的两个电机上；更关键的是这样设计能保证总推力不受姿态修正影响：
+
+  m1+m2+m3+m4 = 4*thrust + (-r+p) + (-r-p) + (r-p) + (r+p) + (yaw-yaw+yaw-yaw)
+              = 4*thrust        （r、p、yaw 项两两抵消）
+
+  即姿态控制只在电机之间"重新分配"推力，不改变合力（升力），这样滚转/俯仰修正不会同时引起意外的升降 —— 这是控制分配（control
+  allocation）设计里非常重要的解耦特性，本质上是线性混控矩阵与其伪逆构造出来的正交性。
+
+  4. yaw —— 靠电机反扭矩（reaction torque），不是推力差
+
+  偏航力矩不能靠推力差产生（推力方向都朝下，绕竖直 Z
+  轴没有力臂），而是靠螺旋桨旋转时电机对空气的反作用扭矩：顺时针转的桨会给机身一个逆时针的反扭矩，反之亦然。
+
+  因此四旋翼必须让相邻电机反向旋转（M1/M3 一个方向，M2/M4 另一个方向），正常悬停时两组反扭矩相互抵消，飞机不自转。要产生偏航，只需让其中
+  一个旋转方向的对角线组多转一点、另一组少转一点（改变反扭矩差），而不需要动总升力或俯仰滚转：
+
+  m1 += yaw;  m3 += yaw;   // 同一对角线组（同转向）加速
+  m2 -= yaw;  m4 -= yaw;   // 另一对角线组（反转向）减速
+
+  四项相加同样抵消（yaw - yaw + yaw - yaw = 0），推力和依旧不变。
+
+  5. 本质：这是一个线性控制分配（mixing）矩阵
+
+  把 (thrust, roll, pitch, yaw) 这 4 个"虚拟控制量"映射到 4 个真实电机转速，等价于矩阵运算：
+
+  [m1]   [1  -1/2   1/2   1] [thrust]
+  [m2] = [1  -1/2  -1/2  -1] [roll  ]
+  [m3]   [1   1/2  -1/2   1] [pitch ]
+  [m4]   [1   1/2   1/2  -1] [yaw   ]
+
+  这个矩阵是根据 X
+  构型的几何对称性（电机到质心的力臂方向、转向）手算/推导出来的分配矩阵的逆（在更通用的推导中是效率矩阵的伪逆），对于对称的 X
+  布局正好简化成这种 ±1、±1/2 的简单加减形式，所以不需要在飞控里做矩阵乘法，直接写成加减法即可，非常适合嵌入式实时计算。
+
+  6. limitThrust 裁剪的物理原因
+
+  这一步不是算法误差补偿，而是硬件可实现性约束：
+
+  - 电机/ESC 只能接受非负的 PWM 占空比（uint16_t，[0,
+    65535]），螺旋桨也不能反转产生"负推力"——所以任何计算出负值的分配结果在物理上不可能实现，只能截断为
+    0（此时该电机已经达到控制权限极限，即 control allocation 里常说的 "actuator saturation"）。
+  - 上限 65535 对应 PWM 满占空比，电机物理转速有限，超过算出来也做不到，只能截断为最大值。
+  - 饱和会带来副作用：一旦某个电机被裁剪，实际产生的合力/力矩就不再等于期望值（矩阵抵消关系被破坏），这是简单线性混控器的已知局限——姿态
+    大幅机动时可能出现"限幅导致响应变形"，更复杂的飞控会做优先级分配或动态限幅补偿，但 ESP-Drone/Crazyflie
+    这套是最经典、最简单的实现，接受这个局限。
+
+✻ Brewed for 1m 24s
+
+
+
+control 赋值全过程详解（传感器 → 状态估计 → 设定点 → 三级串级 PID → control）
+
+  整个过程发生在 1kHz 的 stabilizerTask 主循环里（stabilizer.c:268-311），可以拆成 4 个阶段。频率常量定义在 stabilizer_types.h:264-274：
+
+  RATE_MAIN_LOOP = 1000Hz   // 主循环/传感器采集/电机输出
+  ATTITUDE_RATE  = 500Hz    // 姿态角环 + 角速度环
+  POSITION_RATE  = 100Hz    // 位置环 + 速度环
+
+  （另外传感器融合内部用 ATTITUDE_UPDATE_RATE = 250Hz 更新四元数，属于独立的滤波节拍。）
+
+  ---
+
+  阶段 0：传感器采集
+
+  stateEstimator(&state, &sensorData, &control, tick) 内部（当前用的是
+  estimatorComplementary，estimator_complementary.c:71）第一步就是：
+
+  sensorsAcquire(sensorData, tick);   // 1000Hz 全速读取陀螺仪 gyro(deg/s)、加速度计 acc(g)
+
+  control 参数在这个估计器里实际没被用来赋值（占位统一接口，Kalman 版本才会用推力做加速度预测），所以对 control 没有直接影响。
+
+  阶段 1：状态估计（sensor → state）
+
+  同样在 estimatorComplementary（estimator_complementary.c:73-95）：
+
+  - 姿态：250Hz 频率下用 sensfusion6UpdateQ() 做互补滤波（陀螺积分 + 加速度计重力方向融合，抑制陀螺零漂），输出四元数与欧拉角写入
+    state->attitude.{roll,pitch,yaw}、state->attitudeQuaternion。
+  - 垂向加速度：state->acc.z（去掉重力分量）。
+  - 位置/速度：100Hz 下 positionEstimate() 结合 ToF 测距、加速度二次积分算出 state->position、state->velocity。
+
+  这一步只产出 state，还没有涉及 control。
+
+  阶段 2：设定点获取（人的意图 → setpoint）
+
+  commanderGetSetpoint(&setpoint, &state)（commander.c:104-134）从 setpointQueue 里取出最近一次由
+  CRTP/遥控任务写入的目标值（角度/角速度/速度/位置的期望，取决于每个轴的 mode）。带一个看门狗：如果超过 COMMANDER_WDT_TIMEOUT_STABILIZE
+  没收到新指令，会强制切换成"水平自稳、偏航角速度归零"的失控保护模式，防止信号丢失后飞机乱飞。
+
+  阶段 3：controller() → controllerPid() 三级串级 PID
+
+  这是真正给 control 赋值的地方，是经典的位置 → 速度 → 姿态角 → 角速度四级串级结构（外环输出作为内环的设定值）：
+
+  3a. 位置环（100Hz，仅 mode==modeAbs 时启用）
+
+  positionController()（position_controller_pid.c:184-213）：用 pidX/pidY/pidZ 把"位置误差"转成"速度期望"，写回
+  setpoint->velocity.{x,y,z}。如果不是绝对位置模式（比如手动摇杆给的是速度/角度指令），这一层直接跳过，setpoint->velocity
+  保留摇杆映射值。
+
+  3b. 速度环（100Hz）
+
+  紧接着调用的 velocityController()（position_controller_pid.c:216-243），核心公式是标准 PID：
+
+  error = desired - measured
+  outP = kp*error
+  outD = kd * d(error)/dt   (经低通滤波)
+  outI = ki * ∫error dt     (积分限幅 iLimit)
+  output = outP + outI + outD
+
+  （这是 pid.c:56-91 里 pidUpdate() 的通用实现，后面各级 PID 都复用它。）
+
+  具体做的事：
+
+  - rollRaw/pitchRaw = PID(state->velocity.x/y, setpoint->velocity.x/y) —— 速度误差 PID。
+  - 因为速度误差是在大地坐标系下算的，而姿态指令要在机体坐标系下给出，所以用当前航向角 yawRad 做一次旋转变换：
+  attitude->pitch = -(rollRaw*cos(yaw)) - (pitchRaw*sin(yaw));
+  attitude->roll  = -(pitchRaw*cos(yaw)) + (rollRaw*sin(yaw));
+    这一步本质是"世界系速度误差 →
+    机体系倾角指令"的坐标旋转（想让飞机往哪个方向飞，就要往那个方向倾斜机身，倾斜方向与机头朝向有关，所以要转到机体坐标）。结果被限制在
+    ±rpLimit（默认 20°），防止过度倾斜。
+  - thrustRaw = PID(state->velocity.z, setpoint->velocity.z)，再线性映射成 PWM 量级：actuatorThrust = thrustRaw*1000 +
+    thrustBase（thrustBase 是悬停基准推力，相当于配平/前馈项，减少纯积分项爬升到平衡点所需的时间），并保底 thrustMin。
+
+  回到 controllerPid()（controller_pid.c:78-90）：
+  - 若是手动油门（setpoint->mode.z == modeDisable，典型的姿态模式/自稳模式）：跳过位置/速度环，直接 actuatorThrust =
+    setpoint->thrust（摇杆油门原始值）。
+  - 若是手动横滚俯仰（mode.x/y == modeDisable）：attitudeDesired.roll/pitch 直接取摇杆角度值，绕开位置/速度环。
+  - 偏航目标 attitudeDesired.yaw：速度模式下按摇杆角速度累加积分（attitudeDesired.yaw += rate*dt），否则直接取绝对角度设定，并 capAngle
+    归一化到 ±180°。
+
+  这套"每个轴的 mode 单独决定是否绕开外层闭环"的设计，让姿态自稳、定高、定点飞行可以按轴混用同一套代码。
+
+  3c. 姿态角环（500Hz）
+
+  attitudeControllerCorrectAttitudePID()（attitude_pid_controller.c:113-134）：用 pidRoll/pidPitch/pidYaw 把"姿态角误差（期望角 -
+  当前角）"转成"期望角速度" rateDesired.{roll,pitch,yaw}。yaw 误差单独做了 ±180° 环绕修正，避免在 0°/360° 边界抖动。
+
+  如果轴处于角速度模式（mode.roll/pitch == modeVelocity，比如打杆直接控制翻滚速率），则 rateDesired
+  被摇杆角速度直接覆盖，并且重置对应外环
+  PID（controller_pid.c:99-106）——因为外环已经被绕过，若不清零其积分项，等切回角度模式时会有历史误差突然释放导致的冲击。
+
+  3d. 角速度环（500Hz）
+
+  attitudeControllerCorrectRatePID()（attitude_pid_controller.c:96-108）：用 pidRollRate/pidPitchRate/pidYawRate
+  把"角速度误差（期望角速度 − 陀螺仪实测角速度）"转成最终执行量，saturateSignedInt16 限幅到 ±32767，存入静态变量
+  rollOutput/pitchOutput/yawOutput。
+
+  这是整个串级里唯一直接用陀螺仪实测值（而不是估计出的姿态角）做反馈的一环，响应最快，用来快速抑制角速度扰动（比如一阵风的瞬时干扰）。
+
+  3e. 写回 control
+
+  attitudeControllerGetActuatorOutput(&control->roll, &control->pitch, &control->yaw); // 113
+  control->yaw = -control->yaw;              // 坐标系符号翻转
+  control->thrust = tiltComp ? actuatorThrust/cosθ补偿 : actuatorThrust;  // 128-135
+
+  3f. 解锁保护
+
+  若 control->thrust == 0（未解锁/急停时的典型状态），强制 roll=pitch=yaw=0，并 attitudeControllerResetAllPID() +
+  positionControllerResetAllPID() 清空所有积分项，同时把 attitudeDesired.yaw
+  重置为当前实际航向（controller_pid.c:137-154）——这样飞机在地面等待解锁期间，各级 PID
+  不会因为误差持续累积而在解锁瞬间猛地输出一个大力矩。
+
+  ---
+
+  小结：一张图看完整链路
+
+  陀螺仪/加速度计 (1000Hz)
+     └─ sensorsAcquire
+  互补滤波 (250Hz) ──► state.attitude / state.position / state.velocity
+  摇杆/CRTP ──► setpoint (含每轴 mode)
+                       │
+     ┌─────────────────┴──────────────────┐
+     │        controllerPid (100/500Hz)     │
+     │ 位置环PID(100Hz): state.pos→setpoint.vel        [仅 modeAbs]
+     │ 速度环PID(100Hz): state.vel→attitudeDesired(roll/pitch)+thrust
+     │ 姿态角环PID(500Hz): state.attitude→rateDesired
+     │ 角速度环PID(500Hz): gyro→ rollOutput/pitchOutput/yawOutput
+     └──────────────────┬───────────────────┘
+                         ▼
+          control.{roll,pitch,yaw,thrust}
+                         ▼
+                powerDistribution → 电机
+
+  每一层都是"期望值 - 反馈值 → PID → 下一层的期望值"，越往内环反馈越"硬"（直接用传感器原始量，如陀螺仪角速度），越往外环越"软"（用滤波估
+  计出的姿态/位置），这是四旋翼飞控里典型的**多级串级 PID（cascade PID）**设计，兼顾了响应速度（内环快）和长期精度（外环慢但抗漂移）。
+
+✻ Brewed for 2m 9s
+
+
+limitThrust 裁剪之后 → 电机实际 PWM 输出的完整链路
+
+  power_distribution_stock.c:135-138 调用的 motorsSetRatio(MOTOR_Mx, motorPower.mx) 就是这条链路的入口，目标文件是
+  components/drivers/general/motors/motors.c。整个过程可以拆成 5 步：
+
+  1. 输入含义：0~65535 的"虚拟推力刻度"
+
+  limitThrust 把每个电机的值裁剪到 uint16_t 范围 [0, 65535]（num.c:85-95）。这个值不是 PWM 占空比本身，而是 motors.c:180
+  注释里说的"thrust mapped for 65536 <==> 60 grams"——一个 16 位的推力刻度，65535 对应厂商标定的最大推力（约 60g，针对 CF2
+  机架），线性映射关系。之所以先算成 16 位量再转换成 PWM，是为了让上层混控算法（powerDistribution）与底层 PWM 硬件的分辨率解耦。
+
+  2. motorsSetRatio() 入口（motors.c:181-210）
+
+  void motorsSetRatio(uint32_t id, uint16_t ithrust)
+  {
+    if (isInit) {
+      uint16_t ratio = ithrust;
+  #ifdef ENABLE_THRUST_BAT_COMPENSATED
+      ... // 电池电压补偿，见下面第3步
+  #endif
+      ledc_set_duty(motors_channel[id].speed_mode, motors_channel[id].channel,
+                     (uint32_t)motorsConv16ToBits(ratio));
+      ledc_update_duty(motors_channel[id].speed_mode, motors_channel[id].channel);
+      motor_ratios[id] = ratio;
+    }
+  }
+
+  id 就是 MOTOR_M1..M4（0~3），对应 motors_channel[] 数组里预先配置好的 LEDC（ESP32 硬件 PWM 外设）通道。
+
+  3. 电池电压补偿（默认关闭）
+
+  motors.h:46 把 #define ENABLE_THRUST_BAT_COMPENSATED 注释掉了，所以当前代码路径不会执行 motors.c:190-201 这段：
+
+  float thrust = (ithrust/65536.0f) * 40;                     // 换算成克数
+  float volts  = -0.0006239f*thrust*thrust + 0.088f*thrust;   // 经验拟合：多少克推力需要多少伏
+  float percentage = volts / pmGetBatteryVoltage();           // 需要电压 / 当前实际电池电压
+  ratio = percentage * UINT16_MAX;
+
+  如果打开这个宏，其原理是：无刷/有刷电机的推力大致只跟"施加在电机上的实际电压"相关，而不是跟 PWM
+  占空比本身相关；电池电压会随放电下降，同样的占空比在电量低时实际电压更低、推力更小。这段代码用一个二次拟合曲线把"目标推力"反算成"需要
+  多少电压"，再除以当前电池电压（pmGetBatteryVoltage()
+  实时采样）算出应该给的占空比百分比，从而让电池从满电到低电的整个过程中，同样的推力指令都能得到接近一致的实际推力。目前 ESP-Drone
+  默认关闭这个补偿，ratio 就是裁剪后的原始值。
+
+  4. 16 位刻度 → 硬件 PWM 分辨率转换
+
+  #define MOTORS_PWM_BITS  LEDC_TIMER_8_BIT     // motors.h:39，8位
+  static uint16_t motorsConv16ToBits(uint16_t bits)
+  {
+      return ((bits) >> (16 - MOTORS_PWM_BITS) & ((1 << MOTORS_PWM_BITS) - 1));
+  }
+
+  即 ratio >> 8，把 16 位的推力刻度右移 8 位，取高 8 位，映射成 ESP32 LEDC 硬件实际能接受的 8
+  位占空比（0~255）。这一步纯粹是分辨率降采样：控制算法用更精细的 16 位内部运算，但最终硬件寄存器只有 8
+  位精度，用移位而不是除法既高效又等价于按比例缩小。
+
+  5. 写入 ESP32 LEDC 硬件寄存器，生成真实 PWM 波形
+
+  motorsInit()（motors.c:97-148）在飞控启动时已经配置好定时器和 4 个通道：
+
+  ledc_timer_config_t ledc_timer = {
+      .duty_resolution = MOTORS_PWM_BITS,  // 8bit
+      .freq_hz = 15000,                    // 15kHz PWM 频率
+      .speed_mode = LEDC_LOW_SPEED_MODE,
+      .timer_num = LEDC_TIMER_0,
+  };
+  ledc_timer_config(&ledc_timer);
+  for (i = 0; i < 4; i++) ledc_channel_config(&motors_channel[i]);
+
+  motors_channel[]（motors.c:55-84）把 4 个逻辑通道 MOT_PWM_CH1~4（硬件 LEDC channel 4~7）分别绑定到 GPIO：MOTOR1_GPIO=CONFIG_MOTOR01_PI
+  N(GPIO4)、MOTOR2_GPIO=GPIO33、MOTOR3_GPIO=GPIO32、MOTOR4_GPIO=GPIO25（sdkconfig:496-499，motors.h:62-65）。
+
+  motorsSetRatio() 最后两行：
+
+  ledc_set_duty(speed_mode, channel, duty8bit);   // 只是写入影子寄存器
+  ledc_update_duty(speed_mode, channel, ...);     // 真正提交，下一个PWM周期生效
+
+  这是乐鑫 LEDC 驱动的标准两段式写法：ledc_set_duty 先把新占空比写到一个"待生效"寄存器，ledc_update_duty
+  才把它同步到实际输出比较寄存器，避免在 PWM 波形中间改变占空比导致毛刺。之后 ESP32 的 LEDC 定时器/比较器硬件会持续、自动地在对应 GPIO
+  上产生 15kHz、占空比为 duty/255 的方波，不再需要 CPU 干预（区别于软件模拟 PWM）。
+
+  6. GPIO 方波 → 实际电机转速
+
+  这个 PWM 方波接到电机驱动电路（ESP-Drone 用刷电机 BRUSHED 类型，motorMap[id]->drvType，见 motors_def_cf2.c）——通常是一个 MOSFET/驱动
+  IC，PWM 高电平比例越大，等效加在电机两端的平均电压越高，电机转速/推力越大。占空比 0 → 电机不转，255（满 8 位）→
+  满电压全速转动，这正好对应我们最初 limitThrust 裁剪到 [0, 65535] 再线性缩放到 [0, 255] 的整条链路。
+
+  ---
+
+  全链路一览
+
+  control.{roll,pitch,yaw,thrust}
+          │  (X构型混控矩阵 + 符号叠加)
+          ▼
+  motorPower.m1..m4  (int32 运算结果，可能越界)
+          │  limitThrust = limitUint16   → 裁剪到 [0,65535]
+          ▼
+  motorsSetRatio(id, ithrust)
+          │  [可选] 电池电压补偿：目标推力→所需电压→÷实测电压→新ratio  (默认关闭)
+          │  motorsConv16ToBits: ratio >> 8   → 降到 8bit [0,255]
+          ▼
+  ledc_set_duty + ledc_update_duty
+          │  写入 ESP32 LEDC 硬件定时器/比较器寄存器
+          ▼
+  GPIO(4/33/32/25) 输出 15kHz、占空比 duty/255 的方波
+          │  驱动 MOSFET/电机驱动电路
+          ▼
+  刷式电机实际转速 / 螺旋桨推力
+
+✻ Churned for 1m 16s
