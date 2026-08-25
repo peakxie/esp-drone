@@ -119,3 +119,767 @@ Ready to code?
 
 
 优化一下@python/t3_motor_mapping.py 设置10000到60000的过程，motor的实际运行速度验证
+
+
+优化一下@python/t4b_pitch_response_check.py 目前连上启动之后，4个motor猛转，没有输出。ctrl+c之后测试结束，motor还在转不受控制。细化分析
+
+细化分析
+
+  先说明一下为什么怀疑方向要改：你说得对，t3_motor_mapping.py 用 motorPowerSet.enable=1 直接覆盖
+  PWM，日志回显正常，说明 UDP 链路、log TOC、CRTP 通路本身没问题。问题只在 t4b
+  这种"走真实闭环"的场景下出现，这就把嫌疑范围缩小到 t4b 和 t3 之间真正不同的地方：
+
+  ┌──────────┬────────────────────────────────┬────────────────────────────────────────────────────────┐
+  │          │        t3_motor_mapping        │                t4b_pitch_response_check                │
+  ├──────────┼────────────────────────────────┼────────────────────────────────────────────────────────┤
+  │ 电机数量 │ 每次只转 1 个                  │ 4 个同时转                                             │
+  ├──────────┼────────────────────────────────┼────────────────────────────────────────────────────────┤
+  │ 控制路径 │ motorPowerSet 绕过飞控，PWM    │ 走 commander → PID → powerDistribution，真实闭环       │
+  │          │ 直给                           │                                                        │
+  ├──────────┼────────────────────────────────┼────────────────────────────────────────────────────────┤
+  │ 电流特征 │ 单机、分档匀速爬升，峰值电流小 │ 4 机同时起转，且姿态 PID                               │
+  │          │                                │ 会叠加修正量，瞬时电流可能远高于 "低速基线" 看起来的量 │
+  └──────────┴────────────────────────────────┴────────────────────────────────────────────────────────┘
+
+  关键代码依据：
+
+  - power_distribution_stock.c：motorPower.m1 = thrust ± roll ± pitch ± yaw。哪怕 BASE_THRUST=15000
+    看起来只有 23%，只要飞机没放平、或姿态估计刚上电还没收敛，control->roll/pitch
+    的瞬时修正量就可能把某几个电机的合成值顶到接近 60000（MAX_THRUST），4 电机同时如此，浪涌电流比 t3
+    的"单电机、渐进爬坡"大得多。
+  - 桨叶拆了之后电机转动本身没有气动阻尚力，姿态 PID 在这种"裸测"场景下天生容易震荡打满输出，这也是官方
+    Crazyflie 文档反复强调"拆桨测试只允许极低推力"的原因。
+
+  "猛转 + 无输出 + Ctrl+C 也止不住"这个组合，最符合的解释是主控被拉低电压 brown-out
+  复位（或看门狗复位），不是软件逻辑 bug：
+
+  1. 4 电机同时起转的瞬时电流把供电拉低，ESP32 触发 brownout/WDT 复位；
+  2. 复位瞬间，PWM 外设的驱动状态由硬件/驱动板决定，很多板子在 MCU 复位过程中相关 GPIO
+     会短暂浮空或保持高电平 → 电机看起来"没有控制地转"；
+  3. MCU 已经在重启/未跑到 stabilizerTask+commanderGetSetpoint 那套 2 秒看门狗清零逻辑，Wi-Fi/CRTP
+     任务也没起来 → 自然没有任何 log 包回来；
+  4. 这时 Python 端发多少个 send_setpoint(0,0,0,0) 都没用，因为对端根本没在跑接收逻辑——这不是 cflib
+     或脚本能救的问题。
+
+  我看到仓库里正好有
+  t0_reset_reason.py，这就是留给这种场景的诊断工具。建议下次复现后，保持供电，立刻跑一下它，看
+  sys.resetReason：9=brownout，5/6/7=看门狗复位，都指向"复位"而非正常关机；1=poweron
+  才是纯上电。这一步能一次性证实/排除这个假设。
+
+  脚本层面能做的优化
+
+  即便根因在硬件/供电，脚本也应该把风险降到最低、把异常暴露得更明显，而不是"步进给满基线推力+指望 Ctrl+C
+  兜底"。我准备这样改：
+
+  1. 先确认 log 心跳，再解锁推力——lg.start() 后先等到收到第一帧
+     motor.*，确认遥测通路活着才开始发非零推力；等不到就直接放弃，绝不盲发推力。
+  2. 推力斜坡启动，不再一步跳到 BASE_THRUST，用 ~1s 分级爬升，避免 4 电机同时冲击电流。
+  3. 运行中监控 log 是否"断流"：一旦超过约 0.3s 没收到新的 motor.*
+     帧，立即停止发送非零推力并报警——这正好对应"MCU 可能已经复位/失联"的信号，比干等 Ctrl+C 更快响应。
+  4. 监听 connection_lost / disconnected 回调，掉线立刻停止测试并打印明确提示，而不是让主循环继续傻等。
+  5. Ctrl+C 加固：把收尾的"连发几次 0 推力"包在临时屏蔽 SIGINT 的代码块里，防止用户情急之下二次按 Ctrl+C
+     把清零逻辑本身打断（目前的代码如果收尾阶段再来一次 KeyboardInterrupt，是有可能跳过清零直接退出的）。
+  6. 所有 print 加 flush=True，避免任何缓冲导致的错觉。
+
+  现在开始改代码。
+
+● Write(python/t4b_pitch_response_check.py)
+
+
+已改完，语法检查通过。改动要点：
+
+  1. 先确认 log 心跳再上电：lg.start() 后先等第一帧 motor.*（最多 2s），等不到就直接放弃，绝不盲发推力——正
+     对"没有输出"这个症状，宁可测试不做，也不在遥测不通的情况下让电机转。
+  2. 推力斜坡启动（1s 内从 0 爬到 BASE_THRUST），避免 4
+     电机同时起转造成的电流冲击——这是我认为"猛转+复位嫌疑"最可能的根因，斜坡能显著降低瞬时电流。
+  3. 运行中日志断流监控：超过 0.3s 没收到新 motor.* 帧就立即停止加推力并报警，比干等 Ctrl+C
+     更快响应"主控可能已经出问题"的情况。
+  4. connection_lost/disconnected 回调：掉线立即感知，主循环退出去做收尾，而不是傻等。
+  5. Ctrl+C 加固：收尾的连续零推力发送包在临时屏蔽 SIGINT 的代码块里，防止用户情急二次按 Ctrl+C
+     把清零指令打断。
+  6. 所有 print 加 flush=True。
+
+  但要提醒：如果复现时确实是"电机狂转、log 彻底不刷新、Ctrl+C
+  也止不住"，这已经超出脚本能兜底的范围了——大概率是 4 电机同时起转把主控拉到
+  brownout/看门狗复位。下次复现后，保持供电，跑一下仓库里现成的 t0_reset_reason.py，看 sys.resetReason
+  是否是 9（brownout）或
+  5/6/7（看门狗复位），就能确认或排除这个假设。如果确认是复位，那就是电源/接线余量问题（或需要临时调低姿态
+  PID 增益做裸机测试），不是这个 Python 脚本能修的。
+  
+
+已连接。                                                                                                 
+  等待第一帧 motor 日志，确认遥测通路正常...                                                               
+  t=   24280  m1=     0  m2=     0  m3=     0  m4=     0                                                   
+  日志已确认在收，即将开始发送推力基线（斜坡爬升，避免电流冲击）。                                         
+                                                                                                           
+  即将开始：thrust 从 0 斜坡爬升到低速基线，pitch/roll 设定点始终为 0（水平）。                            
+  电机转动、稳定几秒后，请缓慢抬起机头，观察打印：                                                         
+    期望：m1、m4（前）变小，m2、m3（后）变大                                                               
+    再缓慢低头，期望反过来：m1、m4 变大，m2、m3 变小                                                       
+  按 Ctrl+C 结束测试。                                                                                     
+                                                                                                           
+  t=   24330  m1=     0  m2=     0  m3=     0  m4=     0                                                   
+                                                                                                           
+  警告：超过 0.3s 未收到 motor 日志，链路或主控可能已异常，立即停止加推力！                                
+                                                                                                           
+  正在停止并归零...                                                                                        
+  测试结束。                                                                                               
+                                                                                                           
+  [链路] disconnected                                                                                      
+
+  Thought for 1m 8s (ctrl+o to expand)
+
+● 这次的日志很关键：连上后第一帧全 0，第二帧(50ms 后)还是全 0，然后遥测直接断流，紧接着整条链路 
+  disconnected——不是电机转起来之后才出问题，而是几乎在开始发送 setpoint 的瞬间，飞机就没反应了。这比"4
+  电机电流冲击致 brownout"更像是软件层面的崩溃/复位，而且时间点非常可疑：
+
+  - git log 显示最新一次功能性提交是今天的 02565ba feat: dual core split，把 sensors→estimator→stabilizer
+    固定到 core 1，wifi/CRTP 固定到 core 0。
+  - 在这批 python 脚本里，t4b 是自这次改动以来第一个真正调用 cf.commander.send_setpoint() 的脚本——t0/t4
+    是只读，t3 走的是 motorPowerSet 直通 PWM，从未触发 commanderSetSetpoint() 这条"CRTP-RX(core0) 写队列 →
+    stabilizerTask(core1) 读队列"的跨核路径。
+  - 也就是说，t4b 很可能是第一个真正压测到"拆核之后跨核 setpoint
+    传递"这条路径的脚本，如果这里有竞态/同步问题，之前的测试全都测不出来。
+
+  这不是靠改 Python 脚本能解决的，脚本这次的行为其实是对的：探测到断流后 0.3s
+  内就主动停发推力并退出，没有傻等 Ctrl+C。但我在 ramp 阶段留了个漏洞——斜坡爬升那 1
+  秒里没有检查断流，得先补上：
+  
+脚本已修好这个漏洞（斜坡阶段也会检测断流，不会再傻等 1
+  秒才反应）。但接下来更重要的是定位根因，建议按顺序做两件事，而不是继续改脚本：
+
+  1. 跑 t0_reset_reason.py 确认是不是复位
+  测完 t4b、飞机断连后，如果它会自动重连（Wi-Fi AP 还在），立刻跑：
+  python3 python/t0_reset_reason.py
+  看 sys.resetReason：
+  - 9 = brownout（电源问题）
+  - 4 = panic，5/6/7 = 看门狗复位（软件崩溃）
+  - 1 = poweron（如果你没手动断电却看到这个，说明确实复位过）
+
+  2. 如果条件允许，接 UART 抓一次崩溃现场
+  idf.py monitor 直接看有没有 backtrace/Guru
+  Meditation，这是最快能锁定到具体文件行号的方法，比继续猜测快得多。
+
+  为什么我现在更怀疑是 02565ba feat: dual core split 
+  引入的问题，而不是纯电流冲击：这次日志显示，几乎是在开始发 setpoint 的瞬间（第二帧后，此时斜坡才刚起步、
+  推力还很小）遥测就断了，不像是"电机转起来后电流才把电压拉垫"的时间特征。而 t4b
+  恰好是这批脚本里第一个真正调用 send_setpoint()、从而触发"CRTP-RX(现在钉在 core0) 写队列 →
+  stabilizerTask(现在钉在 core1) 读队列"这条跨核路径的脚本——之前的 t0/t3/t4
+  从未走过这条路。如果想快速交叉验证，可以本地切到 dual-core-split 之前的 commit（8115039
+  或更早）重新刷机，跑一遍
+  t4b：如果那个版本不会断连，基本就能确认是这次拆核改动的回归，而不是电源/电流问题。
+  
+  电池的原因
+  
+  优化@python/t4b_pitch_response_check.py 一步步分析，为什么电机一开始转的很猛，而且抬头和低头也没有完全按照m2m3加速，m1m4加速这个规律
+  
+  
+  化@python/t4b_pitch_response_check.py                                                                  
+  一步步分析，为什么电机一开始转的很猛，而且抬头和低头也没有完全按照m2m3加速，m1m4加速这个规律             
+  
+  Thought for 1m 12s, searched for 4 patterns, read 3 files (ctrl+o to expand)
+
+● Bash(grep -n "PITCH_DISTRIBUTION_INVERTED" sdkconfig sdkconfig.defaults sdkconfig.defaults.pydrone
+      2>/dev/null; echo "---kconfig---"; sed -n '125,155p' main/Kconfig.…)
+  ⎿  sdkconfig:448:# CONFIG_PITCH_DISTRIBUTION_INVERTED is not set
+     ---kconfig---
+                 int "PITCH_CALIB deg*100"
+     … +29 lines (ctrl+o to expand)
+
+  Thought for 2m 15s, searched for 4 patterns, read 3 files (ctrl+o to expand)
+
+● 看完 power_distribution_stock.c、controller_pid.c、attitude_pid_controller.c、pid.c
+  这几处固件源码后，两个现象都能在代码里找到确定性的成因，不是玄学抖动。
+
+  1. 电机一开始转得很猛
+
+  链路：stabilizer 姿态环(P) → 角速度环(PID) → attitudeControllerGetActuatorOutput → powerDistribution 混控
+  → limitThrust(clip 到 uint16)。三处叠加放大了初始瞬间的小扰动：
+
+  - 角速度环 D 项完全没滤波：attitude_pid_controller.c:36-38 里 ATTITUDE_RATE_LPF_ENABLE = false。pid.c:68
+    算 deriv = (error - prevError) / dt，dt = 1/ATTITUDE_RATE = 1/500s（stabilizer_types.h:271）。分母只有
+    0.002s，陀螺仪读数只要有几度/秒的抬升（人手扶机身、开机自检余振、无桨机架本身刚性好没有气动阻尼），deri
+    v 就能到几千，乘上 kd≈2.5~2.6（pid.h:36/41 或 70/75）之后单轴 D 项瞬间上千。
+  - PID 输出没有限幅：pid.h:66/100 的 DEFAULT_PID_OUTPUT_LIMIT = 0.0，而 pid.c:93 是 if (pid->outputLimit
+    != 0) constrain(...) —— limit=0 在这套代码里的语义是"不裁剪"，不是"裁剪到0"。也就是说
+    rollOutput/pitchOutput 只受
+    saturateSignedInt16（±32767）限制，中间完全没有一个"单轴修正最多能有多大"的保险丝。
+  - 混控时基线推力太低，扛不住这个尖峰：power_distribution_stock.c:98-101，m1 = thrust - r + p +
+    yaw。BASE_THRUST=15000，只占 uint16 全量程(65535)的 23%左右，idleThrust 默认是
+    0（power_distribution_stock.c:58，没有被覆盖）。一旦某轴修正量冲到大几千，limitThrust（limitUint16）会
+    把某个电机直接顶到接近满量程，或者把对侧电机钳到 0 地板——看起来就是"某个电机突然狂转"。
+
+  这三点凑在一起：低基线推力 + 无 D 滤波 + 无输出限幅，是这套姿态环在裸机（无桨、无气动阻尼）场景下天生容易
+  在起转瞬间打满某个电机的原因，脚本注释里其实也提到了这个风险（第6-9行），但没有从代码层面把根因钉死。
+
+  2. 抬头/低头没有严格按 m1m4/m2m3 对称规律走
+
+  看混控公式的全貌（power_distribution_stock.c:98-101）：
+
+  m1 = thrust - r + p + yaw
+  m2 = thrust - r - p - yaw
+  m3 = thrust + r - p + yaw
+  m4 = thrust + r + p - yaw
+
+  脚本注释只强调了 p（pitch）这一项，但实际每个电机同时叠加了 r(roll/2) 和 yaw 两项。破坏对称性的来源：
+
+  - 手动倾斜天然带耦合：人手很难做到纯 pitch、零 roll、零 yaw。roll 项让 m1,m2 同号变化、m3,m4
+    同号变化；这和 pitch 项的 m1,m4 同号 / m2,m3 同号是两条不同的配对关系，叠加后单纯看"m1m4 vs
+    m2m3"这条规律会被 roll/yaw 分量的抖动掩盖。
+  - 未滤波 D 项叠加高频噪声：同第1点，逐帧打印出来的数字不是干净的准静态 pitch-P 响应，而是"低频 pitch 趋势
+    + 高频 D 项抖动"的混合，肉眼看会觉得"没有完全跟着规律走"。
+  - idleThrust=0 造成的非对称钳位：基线只有 15000，一旦某个电机侧的修正量把它顶到 0
+    地板，它就不能再跟着倾角继续线性下降了——比如低头时 m2 已经被钳到 0，继续加大低头角度，理论上 m2
+    该继续减小，但地板效应让它纹丝不动，只有 m3 在涨，破坏了"一个减一个增"的对称直觉。
+  - 串级 PID 的动态滞后/超调：姿态是外环 P（角度）→ 内环 PID（角速度）的串级结构，手动快速倾斜时会有瞬态超
+    调，瞬时截图看到的四电机关系不会是理想静态线性关系，需要看一段时间的趋势而不是单帧。
+
+  建议的排查/优化方向
+
+  不改固件，先在脚本层面就能定位到底是哪一项主导：
+
+  1. 在 lg 里加上 pid_rate.roll_outD / pitch_outD 和 pid_attitude.roll_outP / pitch_outP（这两个 LOG_GROUP
+     固件里已经有，见 attitude_pid_controller.c:165-187），直接看 D 项是不是在尖峰时刻远大于 P
+     项，就能确认第1点。
+  2. 把 BASE_THRUST
+     适当调高（在电流允许范围内），减小"修正量相对基线过大"的比例，同时观察尖峰是否变得不那么明显。
+  3. 测试时把机身放在稳定支架上、通电斜坡开始前保持静止，避免震动喂给未滤波的陀螺仪。
+  4. 手动扭动时同时看 roll 的数值（脚本目前没打印，但可以加 stabilizer.roll log），验证是否存在耦合。
+
+  固件层面（如果要治本，需要你决定是否改）：给角速度环打开 D 滤波（ATTITUDE_RATE_LPF_ENABLE = true），或给
+  pid.h 里的 DEFAULT_PID_OUTPUT_LIMIT 设一个非零值限制单轴修正幅度，再考虑给 idleThrust
+  设一个小的非零值避免地板钳位。
+
+  要我先按第1条改一下脚本加日志字段，帮你把"是不是 D 项尖峰"实锤确认一下吗？
+
+✻ Worked for 3m 31s
+
+❯ 好的，另外分析下默认选的滤波是哪个算法，pid是哪个算法？                                                  
+
+  Thought for 47s, searched for 1 pattern, read 2 files (ctrl+o to expand)
+
+● 分两部分看,都在源码里能直接对上号。
+
+  滤波算法：2 阶 Butterworth 低通(双二阶/biquad, 双线性变换)
+
+  filter.c:65-101 里 lpf2pInit / lpf2pApply 实现的是标准的 2-pole biquad 低通滤波器：
+
+  - lpf2pSetCutoffFreq (filter.c:74-86) 用双线性变换(bilinear
+    transform)把连续域的二阶低通离散化，系数公式里 cosf(M_PI_F/4.0f) 就是 cos(45°)=0.7071=1/√2，这正是
+    Q=0.7071 的巴特沃斯(Butterworth)响应（对比 filter.h:167-169 的 init_butterworth_2_low_pass 也是同一个 Q
+    值，可以互相印证）。
+  - lpf2pApply (filter.c:88-101) 就是标准 biquad 差分方程 y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] -
+    a1*y[n-1] - a2*y[n-2]，和 PX4/Betaflight 里那套 lpf2p 是同源实现。
+
+  但这个滤波器是"实现了但默认没启用"：attitude_pid_controller.c:36-38
+
+  #define ATTITUDE_LPF_ENABLE false
+  #define ATTITUDE_RATE_LPF_ENABLE false
+
+  pidInit (pid.c:33-54) 只有 enableDFilter==true 时才会调用 lpf2pInit 并在 pidUpdate 里对 D 项走
+  lpf2pApply（pid.c:69-74）；默认这两个 flag 都是 false，所以角度环和角速度环的 D 项现在走的是 pid.c:73 的
+  pid->deriv = deriv（未滤波原始差分）。这就是我上一条分析里"D
+  项容易被陀螺噪声打出尖峰"的直接代码依据——滤波算法选的是 Butterworth 二阶，只是没打开。
+
+  对应的截止频率若打开会是：角度环 15Hz、角速度环 30Hz（attitude_pid_controller.c:35/37），采样率固定
+  500Hz（ATTITUDE_RATE）。
+
+  PID 算法：并联式(非交互型)离散 PID，微分对误差、矩形积分、积分限幅无输出限幅
+
+  pid.c:56-102 的 pidUpdate 是教科书式并联形式（P、I、D 三项独立增益相加，不是"单一 Kp 乘以 I/D 相对项"的
+  ideal/standard form）：
+
+  - P：outP = kp * error，error = desired - measured（pid.c:62，误差对测量值/角度求差，标准负反馈）。
+  - D：deriv = (error - prevError) /
+    dt（pid.c:68）——这是微分对误差(derivative-on-error)，不是更常见的"微分对测量值(derivative-on-measuremen
+    t)"写法。区别在于：如果期望值(desired)有台阶跳变，这种写法会产生"微分冲击(derivative kick)"；本项目里
+    desired 是姿态环输出的连续 rateDesired，跳变不算典型阶跃，但对噪声/尖峰同样敏感（见上一条分析）。
+  - I：integ += error * dt（pid.c:81），矩形/欧拉积分，然后 constrain(integ, -iLimit, iLimit)
+    做积分幅值限幅式抗饱和（pid.c:84-87）——这是最基础的一种抗积分饱和手段(clamped
+    integrator)，不是条件积分(conditional integration)或反算法(back-calculation)，也就是说输出真正打满饱和
+    时积分项不会自动停止累积，只是被限制在一个固定上限内。
+  - 总输出限幅：if (outputLimit != 0) constrain(...)（pid.c:93-96），而角度/角速度环用的默认值
+    DEFAULT_PID_OUTPUT_LIMIT=0.0（pid.h:66/100），按代码里 !=0
+    才生效的写法，等于没有限幅——这也是上一条分析里电机尖峰的另一个成因。
+
+  结构上是串级(cascade) 姿态控制：外环角度 P（attitudeControllerCorrectAttitudePID，只用了 pidRoll/pidPitch
+  的 pidUpdate，但这几个 PID 对象在 pidInit 时 PID_ROLL_KI/KD 等增益，具体是不是纯 P 取决于 pid.h
+  里的宏值）→ 内环角速度 PID（attitudeControllerCorrectRatePID，pidRollRate/pidPitchRate/pidYawRate 是完整
+  PID）。这和 PX4/Crazyflie 生态里经典的"angle-P + rate-PID"级联架构是一致的。
+
+  一句话总结：滤波算法是二阶 Butterworth biquad，但默认关闭；PID 是最朴素的并联式离散 PID（微分对误差 +
+  矩形积分 + 积分限幅 + 默认不限幅输出），没有任何现代变体（如微分对测量值、反算法抗饱和、前馈等）。这两点
+  合起来正好解释了你之前问的"电机起转尖峰"和"pitch 响应不干净"的问题根源。
+  
+  
+  设置默认 estimator_kalman 使用kalman。controller_pid使用这个                                             
+
+  Thought for 27s, searched for 3 patterns, read 2 files (ctrl+o to expand)
+
+● Bash(sed -n '1,60p' components/core/crazyflie/modules/src/stabilizer.c | grep -n "estimator\|Estimator" ;
+      echo "---"; sed -n '150,260p' components/core/crazyflie/mod…)
+  ⎿  49:#include "estimator.h"
+     ---
+       stateCompressed.y = state.position.y * 1000.0f;
+     … +110 lines (ctrl+o to expand)
+
+  Thought for 33s, searched for 3 patterns (ctrl+o to expand)
+
+● Bash(sed -n '540,570p' components/core/crazyflie/modules/src/stabilizer.c)
+  ⎿      if (nrFailedTests == 0)
+         {
+           for (int m = 0; m < NBR_OF_MOTORS; m++)
+     … +28 lines (ctrl+o to expand)
+
+  Thought for 35s, searched for 3 patterns (ctrl+o to expand)
+
+● Update(components/core/crazyflie/modules/src/estimator.c)
+  ⎿  Added 1 line, removed 1 line
+       6  #include "estimator_kalman.h"
+       7  #include "debug_cf.h"
+       8  #define ESTIMATOR_NAME anyEstimator
+       9 -#define DEFAULT_ESTIMATOR complementaryEstimator                                          
+       9 +#define DEFAULT_ESTIMATOR kalmanEstimator                                                 
+      10  static StateEstimatorType currentEstimator = anyEstimator;
+      11  static StateEstimatorType requiredEstimator = anyEstimator;
+      12  
+
+  Thought for 17s, searched for 2 patterns (ctrl+o to expand)
+  ⎿  Found 3 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● No other override — this is the single source of truth for the default. Change made:
+
+  components/core/crazyflie/modules/src/estimator.c:9
+  #define DEFAULT_ESTIMATOR kalmanEstimator   // was complementaryEstimator
+
+  为什么这一行改动就够了，而 controller_pid 不需要额外接线：
+
+  - 启动路径是 system.c:198 (estimator = anyEstimator) → stabilizerInit → stateEstimatorInit(anyEstimator)
+    → stateEstimatorSwitchTo：estimator.c:121-123 里 anyEstimator 会被解析成 DEFAULT_ESTIMATOR，现在就是
+    kalmanEstimator。ESTIMATOR_NAME(强制项)仍然是
+    anyEstimator，不会覆盖这个默认值，所以不会有其它地方把它拉回 complementary。
+  - estimator_kalman.c / kalman_core.c 本来就在 CMakeLists.txt:27-29 里无条件编译进固件（没有 #ifdef
+    开关），链接层面没有额外依赖要打开。
+  - controller_pid.c 的输入是通用的 state_t *state（controller_pid.c:63-64 的函数签名），它不关心 state
+    是哪个 estimator 填的。estimator.c:159-161 的 stateEstimator() 只是按 currentEstimator 调用对应的
+    update 函数写同一个 state_t，所以默认换成 Kalman 后，attitudeControllerCorrectAttitudePID 拿到的
+    state->attitude.roll/pitch/yaw 自动就是 Kalman 输出，不需要改 controller_pid.c。
+  - 顺带确认了默认 controller 本来就是 ControllerTypePID(controller.c:10)，即 controller_pid，不需要再改。
+
+  补充一点：这个选择本来就有运行时开关，不用重新烧固件也能试——stabilizer.c:283-285 的任务循环会检测
+  stabilizer.estimator 这个 param 和当前 estimator 是否一致，不一致就调用
+  stateEstimatorSwitchTo。所以如果只是想临时对比测试，用 cflib 写
+  cf.param.set_value("stabilizer.estimator", "2")（2=kalmanEstimator，见 estimator.h:31-36
+  的枚举顺序）就能在不重新编译的情况下切换；这次改的是编译期默认值，让飞机开机就直接跑 Kalman。
+
+  需要我顺手重新编译一下确认没有报错吗（idf.py build，会花几分钟）？
+改完了，python/t4b_pitch_response_check.py 现在会额外拉一路日志：
+
+  - 新增 lg_diag（pid_rate.pitch_outP/outD + stateEstimate.roll/pitch），跟 motor 那一路分成两个
+    LogConfig，避免单个 log block 超过 CRTP payload 上限。
+  - log_cb 打印时把最近一次收到的 diag 值拼到同一行后面：rateP=... rateD=... roll=... pitch=...（diag
+    可能比 motor 那一帧晚最多一个周期，肉眼读数够用）。
+  - 两处 lg.stop() 收尾都同步加了 lg_diag.stop()。
+  - 开测前的提示文字加了一句怎么读这两个新字段：|rateD| >> |rateP| → D 项尖峰；掰 pitch 时 roll 也跟着动 →
+    有耦合，会打乱 m1m4/m2m3 的对称规律。
+
+  python3 -m py_compile 过了，语法没问题。
+
+  真正上电验证前提醒一句：这个脚本仍然是桨叶拆除、飞机固定、全程盯着电机的裸机测试，逻辑没变，只是多打印了
+  几列数字，风险跟之前一致。要不要现在拿设备跑一次看看实际输出？
+  
+  这份日志其实把上一次的假设给推翻了，换成了一个更明确、也更值得警惕的结论。
+
+  先看数据说话
+
+  - roll≈3.6~3.8°、pitch≈2.4~2.6°，整整 11 行几乎不变——这不是你在手动掰姿态，是飞机本来就没放平（或者夹具本
+    身带了个小角度），而且桨叶拆了、机身固定，它物理上也没法把这个角度转回去。
+  - rateD 全程在 -360~+440 之间晃，跟
+    rateP（26134→30865，还在持续往上爬）比起来完全不是一个量级。这直接证伪了"电机尖峰是 D 
+    项被陀螺噪声打出来的"这个假设——D 项很老实，真正在涨的是 P 项，而且是单调爬升，不是脉冲尖峰。
+  - m1 稳定在 52700+（65535 的 80%），m3 被摁死在 0，m2/m4 卡在 20000
+    左右不动——四个电机同时进入了一个稳态偏置，不是瞬时抖动。
+
+  真正的机制：姿态角环积分饱和(windup)
+
+  attitude_pid_controller.c 里外环角度 PID（pidPitch/pidRoll）是有积分项的（pid.h:54-56
+  PID_PITCH_KI=2.9（或 2.5），积分限幅 PID_PITCH_INTEGRATION_LIMIT=20.0，pid.h:66/100 的
+  DEFAULT_PID_OUTPUT_LIMIT=0.0 意味着这个积分算出来的量没有输出限幅）。链路是：
+
+  1. 飞机静止倾斜在 ~2.5°/3.6°，且永远回不到 0（固定夹具+无桨，转不动）。
+  2. 角度误差 error = 0 - 2.5° 长期非零不变，pid.c:81 的 integ += error*dt 就会一直单调累积，直到撞到
+     iLimit=20（deg）才停。
+  3. 累积出的 outI_angle 叠加到角度环输出，变成内环的 rateDesired——也就是"让飞机以某个角速度去纠正"的指令。
+  4. 但实际角速度 actualRate≈0（飞机压根转不动），所以角速度环误差 rateDesired - actualRate 会跟着
+     rateDesired 一起涨，pid_rate.pitch_outP = kp_rate * 该误差（kp_rate=250）跟着线性爬升——这正是你看到的
+     rateP 从 -3683 一路涨到 30865。
+  5. 角速度环自己还有一个 KI=500、限幅 33.3 的积分项（没打印出来，但机制同理也在涨），两者叠加后
+     pitchOutput 越来越大，喂进混控 m1 = thrust - r + p + yaw，直接把 m1 顶到接近满量程，把 m3 摁到 0
+     地板。
+
+  说明什么问题：
+  这不是偶发噪声，是这套"裸机固定在夹具上做闭环测试"的测试方法本身，只要姿态没放平、且外环角度 PID
+  带积分项，就必然会持续 windup，早晚把某个电机顶到饱和——你现在看到的 rateP
+  还在爬、没有触顶，说明这个过程还没走完，如果继续跑下去 m1 大概率会被顶到
+  65535（满转），这正是脚本头部注释警告的"姿态 PID
+  容易瞬间打满某个电机"场景的实测复现，只是机制是积分饱和，不是电流冲击或 D 项抖动。
+
+  建议
+
+  1. 现在就该停：这组日志已经在往饱和方向走，不建议再等它自己收敛，Ctrl+C 停掉，检查电机温度。
+  2. 重新测试前，把机身在夹具上调到接近水平（roll/pitch 尽量都在 1°
+     以内），这是根治手段——只要静态角度误差消不掉，积分就永远会往一个方向堆。
+     3 如果夹具没法调平，可以考虑测试思路上避开积分环节：给 setpoint 用 velocity
+     模式（controller_pid.c:99-106，setpoint->mode.pitch == modeVelocity 时会调用
+     attitudeControllerResetPitchAttitudePID()
+     清空角度环积分），这样测试只看角速度环对手动扰动的响应方向，不会被静态倾角的积分饱和污染。
+  3. 或者最简单：每次测试前先确认 roll/pitch
+     两个新字段读数够小再开始加推力，读数一旦持续增长且不随手动动作变化，就是这个 windup 在发作，立刻停。
+
+  要不要我帮你在脚本里加一道自动保护：斜坡结束后如果 rateP/rateD
+  或某个电机持续单向爬升超过阈值，自动归零并报警，不用你死盯着数字？
+  
+  
+  加好了自动保护，逻辑是:
+
+  - check_auto_abort 挂在 log_cb 里，每帧 motor 日志都会检查一次(50Hz)，触发就
+    stop_event.set()，复用你原来就有的收尾流程(零推力 burst + 停日志)，不需要额外分支。
+  - 两条独立的触发线，按严重程度排序检查:
+    a. 硬保护：任一电机 >= 55000(约 84% 满量程)，不管什么原因先停——这是最后一道闸。
+    b. windup 早期预警：|pid_rate.pitch_outP| >= 15000——这是刚才那组日志里实测的信号（正常响应时这个值不会
+       长期停留在这个量级，只有积分饱和才会），能在电机还没顶到满转之前就先停下来，比等硬保护线更早介入。
+  - stop_event 提到了 main() 靠前的位置定义（和 link_lost 放一起），这样 log_cb／check_auto_abort 和后面的
+    setpoint_loop／主循环共享同一个开关，不用两套状态。
+
+  py_compile 过了。这两个阈值是按你刚才那组实测数据(m1 稳定在 52700+、rateP 一路爬到
+  30865)倒推定的，如果之后发现正常抬头/低头的响应也会短暂摸到 15000 这个数（毕竟是真实扰动，允许有较大瞬时
+  值），告诉我，我再把这条线调松一点或者加个持续时间门限，现在先按"宁可提前停"来定。
+
+✻ Worked for 2m 19s
+
+按 Ctrl+C 结束测试。                                                                                     
+                                                                                                           
+  t=  511002  m1= 25501  m2=     0  m3= 14539  m4= 44513  |  rateP= -1059.2  rateD= -5296.1  roll=   0.1   
+  pitch=   0.7                                                                                             
+  t=  511052  m1= 25915  m2=     0  m3= 14137  m4= 46851  |  rateP= 28734.3  rateD=   137.4  roll=   0.1   
+  pitch=   0.7                                                                                             
+                                                                                                           
+  警告：pid_rate.pitch_outP=28734 超过 15000，疑似姿态角环积分饱和(windup)——机身没放平或被夹具固定住转不动 
+  ，自动停止并归零！请把机身调平后再测。                                                                   
+  t=  511102  m1= 24882  m2=     0  m3= 15192  m4= 47884  |  rateP= 29329.0  rateD=   105.8  roll=   0.1   
+  pitch=   0.7                                                                                             
+  t=  511152  m1= 23877  m2=     0  m3= 16197  m4= 48889  |  rateP= 29927.8  rateD=   120.5  roll=   0.1   
+  pitch=   0.7                                                                                             
+                                                                                                           
+  正在停止并归零...                                                                                        
+  t=  511202  m1= 22724  m2=     0  m3= 17326  m4= 50042  |  rateP= 30532.3  rateD=   160.4  roll=   0.1   
+  pitch=   0.7                                                                                             
+  t=  511252  m1= 21749  m2=     0  m3= 18311  m4= 51017  |  rateP= 31054.0  rateD=   121.7  roll=   0.1   
+  pitch=   0.7                                                                                             
+  t=  511302  m1= 20719  m2=     0  m3= 19379  m4= 52047  |  rateP= 31636.0  rateD=   105.4  roll=   0.1   
+  pitch=   0.7                                                                                             
+  t=  511352  m1= 20073  m2=     0  m3= 20073  m4= 52693  |  rateP= 32264.6  rateD=   125.2  roll=   0.1   
+  pitch=   0.7                                                                                             
+  t=  511402  m1= 20084  m2=     0  m3= 20084  m4= 52682  |  rateP= 32835.8  rateD=   153.3  roll=   0.1   
+  pitch=   0.7                                                                                             
+  t=  511452  m1= 20060  m2=     0  m3= 20060  m4= 52706  |  rateP= 33412.9  rateD=   148.8  roll=   0.1   
+  pitch=   0.7                                                                                             
+  t=  511502  m1= 20075  m2=     0  m3= 20075  m4= 52691  |  rateP= 33988.3  rateD=   103.5  roll=   0.1   
+  pitch=   0.7                                                                                             
+  测试结束。                                                                                               
+  -------t4b_pitch_response_check.py 目前测测试数据，请分析                                                
+
+  Thought for 16s (ctrl+o to expand)
+
+● Explore(Find and inspect t4b_pitch_response_check.py)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 正在查找并阅读 t4b_pitch_response_check.py 脚本以确认测试逻辑，稍等。
+
+✻ Waiting for 1 background agent to finish
+   
+● Agent "Find and inspect t4b_pitch_response_check.py" finished · 2m 13s
+
+  Thought for 1m 21s (ctrl+o to expand)
+
+● Explore(Check PID integral reset and motor clamp behavior)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 我先给出基于数据本身能确定的分析，再等固件细节核实后补充关于"停止后电机为何没立刻归零"的结论。
+
+  数据分析
+
+  核心结论：这次自动停止是正确触发，测试数据显示的确实是姿态环积分饱和(windup)，根因是机身在测试期间没有真
+  正转动。
+
+  关键证据：
+  1. roll/pitch 角度全程不变：roll=0.1, pitch=0.7 从第一行到最后一行完全没变化——说明飞机实际姿态没有响应任
+     何控制输出，符合"机身没放平或被夹具固定住转不动"的场景。
+  2. rateP 单调爬升，rateD 保持很小：rateP 从 -1059.2 一路涨到 33988.3，远超 15000 阈值；而 rateD 一直在
+     100~150 附近波动，没有跟着涨。这正是脚本设计里区分"积分饱和"与"正常动态尖峰"的依据——D 项不涨、P
+     项单调爬升 = 积分饱和，不是真实的角速度扰动。
+  3. m2 电机全程为 0：从测试一开始（还没触发警告时）m2 就是 0，同时 m4 一路冲到 52000+。按 X 构型混控公式
+     m1=T-r+p+yaw, m2=T-r-p-yaw, m3=T+r-p+yaw, m4=T+r+p-yaw，m2/m3 与 m1/m4 是按 pitch 分量反向配对的。m2
+     从最初就被压到 0（即 thrust - r - p 早早算出负值被限幅到
+     0），说明飞机从测试起始就已经存在明显俯仰偏差，PID 立刻输出了很大的修正量，而不是测试过程中逐渐产生的—
+     —这提示开始测试前机身本身就没放平，不是测试过程中才跑偏的。
+  4. 警告触发后又持续打印了几行才归零：这是预期行为，不是 bug。触发 stop_event 后，脚本走
+     send_zero_burst（15 次 × 20ms ≈ 300ms 的归零指令），在这 300ms 内电机日志仍以 50ms
+     周期继续打印，看到的 m1/m3 收敛到 ~20073、m4 停在 ~52700
+     是这个过渡期内的残留输出，之后连接关闭、"测试结束"。
+
+  建议
+
+  - 这不是硬件或代码故障，是操作层面的问题：测试前没把机身放平，或者夹具限制了转动。按脚本提示重新调平机身
+    、确保能自由转动后重测即可。
+  - m2 全程为 0 这一点值得你测试时留意：说明当时飞机很可能是"m2 侧偏低 / m4
+    侧偏高"的姿态被夹住或未放平，而不是随机方向的偏差。
+
+  還在核实一个附加问题：固件在 thrust 降为 0 时是否会主动清零 PID
+  积分项，这会影响"归零后电机为何没有瞬间掉到 0"的解释，稍后补充。
+
+✻ Waiting for 1 background agent to finish
+
+gent "Check PID integral reset and motor clamp behavior" finished · 1m 31s
+
+  Thought for 24s (ctrl+o to expand)
+
+● 补充确认完了——这解释了为什么警告触发后电机没有立刻归零。
+
+  补充结论
+
+  固件里姿态/角速度环积分清零的判据在 controller_pid.c:137：只有当 control->thrust == 0（精确为 
+  0）时才会调用 attitudeControllerResetAllPID() 清零积分。而测试脚本运行时 thrust 一直保持在
+  BASE_THRUST=15000（非零），所以在整个测试过程中积分项没有任何机会被清零——一旦初始姿态偏差触发了修正输出，
+  它就只能单向累积，直到脚本检测到 rateP 超阈值主动喊停。
+
+  触发警告后，脚本发送 15 次 setpoint(0,0,0,0) 的归零指令（ZERO_BURST_COUNT=15 × 20ms ≈ 300ms）。这些指令让
+  thrust 真正变成 0 后才会触发积分清零；但日志打印周期是 50ms，且脚本在归零 burst
+  期间就退出了，所以你看到的最后几行（m4≈52700 卡住不降）只是"清零指令已发出但尚未生效"那个过渡窗口内的残留
+  输出，不是异常，也不是没归零——退出前实际动作是安全的。
+
+  完整结论
+
+  1. 警告和自动停止是正确触发：roll/pitch 角度全程死不动（0.1° / 0.7°），rateP 从 -1000 单调爬升到 34000+
+     而 rateD 一直很小，这是典型的积分饱和（机身未放平/被夹住转不动），不是真实动态响应。
+  2. m2 从测试一开始就是 0（警告触发前就是），说明机身在测试起始时就已经存在明显俯仰偏差，不是测试过程中才
+     跑偏的——建议重测前先把机身彻底放平、确认能自由转动。
+  3. 停止后电机没瞬间归零是预期行为：固件只在 thrust 精确为 0 时清积分，脚本的归零 burst
+     需要几十~百毫秒才生效，日志尾部的残留值是这个过渡期的正常现象。
+
+  建议：调平机身后重测；如果重测时 m2 仍然经常被顶到 0 或 rateP
+  依旧偏向单侧快速爬升，可以重点检查该侧的物理安装角度/夹具约束。
+  
+  是你说的问题，应该是固件跟硬件的传感器设置不一致。请用脚本一步一步测是测试展示看看到底是哪儿的问题？   
+
+  Thought for 31s, listed 1 directory (ctrl+o to expand)
+
+● Bash(timeout 3 ping -c 2 192.168.43.42 2>&1; echo "exit:$?")
+  ⎿  exit:124
+
+  Thought for 30s (ctrl+o to expand)
+
+● Explore(Check firmware config for motor/IMU orientation mismatches)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 先说明一点：这台机器 ping 不通 192.168.43.42（飞机的
+  IP），所以我这边没法直接连接飞机执行这些脚本——需要你在能连上飞机 WiFi 的那台机器上跑。不过我可以帮你设计
+  好"一步一步排查"的顺序，并且现在先从代码层面检查一下固件配置本身是否存在跟硬件不匹配的地方（比如
+  PITCH_DISTRIBUTION_INVERTED 这个混控反转选项是否配置对了），结果马上出来。
+
+  同时给你一个可以按顺序在飞机旁边跑的排查流程，用来区分"机身没放平/被夹住" vs
+  "固件与硬件传感器/电机设置不一致"：
+
+  1. t0_reset_reason.py：先确认上次是否发生过看门狗/掉电重启，排除是重启残留状态干扰这次读数。
+  2. t3_motor_mapping.py（开环，不经过PID）：逐个点动 m1→m4，肉眼确认程序里的 m1/m2/m3/m4
+     编号和物理上哪个电机对应、转向是否正确。如果 m2 单独点动测试时能正常转起来 → 说明硬件本身没问题，m2=0
+     是 PID 混控算出来的负值被限幅，不是电机坏了。
+  3. t4_imu_axis_check.py（只读，不转电机）：手动把机头往下压（pitch 应该向哪个方向变化，看打印的
+     stabilizer.pitch
+     符号是否符合固件预期方向）。如果这里符号是反的，就是传感器安装方向/固件轴定义不一致，会导致 PID
+     在往错误方向"纠正"，形成越纠正越偏、但 IMU 读数不动或者朝错误方向跑的假象。
+  4. t4_sensor_readings_check.py：检查陀螺仪只在被转动的那个轴上有读数，不应该几个轴同时联动（联动说明IMU安
+     装角度或轴映射跟固件不一致）。
+  5. 最后机身完全松开、能自由转动的情况下重跑 t4b_pitch_response_check.py，对照 m1/m4（应同向变化）和
+     m2/m3（应反向变化）是否真的按 X 构型配对变化。
+
+  我先去代码里核对 PITCH_DISTRIBUTION_INVERTED 这个选项当前是开还是关、以及是否有其它电机/IMU方向映射的配置
+  ，看看是不是配置本身就跟你的硬件不匹配，马上有结果。
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "Check firmware config for motor/IMU orientation mismatches" finished · 5m 20s
+
+  Thought for 55s (ctrl+o to expand)
+
+● 核实完了，你的方向确实有实锤——找到一个真实的固件配置 vs 
+  硬件不一致的点，但结论比"传感器设置错了"更精确，我说清楚：
+
+  找到的确切问题
+
+  当前编译用的 sdkconfig 目标板是 ESPLANE_V1（普通 esp32），但仓库里同时带着一份
+  sdkconfig.defaults.pydrone（CONFIG_TARGET_PYDRONE_S3=y，esp32s3），这份 pydrone
+  专用配置从来没有被合并进实际生效的 sdkconfig。
+
+  这个目标板选择不是无关紧要的开关——它直接决定了 IMU 驱动里的轴向符号：
+
+  components/core/crazyflie/hal/src/sensors_mpu6050_hm5883L_ms5611.c:459-478
+  #ifdef CONFIG_TARGET_ESPLANE_V1
+      sensorData.gyro.x = (gyroRaw.x - gyroBias.x) * SENSORS_DEG_PER_LSB_CFG;
+  #else
+      sensorData.gyro.x = -(gyroRaw.x - gyroBias.x) * SENSORS_DEG_PER_LSB_CFG;
+  #endif
+  accel.x 也有同样的反转逻辑。如果你实际测试用的板子是 pyDrone(S3) 而不是
+  ESPLANE_V1，编译时会走错分支，陀螺仪/加速度计 X 轴的符号就是反的——这完全符合"固件和硬件传感器设置不一致"
+  的描述，而且是可以直接验证、跟"机身没夹平"完全独立的另一个真实问题。
+
+  其他两个我原本怀疑的点，排查后可以排除：
+  - PITCH_DISTRIBUTION_INVERTED（俯仰混控反转）目前是关闭状态，且近 20 次提交里从没被 t4b
+    相关改动碰过，不是最近引入的问题。
+  - 电机混控只有 X 构型一条分支会被编译（+构型是死代码），不存在选错分支的风险。
+
+  接下来怎么一步步测（需要你在能连上飞机的机器上跑，我这边 ping 不通 192.168.43.42）
+
+  第 0 步（最该先做的）：确认你手上这块板子到底是 ESPLANE_V1 还是 pyDrone(S3)。如果是 pyDrone(S3)
+  但用的是当前这份 sdkconfig 编译出来的固件，那这就是根因，应该先用 sdkconfig.defaults.pydrone
+  重新配置目标（idf.py set-target esp32s3 + 应用该 defaults 文件）再重新烧录，其他测试都先不用做。
+
+  如果确认板子确实是
+  ESPLANE_V1（或者已经用对了配置重新烧录），再按下面顺序排查轴向/电机是否还有别的不一致：
+
+  1. python t4_imu_axis_check.py（只读，不转电机）：手动把机头往下压，看打印的 stabilizer.pitch
+     变化方向对不对；再手动横滚，看 stabilizer.roll 方向对不对。这一步能直接证实/排除轴向符号反了。
+  2. python t3_motor_mapping.py（开环）：逐个点动 m1~m4，确认程序编号跟物理电机位置、转向是否一致（尤其确认
+     m2 单独测试时能不能正常转起来）。
+  3. python t4_sensor_readings_check.py：确认转动某一个轴时，陀螺仪只有对应轴有读数，没有其它轴联动（联动说
+     明IMU安装角度跟固件假设不一致）。
+  4. 机身完全松开自由转动后，再跑一次 python t4b_pitch_response_check.py，对照 m1/m4 同向、m2/m3
+     反向变化是否符合 X 构型预期。
+
+  你可以先做第 0 步告诉我板子型号和当前 sdkconfig 是否匹配，或者直接跑第 1 步 t4_imu_axis_check.py
+  把输出贴给我，我帮你判断轴向是不是反的。
+
+✻ Sautéed for 7m 26s
+
+板子是CONFIG_TARGET_PYDRONE_S3，estimator_kalman
+t3_motor_mapping.py测试过没问题，M1右上转 m2右下转 m3左下转 m4左上转，从10000到60000每个都会加速
+t4_imu_axis_check.py测试有一个现象：抬头后固定不动了，pitch会从0到40左右，最大到40左右。然后不断地循环这个数值
+t=  325305  roll=  -0.40  pitch=  30.92  yaw=   0.22
+t=  325405  roll=  -0.00  pitch=  -0.00  yaw=   0.00
+t=  325505  roll=  -0.01  pitch=   0.41  yaw=   0.01
+t=  325605  roll=  -0.07  pitch=   6.51  yaw=   0.02
+t=  325705  roll=  -0.11  pitch=  10.58  yaw=   0.03
+t=  325805  roll=  -0.16  pitch=  15.31  yaw=   0.05
+t=  325905  roll=  -0.18  pitch=  16.94  yaw=   0.06
+t=  326005  roll=  -0.21  pitch=  19.35  yaw=   0.07
+t=  326105  roll=  -0.22  pitch=  20.19  yaw=   0.08
+t=  326205  roll=  -0.25  pitch=  22.11  yaw=   0.10
+t=  326305  roll=  -0.26  pitch=  22.81  yaw=   0.10
+t=  326405  roll=  -0.28  pitch=  24.23  yaw=   0.12
+t=  326505  roll=  -0.30  pitch=  25.30  yaw=   0.13
+t=  326605  roll=  -0.30  pitch=  25.69  yaw=   0.14
+t=  326705  roll=  -0.32  pitch=  26.67  yaw=   0.15
+t=  326805  roll=  -0.33  pitch=  26.98  yaw=   0.15
+t=  326905  roll=  -0.34  pitch=  27.73  yaw=   0.16
+t=  327005  roll=  -0.35  pitch=  27.93  yaw=   0.17
+t=  327105  roll=  -0.36  pitch=  28.67  yaw=   0.18
+t=  327205  roll=  -0.37  pitch=  28.97  yaw=   0.19
+t=  327305  roll=  -0.38  pitch=  29.54  yaw=   0.20
+t=  327405  roll=  -0.39  pitch=  29.63  yaw=   0.21
+t=  327505  roll=  -0.40  pitch=  30.22  yaw=   0.21
+t=  327605  roll=  -0.41  pitch=  30.65  yaw=   0.22
+t=  327705  roll=  -0.42  pitch=  30.72  yaw=   0.23
+t=  327805  roll=  -0.00  pitch=  -0.00  yaw=   0.00
+t=  327905  roll=  -0.01  pitch=   0.22  yaw=   0.01
+t=  328005  roll=  -0.06  pitch=   5.69  yaw=   0.02
+t=  328105  roll=  -0.10  pitch=   9.11  yaw=   0.03
+t=  328205  roll=  -0.16  pitch=  14.77  yaw=   0.05
+t=  328305  roll=  -0.18  pitch=  16.38  yaw=   0.06
+t=  328405  roll=  -0.21  pitch=  19.19  yaw=   0.07
+t=  328505  roll=  -0.22  pitch=  20.02  yaw=   0.08
+t=  328605  roll=  -0.25  pitch=  21.82  yaw=   0.09
+
+
+这组 t4_imu_axis_check.py 数据比我预想的更有价值，能直接看出问题所在：
+
+  关键现象：roll/pitch/yaw 是同时被清零的，而且间隔精确到 2000ms（325805 → 327805 正好 2.000 秒）。
+  机身明明还固定在低头/抬头的姿态没动，但姿态估计每 2 秒整会被强制归零一次，然后重新从 0 开始爬升到
+  ~30°，循环往复。这不是传感器噪声或轴向符号反了的表现——符号反了应该是数值方向错但连续、不会周期性归零。这
+  种"精确周期性、三轴同时清零"的模式，看起来像是固件里某个环节在周期性地重置姿态估计/传感器任务，比较像是：
+  - I2C 读取传感器失败 → 触发重新初始化/重连的周期性逻辑，或
+  - 姿态估计器（互补滤波/看门狗）在检测到数据异常后周期性复位。
+
+  这跟你怀疑的"固件跟硬件传感器设置不一致"很吻合的一种可能：pyDrone S3 板子上实际的 IMU
+  芯片如果跟固件里编译进去的驱动（之前查到只编译了 sensors_mpu6050_hm5883L_ms5611.c，即按
+  MPU6050+HMC5883L+MS5611 芯片组的 I2C 地址/寄存器去读）不一致，就会导致间歇性通信失败，进而周期性复位。
+
+  我已经派了一个后台任务去查：
+  1. CMakeLists.txt 是否针对 CONFIG_TARGET_PYDRONE_S3 选择了别的传感器驱动，还是不管什么板子都编译同一份
+     MPU6050 驱动;
+  2. 该驱动里有没有专门给 pyDrone S3 做的 I2C 地址/引脚/总线条件编译;
+  3. sdkconfig.defaults.pydrone 里的 I2C 引脚配置跟当前实际生效的 sdkconfig 是否一致；
+  4. 代码里有没有那种"每2秒复位一次"的看门狗/重连/重新校准逻辑。
+
+  结果出来我马上跟你确认根因。
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "Investigate pyDrone S3 IMU driver/config mismatch" finished · 9m 43s
+
+  Thought for 1m 3s (ctrl+o to expand)
+
+● 结果出来了，根因找到了，而且跟"传感器芯片不匹配"没关系——是姿态估计器（Kalman）本身的设计缺陷 + pyDrone 
+  缺硬件传感器导致的。逐条说明：
+
+  传感器芯片/硬件配置：确认没问题
+
+  records/espdrone.md 里已有你们之前做过的实测校准记录：pyDrone S3 的 IMU 就是同一颗 MPU6050（地址
+  0x68），跟 ESP-Drone 参考板完全一样，只是 I2C
+  引脚不同（SDA=16/SCL=15，main/Kconfig.projbuild:267-281），这个已经通过 Kconfig 按 TARGET_PYDRONE_S3
+  正确区分了。磁力计/气压计确实型号不同（pyDrone 用 QMC5883L + SPL06，参考板用 HMC5883L +
+  MS5611），但这也是编译期按配置选择好的，不是 bug。CMakeLists.txt
+  里传感器驱动文件本身对所有目标板都是同一份、无条件编译，唯一的目标板差异是轴向映射/符号和采样率滤波参数（
+  sensors_mpu6050_hm5883L_ms5611.c:429-548,1177-1187），这些都已经正确覆盖了
+  PYDRONE_S3。所以硬件/传感器芯片这条路排查下来是干净的，不是根因。
+
+  真正的根因：Kalman 估计器在"没有绝对位置传感器"时无法修正姿态
+
+  关键线索：这仓库最近一次改动（2e9ea92 feat: kalman t4b）把默认估计器从 complementaryEstimator 切成了
+  kalmanEstimator（components/core/crazyflie/modules/src/estimator.c:8-9）。这个 Kalman 估计器是照搬
+  Bitcraze Crazyflie 的设计，它假设飞机装了 Flow Deck / ToF
+  测距，靠这些绝对位置/流速传感器持续纠正姿态和速度漂移。pyDrone 没有这些传感器（records/espdrone.md
+  里也写了"定高会丢、Z通道缺观测量"）。
+
+  具体机制（已经完整追到代码里）：
+  - 飞机没起飞时（quadIsFlying==false），Kalman 核心（kalman_core.c:810-831）会把原始加速度计读数直接当"水
+    平姿态下"的重力分量去减，但姿态四元数完全靠陀螺仪积分推算，没有任何用加速度计反过来纠正倾角的逻辑。
+  - 你把机身固定抬头不动，陀螺仪积分出的 pitch
+    会慢慢爬升（这个还算对），但由于姿态矩阵没被加速度计纠正，速度状态 KC_STATE_PX
+    会因为重力分量算错而持续跑偏。
+  - 跑偏的速度一旦超过 supervisor 设的 ±10 m/s 边界（kalman_supervisor.c:32-48），固件判定"状态越界"，直接
+    把整个估计器重新初始化——姿态四元数被强制清零成水平（kalman_core.c:180-184）。
+  - 这个"爬升→越界→清零"的循环正好卡在约 2 秒（跟你数据里精确的 2000ms
+    周期完全吻合），报警打印本身也被限流成每 2
+    秒一次（estimator_kalman.c:253,398-400），侧面印证了这条路径。
+
+  roll/yaw 没出现锯齿是因为你只在 pitch 方向倾斜，只有 pitch 耦合的速度分量在跑偏。
+
+  建议
+
+  1. 把默认估计器切回 complementaryEstimator（components/core/crazyflie/modules/src/estimator.c:8-9
+     改一行），互补滤波器会持续用加速度计的重力方向修正 roll/pitch（sensfusion6.c:201-231 的 Mahony
+     反馈），静止倾斜时不会有这种周期性归零。改完重新跑一次 t4_imu_axis_check.py
+     验证锯齿是否消失，就能确认诊断。
+  2. 长期看，在 pyDrone 没有 Flow Deck/ToF 的情况下用 Kalman 估计器本身就不太合适，除非后续给它接测距/光流
+     传感器提供绝对参考；否则地面静止/悬停调试阶段建议用互补滤波器。
+  3. 之前 t4b_pitch_response_check.py 出现的积分饱和(windup)，很可能也是同一根因链路的另一种表现——估计器给
+     出的姿态角本身就不可信/会被周期性清零，PID
+     一直在追一个错误或跳变的姿态估计，自然会饱和。等你切回互补滤波器后，建议也重跑一次 t4b 确认 windup
+     是否随之消失。
+
+  另外顺带一提：仓库里当前 commit 的 sdkconfig 文件本身还是 CONFIG_TARGET_ESPLANE_V1=y（不是 pyDrone
+  配置），但你board实测走的是 PYDRONE_S3——这大概率是本地编译时用了 sdkconfig.defaults.pydrone 重新生成过、
+  只是没提交，不影响上面的结论，但如果你想让仓库配置跟实际烧录的固件保持一致，值得检查一下要不要把这份
+  sdkconfig 也提交上去。
+
+✻ Baked for 11m 48s
