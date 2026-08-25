@@ -9,7 +9,7 @@ import cflib.crtp
 from cflib.crazyflie.log import LogConfig
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 
-URI = "udp://192.168.43.42:2390"  # 换成你能正常连接上的地址
+from config import URI
 
 TEST_MIN = 10000  # 0~65535，斜坡起点：明显能看到转动但不会太猛
 TEST_MAX = 60000  # 斜坡终点

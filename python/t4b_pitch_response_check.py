@@ -19,7 +19,7 @@ import cflib.crtp
 from cflib.crazyflie.log import LogConfig
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 
-URI = "udp://192.168.43.42:2390"  # 换成你能连上的地址
+from config import URI
 
 BASE_THRUST = 15000     # 低速基线，只是为了在 idleThrust 之上留出可观察的差量
 RAMP_TIME_S = 1.0       # 从 0 斜坡爬升到 BASE_THRUST 的时长，避免 4 电机同时起转的电流冲击
@@ -28,6 +28,12 @@ LOG_WAIT_TIMEOUT_S = 2.0    # 等待第一帧 motor 日志的超时：等不到�
 LOG_STALE_TIMEOUT_S = 0.3   # 运行中超过这么久没收到新日志帧，视为链路/主控可能已经异常
 ZERO_BURST_COUNT = 15       # 收尾/异常时连续发送零推力的次数，抵御偶发丢包
 ZERO_BURST_PERIOD = 0.02
+
+# 实测发现过"机身没放平+夹具固定住转不动"会让姿态角环积分一路 windup，把某个电机顶向满转，
+# 且过程是单调爬升、没有 D 项尖峰特征（见 pid_rate.pitch_outD 基本正常）。这两条阈值分别是
+# "电机快到硬件上限了，不管什么原因先停"和"角速度环 P 项已经大到基本能断定是积分饱和"。
+MOTOR_ABORT_THRESHOLD = 55000       # 电机 PWM 逼近满量程(65535)的硬保护线
+RATE_OUTP_ABORT_THRESHOLD = 15000.0  # pid_rate.pitch_outP 绝对值超过这个数，基本可判定为姿态环积分饱和
 
 
 def send_zero_burst(cf, times=ZERO_BURST_COUNT, period=ZERO_BURST_PERIOD):
@@ -67,6 +73,10 @@ def main():
         cf.connection_lost.add_callback(on_connection_lost)
         cf.disconnected.add_callback(on_disconnected)
 
+        # 提前建好 stop_event：既用于 setpoint 发送线程的退出信号，也给下面的 log 回调里的
+        # 自动保护复用，两边共享同一把停止开关。
+        stop_event = threading.Event()
+
         # 确保不是 motorPowerSet 覆盖模式，走真实闭环
         cf.param.set_value("motorPowerSet.enable", "0")
         time.sleep(0.1)
@@ -96,6 +106,29 @@ def main():
         lg_diag.add_variable("stateEstimate.pitch", "float")
         cf.log.add_config(lg_diag)
 
+        def check_auto_abort(m1, m2, m3, m4):
+            """硬保护线 + windup 早期预警。任何一条触发就置位 stop_event，交给已有的收尾逻辑归零。"""
+            if stop_event.is_set():
+                return
+            for name, value in (("m1", m1), ("m2", m2), ("m3", m3), ("m4", m4)):
+                if value >= MOTOR_ABORT_THRESHOLD:
+                    print(
+                        f"\n警告：{name}={value} 已逼近满量程（硬保护线 {MOTOR_ABORT_THRESHOLD}），"
+                        "自动停止并归零！",
+                        flush=True,
+                    )
+                    stop_event.set()
+                    return
+            outp = diag_state["pid_rate.pitch_outP"]
+            if outp is not None and abs(outp) >= RATE_OUTP_ABORT_THRESHOLD:
+                print(
+                    f"\n警告：pid_rate.pitch_outP={outp:.0f} 超过 {RATE_OUTP_ABORT_THRESHOLD:.0f}，"
+                    "疑似姿态角环积分饱和(windup)——机身没放平或被夹具固定住转不动，"
+                    "自动停止并归零！请把机身调平后再测。",
+                    flush=True,
+                )
+                stop_event.set()
+
         def log_cb(timestamp, data, logconf):
             log_state["last"] = time.monotonic()
             outp = diag_state["pid_rate.pitch_outP"]
@@ -112,6 +145,7 @@ def main():
                 f"rateP={outp_s}  rateD={outd_s}  roll={roll_s}  pitch={pitch_s}",
                 flush=True,
             )
+            check_auto_abort(data["motor.m1"], data["motor.m2"], data["motor.m3"], data["motor.m4"])
 
         def log_diag_cb(timestamp, data, logconf):
             diag_state["pid_rate.pitch_outP"] = data["pid_rate.pitch_outP"]
@@ -141,8 +175,6 @@ def main():
             return
 
         print("日志已确认在收，即将开始发送推力基线（斜坡爬升，避免电流冲击）。", flush=True)
-
-        stop_event = threading.Event()
 
         def log_is_stale():
             last = log_state["last"]

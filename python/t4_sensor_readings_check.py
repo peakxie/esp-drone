@@ -8,7 +8,7 @@ import cflib.crtp
 from cflib.crazyflie.log import LogConfig
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 
-URI = "udp://192.168.43.42:2390"  # 换成你能连上的地址
+from config import URI
 
 
 def main():

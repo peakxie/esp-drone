@@ -3,7 +3,7 @@ from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.crazyflie.log import LogConfig
 from cflib.crazyflie.syncLogger import SyncLogger
 
-URI = "udp://192.168.43.42:2390"
+from config import URI
 
 cflib.crtp.init_drivers()
 with SyncCrazyflie(URI) as scf:
