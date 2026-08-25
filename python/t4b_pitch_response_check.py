@@ -86,6 +86,50 @@ def ensure_complementary_estimator(cf):
         read_current_estimator(cf)
 
 
+def read_flightmode_flags(cf, timeout_s=2.0):
+    """读取 flightmode.althold / flightmode.poshold，返回 {"althold": 0/1, "poshold": 0/1}。"""
+    result = {}
+    got_values = threading.Event()
+
+    def make_cb(key):
+        def cb(_name, value):
+            try:
+                result[key] = int(value)
+            except (TypeError, ValueError):
+                result[key] = None
+            if "althold" in result and "poshold" in result:
+                got_values.set()
+        return cb
+
+    cf.param.add_update_callback(group="flightmode", name="althold", cb=make_cb("althold"))
+    cf.param.add_update_callback(group="flightmode", name="poshold", cb=make_cb("poshold"))
+    cf.param.request_param_update("flightmode.althold")
+    cf.param.request_param_update("flightmode.poshold")
+
+    if not got_values.wait(timeout=timeout_s):
+        print("警告：读取 flightmode.althold/poshold 超时。", flush=True)
+    print(
+        f"当前 flightmode.althold={result.get('althold')}  "
+        f"flightmode.poshold={result.get('poshold')}",
+        flush=True,
+    )
+    return result
+
+
+def ensure_raw_commander_mode(cf):
+    """若 althold/poshold 开着，强制关掉。光流模块在线时固件开机会自动 setCommandermode(POSHOLD_MODE)，
+    把 althold 和 poshold 都打开，导致本脚本发的原始 thrust/roll/pitch 被 RPYT 解码器丢弃、改用定高/定点
+    速度 PID 的输出（带一个很大的固定前馈量，且没有上限），跟脚本"缓慢斜坡爬升"的意图完全不是一回事，
+    会在电机上瞬间叠加出远超预期的输出。切估计器不会动这两个开关，必须单独关掉。"""
+    flags = read_flightmode_flags(cf)
+    if flags.get("althold") or flags.get("poshold"):
+        print("检测到 althold/poshold 开启，强制关闭，改用原始 thrust/roll/pitch...", flush=True)
+        cf.param.set_value("flightmode.althold", "0")
+        cf.param.set_value("flightmode.poshold", "0")
+        time.sleep(0.5)
+        read_flightmode_flags(cf)
+
+
 def main():
     cflib.crtp.init_drivers()
 
@@ -112,6 +156,7 @@ def main():
         cf.disconnected.add_callback(on_disconnected)
 
         ensure_complementary_estimator(cf)
+        ensure_raw_commander_mode(cf)
 
         # 提前建好 stop_event：既用于 setpoint 发送线程的退出信号，也给下面的 log 回调里的
         # 自动保护复用，两边共享同一把停止开关。
