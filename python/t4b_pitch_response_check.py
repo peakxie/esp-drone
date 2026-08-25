@@ -110,6 +110,12 @@ def main():
 
         stop_event = threading.Event()
 
+        def log_is_stale():
+            last = log_state["last"]
+            if last is None:
+                return False
+            return (time.monotonic() - last) > LOG_STALE_TIMEOUT_S
+
         def setpoint_loop():
             # 先发一次 thrust=0 解锁 thrust lock
             cf.commander.send_setpoint(0, 0, 0, 0)
@@ -119,13 +125,20 @@ def main():
             for i in range(1, ramp_steps + 1):
                 if stop_event.is_set() or link_lost.is_set():
                     return
+                if log_is_stale():
+                    print(
+                        f"\n警告：斜坡爬升阶段超过 {LOG_STALE_TIMEOUT_S}s 未收到 motor 日志，"
+                        "链路或主控可能已异常，立即停止加推力！",
+                        flush=True,
+                    )
+                    stop_event.set()
+                    return
                 thrust = int(BASE_THRUST * i / ramp_steps)
                 cf.commander.send_setpoint(0, 0, 0, thrust)
                 time.sleep(SEND_PERIOD)
 
             while not stop_event.is_set() and not link_lost.is_set():
-                last = log_state["last"]
-                if last is not None and (time.monotonic() - last) > LOG_STALE_TIMEOUT_S:
+                if log_is_stale():
                     print(
                         f"\n警告：超过 {LOG_STALE_TIMEOUT_S}s 未收到 motor 日志，"
                         "链路或主控可能已异常，立即停止加推力！",
