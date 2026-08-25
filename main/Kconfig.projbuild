@@ -2,7 +2,7 @@ menu "ESPDrone Config"
 
     choice
         prompt "ESP_Drone hardware version"
-        default TARGET_ESP32_S2_DRONE_V1_2 if IDF_TARGET_ESP32S3
+        default TARGET_PYDRONE_S3 if IDF_TARGET_ESP32S3
         default TARGET_ESP32_S2_DRONE_V1_2 if IDF_TARGET_ESP32S2
         default TARGET_ESPLANE_V1 if IDF_TARGET_ESP32
 
