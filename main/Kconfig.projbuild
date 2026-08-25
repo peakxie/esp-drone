@@ -93,6 +93,31 @@ menu "ESPDrone Config"
             default 3
             help
                 Wi-Fi Max Station Connection, 1-6
+
+        config WIFI_STA_ENABLE
+            bool "Join an existing Wi-Fi AP (STA mode) instead of SoftAP"
+            default n
+            help
+                When enabled, ESP-Drone connects to an existing access point
+                as a station instead of creating its own SoftAP. cfclient
+                must join the same AP and target the IP address the drone
+                is assigned by that AP's DHCP server (printed on the serial
+                console at boot).
+
+        config WIFI_STA_SSID
+            string "Wi-Fi STA SSID"
+            depends on WIFI_STA_ENABLE
+            default "hcool2.4"
+            help
+                SSID of the existing access point to join.
+
+        config WIFI_STA_PASSWORD
+            string "Wi-Fi STA Password"
+            depends on WIFI_STA_ENABLE
+            default ""
+            help
+                Password of the existing access point, 8-64 characters
+                (empty for an open network).
     endmenu
 
     menu "calibration angle"
