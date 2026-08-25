@@ -21,6 +21,8 @@ from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 
 from config import URI
 
+ESTIMATOR_NAMES = {0: "any", 1: "complementary", 2: "kalman"}
+
 BASE_THRUST = 15000     # 低速基线，只是为了在 idleThrust 之上留出可观察的差量
 RAMP_TIME_S = 1.0       # 从 0 斜坡爬升到 BASE_THRUST 的时长，避免 4 电机同时起转的电流冲击
 SEND_PERIOD = 0.05      # 20Hz 发送 setpoint，避免 commander watchdog 超时进入 fallback
@@ -48,6 +50,42 @@ def send_zero_burst(cf, times=ZERO_BURST_COUNT, period=ZERO_BURST_PERIOD):
         signal.signal(signal.SIGINT, old_handler)
 
 
+def read_current_estimator(cf, timeout_s=2.0):
+    """读取 stabilizer.estimator 参数，返回当前值（1=complementary, 2=kalman），超时返回 None。"""
+    result = {}
+    got_value = threading.Event()
+
+    def estimator_cb(_name, value):
+        try:
+            val = int(value)
+        except (TypeError, ValueError):
+            val = None
+        label = ESTIMATOR_NAMES.get(val, f"未知({value})")
+        print(f"当前 stabilizer.estimator = {value} ({label})", flush=True)
+        result["value"] = val
+        got_value.set()
+
+    cf.param.add_update_callback(group="stabilizer", name="estimator", cb=estimator_cb)
+    cf.param.request_param_update("stabilizer.estimator")
+
+    if not got_value.wait(timeout=timeout_s):
+        print("警告：读取 stabilizer.estimator 超时，未确认当前估计器。", flush=True)
+        return None
+    return result["value"]
+
+
+def ensure_complementary_estimator(cf):
+    """若当前是 kalman(2)，强制切成 complementary(1)。本脚本是台架测试（桨叶已拆、机身固定，
+    不是真实飞行），光流模块一在线固件就会自动锁定 kalman，但 kalman 的姿态四元数在这种静态
+    场景下没有加速度计做倾角修正，观测到的姿态角可能不可信，不适合用来判断 PID 响应方向对不对。"""
+    current = read_current_estimator(cf)
+    if current == 2:
+        print("检测到当前是 kalman，强制切换为 complementary...", flush=True)
+        cf.param.set_value("stabilizer.estimator", "1")
+        time.sleep(0.5)
+        read_current_estimator(cf)
+
+
 def main():
     cflib.crtp.init_drivers()
 
@@ -72,6 +110,8 @@ def main():
 
         cf.connection_lost.add_callback(on_connection_lost)
         cf.disconnected.add_callback(on_disconnected)
+
+        ensure_complementary_estimator(cf)
 
         # 提前建好 stop_event：既用于 setpoint 发送线程的退出信号，也给下面的 log 回调里的
         # 自动保护复用，两边共享同一把停止开关。
