@@ -1,0 +1,2091 @@
+1.不需要编译，仅实现代码
+2.records目录是已经实现的代码做的记录。目前已实现了基础的迁移代码，新增3条件
+3.硬件扩展了PMW3901+VL53L1X。 对应的i2c1的管脚 scl 1 和sda 6 spi的管脚 miso 17 , mosi 21 , ck 18 , cs 8
+4.根据现有信息，制订实现方案
+
+
+Everything self-contained—pmw3901Init calls pinMode(csPin, OUTPUT) and spiBegin() internally, all driven
+  purely by the CONFIG_SPI_PIN_* Kconfig values. So this is purely a Kconfig-level wiring change. Let me
+  check the sdkconfig.defaults.pydrone file too, since it may pin down these values outside menuconfig.
+
+  Thought for 34s, searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Confirmed — all drivers already link unconditionally; enabling is purely a Kconfig matter. Now I have
+  everything needed to present the plan.
+
+● Entered plan mode
+  Claude is now exploring and designing an implementation approach.
+
+  Thought for 37s (ctrl+o to expand)
+
+● Updated plan
+  ⎿  /plan to preview
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Ready to code?
+
+ Here is Claude's plan:
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ 启用 pyDrone 板载 PMW3901 + VL53L1X（Flow Deck 功能）
+
+ Context
+
+ 之前的迁移工作（见 records/espdrone.md、commit 212e98d）把 pyDrone 硬件适配进了 esp-drone，
+ 当时结论是 pyDrone 没有扩展板、SPI 引脚被 Octal PSRAM（GPIO35/36/37）占用，所以把
+ CONFIG_SENSORS_ENABLE_DECK（对应 SENSORS_ENABLE_RANGE_VL53L1X + SENSORS_ENABLE_FLOW_PMW3901
+ 两个条件编译宏，components/core/crazyflie/hal/src/sensors_mpu6050_hm5883L_ms5611.c:92-96）默认关闭，
+ ENABLE_POSITION_HOLD_MODE 默认关闭，只能自稳飞行。
+
+ 现在硬件已经改板，实际焊上了 PMW3901（光流）+ VL53L1X（ToF 测距），走的是：
+ - I2C1（deck 总线）：SCL=GPIO1，SDA=GPIO6 —— 与当前 TARGET_PYDRONE_S3 的 I2C1_PIN_SCL/SDA 
+   默认值完全一致，无需改动
+ - 独立 SPI：MISO=GPIO17，MOSI=GPIO21，CLK=GPIO18，CS=GPIO8 —— 这组脚不与 Octal PSRAM 占用的 35/36/37/34
+   冲突，
+   也不与已用的电机(4/5/40/41)、LED(46/42)、I2C0(15/16)、MPU_INT(7)、ADC(2) 冲突
+
+ 驱动层代码（zranger2.c 用 I2C1_DEV，flowdeck_v1v2.c/pmw3901.c 用 CONFIG_SPI_PIN_CS0 做 CS，SPI 总线脚
+ 纯读 Kconfig）已经是通用实现，不需要改一行 C 代码——CMakeLists 里 deck/pmw3901/vl53l1 组件对所有板型
+ 都无条件参与编译（components/core/crazyflie/CMakeLists.txt:72），运行时行为完全由 Kconfig
+ 决定。所以这次纯粹是
+ Kconfig 引脚 + 默认值调整，把"新增的 3 个条件"（SENSORS_ENABLE_MAG / SENSORS_ENABLE_PRESSURE /
+ SENSORS_ENABLE_DECK）里的 SENSORS_ENABLE_DECK 从关闭改为打开，并把 SPI 默认脚从占用 PSRAM 的 35/36/37/34
+ 改成板子实际走线的 17/21/18/8。
+
+ 改动点
+
+ 1. main/Kconfig.projbuild — SPI 引脚默认值（4 处 if TARGET_PYDRONE_S3 分支）
+
+ ┌──────────────┬──────────────────────────────┬────────┐
+ │    Config    │ 原默认（PSRAM 冲突，不可用） │ 新默认 │
+ ├──────────────┼──────────────────────────────┼────────┤
+ │ SPI_PIN_MISO │ 37                           │ 17     │
+ ├──────────────┼──────────────────────────────┼────────┤
+ │ SPI_PIN_MOSI │ 35                           │ 21     │
+ ├──────────────┼──────────────────────────────┼────────┤
+ │ SPI_PIN_CLK  │ 36                           │ 18     │
+ ├──────────────┼──────────────────────────────┼────────┤
+ │ SPI_PIN_CS0  │ 34                           │ 8      │
+ └──────────────┴──────────────────────────────┴────────┘
+
+ 同时删掉/改写这几处 help 文案里"pyDrone 无 Flow Deck、SPI 脚被 PSRAM 占用"的说法（该说法已过时）。
+
+ 2. main/Kconfig.projbuild — 打开 deck 传感器与位置保持
+
+ - SENSORS_ENABLE_DECK：default n if TARGET_PYDRONE_S3 → default y if TARGET_PYDRONE_S3，
+   help 文案改为说明板载 VL53L1X(I2C1) + PMW3901(独立 SPI)。
+ - ENABLE_POSITION_HOLD_MODE：default n if TARGET_PYDRONE_S3 → default y if TARGET_PYDRONE_S3
+   （去掉 pyDrone 专属 override，落回通用 default y），help 文案去掉"pyDrone 没有 Flow Deck"的说明。
+ - ENABLE_ALT_HOLD_MODE：去掉 default y if TARGET_PYDRONE_S3 这条 override，落回通用 default n
+   ——原因：这条是给"有气压计但无光流"时的降级方案用的；现在光流可用，sensors_mpu6050_hm5883L_ms5611.c:649
+   的运行时逻辑本来就是"PMW3901 存在时用 POSHOLD，否则才 fallback 到 ALTHOLD"，两个宏同时开不冲突，
+   但保持默认关闭更符合"有光流优先用光流"的语义，避免歧义。
+
+ 3. 顶层板型说明 (main/Kconfig.projbuild:18-25)
+
+ 更新 TARGET_PYDRONE_S3 的 help 文本，去掉"no Flow Deck (SPI pins consumed by Octal PSRAM)"，
+ 改为说明板载 VL53L1X + PMW3901，经由 deck I2C1(GPIO1/6) 和独立 SPI(GPIO17/21/18/8，与 PSRAM 用的
+ 35/36/37 不冲突)。
+
+ 4. sdkconfig.defaults.pydrone
+
+ 更新顶部注释块："Octal PSRAM ... which is why no Flow Deck can be attached on this board" 已不成立，
+ 改为说明 PSRAM 占用 35/36/37，但板载光流传感器走的是另一组专用引脚（17/18/21/8）与 deck I2C1（1/6），
+ 两者不冲突。此文件不需要新增 CONFIG_xxx=y 键（都走 Kconfig 默认值），只改注释。
+
+ 不需要改动的部分（已确认）
+
+ - zranger2.c（VL53L1X）：已用 I2C1_DEV（components/drivers/i2c_bus/include/i2cdev.h:35 定义为
+   &deckBus，其引脚就是 CONFIG_I2C1_PIN_SCL/SDA），无需改代码。
+ - flowdeck_v1v2.c/pmw3901.c（PMW3901）：CS 用 CONFIG_SPI_PIN_CS0（flowdeck_v1v2.c:78），
+   SPI 总线三线用 deck_spi.c 里的 CONFIG_SPI_PIN_MISO/MOSI/CLK，都是读 Kconfig，无需改代码。
+ - components/core/crazyflie/hal/src/sensors_mpu6050_hm5883L_ms5611.c：SENSORS_ENABLE_DECK 打开后
+   zRanger2Init()/flowdeck2Init() 的调用路径（约 604-641 行）已经存在且通用，无需改动。
+ - CMakeLists：deck/pmw3901/vl53l1 组件本就无条件编译进固件，无需改动。
+ - platform_cf2.c：设备条目通用，不区分是否有 deck 传感器，无需改动。
+
+ 验证方式
+
+ 用户已说明本次不需要编译，只需要把代码改对。改完后可以用 grep 交叉核对：
+ - grep -n "SPI_PIN_\|SENSORS_ENABLE_DECK\|ENABLE_POSITION_HOLD_MODE\|ENABLE_ALT_HOLD_MODE"
+   main/Kconfig.projbuild
+   确认 pyDrone 分支的新默认值符合上表。
+ - 如果之后要实机验证：idf.py menuconfig 里确认 pyDrone 板型下 SPI 脚显示 17/21/18/8，SENSORS_ENABLE_DECK
+   为 y；上电后日志应出现 VL53L1X I2C connection [OK] 和 PMW3901 SPI connection [OK]。
+   
+   
+
+● Diff matches the plan exactly. All changes are complete:
+
+  - main/Kconfig.projbuild: SPI pins for TARGET_PYDRONE_S3 now default to MISO=17, MOSI=21, CLK=18, CS0=8
+    (previously 37/35/36/34, which conflicted with the Octal PSRAM). SENSORS_ENABLE_DECK and
+    ENABLE_POSITION_HOLD_MODE now default on for pyDrone (VL53L1X + PMW3901 enabled, position hold
+    available); ENABLE_ALT_HOLD_MODE falls back to the generic off-default since flow takes priority. Help
+    text and the board description updated to reflect the onboard sensors.
+  - sdkconfig.defaults.pydrone: comment updated — no longer claims "no Flow Deck can be attached."
+  - I2C1 pins (SCL=1, SDA=6) already matched the hardware, so no change was needed there, and no driver .c
+    files needed touching since zranger2.c/flowdeck_v1v2.c/pmw3901.c already read these pins purely from
+    Kconfig.
+	
+现在是有两个spi，一个用于PSRAM，一个用于pmw3901对吗？                                                    
+
+  Thought for 20s (ctrl+o to expand)
+
+● 对，是两条独立的 SPI 硬件总线，互不共享：
+
+  - PSRAM（Octal PSRAM）：由 ESP32-S3 内部专用的 SPI 控制器驱动（CONFIG_SPIRAM_MODE_OCT），占用
+    GPIO35/36/37 等一组专用引脚，完全由 ESP-IDF 的 SPIRAM 驱动接管，用户代码碰不到、也不需要碰。
+  - PMW3901：走的是通用 SPI 外设 SPI2_HOST（components/drivers/deck/deck_spi.c:77），用
+    CONFIG_SPI_PIN_MISO/MOSI/CLK/CS0（现在是 17/21/18/8）这组独立引脚，由 spiBegin() 在运行时初始化，跟
+    PSRAM 那条线完全是两个硬件控制器，物理上和逻辑上都不冲突。
+
+  所以这次改动本质上就是给 PMW3901 挂到 SPI2_HOST 这条"第二条 SPI"上，PSRAM
+  那条留给内部固定用途，两者各自独立工作。
+  
+ @records/espdrone.md 代码已实现，按照这个规划，如何进行后面的操作？                                      
+  ⎿  Read records/espdrone.md (unchanged)
+
+  Thought for 37s (ctrl+o to expand)
+
+● 按照 records/espdrone.md 的规划，代码层面的迁移工作（步骤1-9）现在已经做完（含这次新增的 deck 传感器
+  Kconfig），接下来是文档第 10 步"编译烧写"和第 4 节"验证顺序 T0-T7"，即从纯代码工作转入实机验证阶段：
+
+  1. 编译（之前跳过的一步，现在需要做）
+
+  idf.py set-target esp32s3
+  idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.defaults.pydrone"
+  reconfigure
+  idf.py menuconfig   # ESPDrone Config -> 确认板型是 pyDrone，SPI 脚显示 17/21/18/8，SENSORS_ENABLE_DECK=y
+  idf.py build
+  本地 IDF 是 v5.4（文档假设 v5.0），adc_esp32.c 里 esp_adc_cal 在 v5.4 已进 deprecated
+  目录，这是编译时第一个要盯的报错点。
+
+  2. T0 — 备份原厂固件（必须先做，否则回不去）
+
+  esptool.py -p /dev/ttyACM0 read_flash 0 0x800000 pydrone_backup.bin
+
+  3. 烧写
+
+  idf.py -p /dev/ttyACM0 flash monitor
+
+  4. T1-T7 拆桨验证（T1-T4 必须拆桨）
+
+  ┌──────┬───────────────┬──────────────────────────────────────────────────────────────────────────────┐
+  │ 编号 │     内容      │                               现在多了什么要看                               │
+  ├──────┼───────────────┼──────────────────────────────────────────────────────────────────────────────┤
+  │ T1   │ 上电不转桨    │ 确认 M3/M4(GPIO40/41) 无抽动，deck I2C 确实在 1/6 上                         │
+  ├──────┼───────────────┼──────────────────────────────────────────────────────────────────────────────┤
+  │ T2   │ I2C/SPI 扫描  │ 除了 MPU6050/SPL06/QMC5883L [OK]，现在还要看到 VL53L1X I2C connection [OK]   │
+  │      │               │ 和 PMW3901 SPI connection [OK]——这两行就是这次改动是否生效的直接证据         │
+  ├──────┼───────────────┼──────────────────────────────────────────────────────────────────────────────┤
+  │ T3   │ 电机映射+方向 │ 逐个 motorPowerSet.m1..m4，核对 pitch                                        │
+  │      │               │ 符号（PITCH_DISTRIBUTION_INVERTED），装反会翻机                              │
+  ├──────┼───────────────┼──────────────────────────────────────────────────────────────────────────────┤
+  │ T4   │ 传感器读数    │ acc/gyro 静态值 + 新增：用 param/日志看 VL53L1X                              │
+  │      │               │ 测距值随手掌靠近单调变化、PMW3901 平移时 flow 计数有响应                     │
+  ├──────┼───────────────┼──────────────────────────────────────────────────────────────────────────────┤
+  │ T5   │ 电池电压      │ cfclient pm.vbat 对比万用表，误差 <0.1V                                      │
+  ├──────┼───────────────┼──────────────────────────────────────────────────────────────────────────────┤
+  │ T6   │ 通信          │ cfclient 连 AP，参数树可读                                                   │
+  ├──────┼───────────────┼──────────────────────────────────────────────────────────────────────────────┤
+  │ T7   │ 系留悬停      │ 之前只能自稳；现在 ENABLE_POSITION_HOLD_MODE=y                               │
+  │      │               │ 了，可以在系留状态下测试定点/定高是否稳定，再决定要不要放开自由飞            │
+  └──────┴───────────────┴──────────────────────────────────────────────────────────────────────────────┘
+
+  5. 仍然悬而未决、必须实测才能回填代码的三项（records/record.md）
+
+  - pitch 符号（T3 定论后设 PITCH_DISTRIBUTION_INVERTED，或者如果是 IMU 朝向问题改
+    processAccGyroMeasurements()）
+  - IMU 轴向（T4，若有静态倾角偏差用 PITCH_CALIB/ROLL_CALIB 校正）
+  - PID 重调（716 电机+46mm 桨 vs 720 电机惯量不同，pid.h 里 pyDrone 目前落在 #else 默认组）
+
+  6. 可选/暂缓
+
+  配置持久化（EEPROM 自检恒真，配置存不下来）、分区表、CI 覆盖 pyDrone
+  板型、文档补充——这些不影响首次试飞，可以先放着。
+
+  简单说：代码到此告一段落，下一步是编译→备份→烧写→拆桨跑 T1-T7，其中 T2/T4/T7 是专门验证这次新增的
+  VL53L1X+PMW3901 是否真的工作的关键点。
+
+✻ Baked for 37s
+
+
+基于代码里实际的 param/log 组名和连接方式，把 T1-T7 逐条落到可执行的操作上：
+
+  准备
+
+  - 拆桨（螺旋桨从电机上取下，只留电机空转）。
+  - 手机连不上就用 PC + cfclient：git clone https://github.com/qljz1993/crazyflie-clients-python.git &&
+    pip3 install -e . && cfclient
+  - ESP-Drone 上电后会开 AP：SSID ESP-DRONE_XXXX（XXXX 是 MAC 后四位），密码 12345678
+  - cfclient 里 Connect 地址填：udp://192.168.43.42:2390
+  - 串口日志（USB-Serial-JTAG，/dev/ttyACM0）全程开着：idf.py -p /dev/ttyACM0 monitor
+
+  T1 — 上电不转桨
+
+  1. 螺旋桨全部取下，接电池。
+  2. 盯着串口日志，不要有 i2c driver install 相关报错。
+  3. 目测/用手轻触 M3、M4 对应电机轴（GPIO40/41 现在应该只是普通电机脚），上电瞬间不应该抽动或转动。
+  4. 通过：日志无 I2C 报错 + M3/M4 电机静止 → 证明 deck I2C 已经改到了 GPIO1/6，没有误配到电机脚上。
+
+  T2 — I2C/SPI 扫描
+
+  1. 只看串口日志里初始化阶段打印的这几行（DEBUG_MODULE "SENSORS"）：
+     - MPU6050 I2C connection [OK]
+     - SPL06 I2C connection [OK]
+     - VL53L1X I2C connection [OK] ← 这次新加的，没出现就说明 I2C1(GPIO1/6)接线或时序有问题
+     - PMW3901 SPI connection [OK] ← 这次新加的，没出现就查 SPI(GPIO17/21/18/8) 接线，尤其 CS(GPIO8)
+  2. 连上 cfclient 后打开 Parameter 面板，展开 imu_tests 组，读取：
+     - imu_tests.mpu6050 应为 1
+     - imu_tests.pmw3901 应为 1（对应 flowdeck2Test() 通过）
+     - VL53L1X 目前代码里没有单独的 param 标志（只有串口日志），所以它的"在线"判断要看第 3 步的 log
+       数值，不是 param。
+  3. 打开 Log 面板，订阅 range.zrange：静止时应该有一个稳定的非 0/非 0xFFFF 数值（单位 mm），说明 VL53L1X
+     真的在回数据，不只是初始化成功。
+
+  T3 — 电机映射 + 方向（这一步最危险，务必确认桨已拆）
+
+  1. cfclient Parameter 面板，motorPowerSet 组：先设 motorPowerSet.enable =
+     1（这会绕开飞控直接给单个电机赋值）。
+  2. 依次只给一个电机赋值（比如 motorPowerSet.m1 = 10000，其余 m2/m3/m4 保持
+     0），观察哪个电机转，确认物理位置：
+     - 按文档结论应为 M1 左上、M2 右上、M3 右下、M4 左下（若实际不一致，要去改 MOTOR01_PIN..MOTOR04_PIN
+       或接线，而不是软改序号语义）。
+  3. 每测完一个立刻把该 m 设回 0，再测下一个，最后 motorPowerSet.enable = 0 交还给飞控。
+  4. Pitch 符号判定：把 4 个电机都设一个小的低速值，手动模拟推杆抬头（想象机头方向），对照
+     power_distribution_stock.c 里 CONFIG_PITCH_DISTRIBUTION_INVERTED 关闭/打开两种情况下 m1-m4
+     的公式，判断哪一组符合"机头抬起时前两个电机减速、后两个加速"（或反之，取决于机头朝向定义）。若现在默认
+     （未反转）验证是错的，就在 idf.py menuconfig 里打开 Power distribution -> Invert the pitch
+     term，重新走一次 T3。
+
+  T4 — 传感器读数
+
+  1. cfclient Log
+     面板订阅：acc.x/y/z、gyro.x/y/z、mag.x/y/z、baro.asl、range.zrange、motion.deltaX/deltaY。
+  2. 静置在水平桌面：
+     - acc.z ≈ 1.0（g），acc.x/y ≈ 0（有偏差用 PITCH_CALIB/ROLL_CALIB 校正，单位 deg*100）
+     - gyro.x/y/z ≈ 0，绕某轴手动转动飞机，对应轴数值应按右手定则变化
+     - 抬升飞机高度，baro.asl 应单调增大；用手掌在飞机下方由远到近移动，range.zrange 应单调减小到几十 mm
+       量级
+     - 手托着飞机平移，motion.deltaX/deltaY
+       应有非零脉冲，方向要和平移方向对应（不对的话是光流安装朝向问题，代码里 flowdeck_v1v2.c 已经做了
+       -deltaY/-deltaX 翻转，如果反了要重新核对贴装方向再决定是否再加一次翻转）
+
+  T5 — 电池电压
+
+  1. cfclient Log 订阅 pm.vbat（或 pm.vbatMV）。
+  2. 万用表实测电池正负极电压，与 pm.vbat 对比，误差应 < 0.1V。
+  3. 超差说明 BAT_DIVIDER_RATIO=502 或 BAT_ADC_ATTEN_0DB 这两个 Kconfig
+     值和实际分压电阻不一致，需要重新核对 R4/R7 阻值。
+
+  T6 — 通信
+
+  1. cfclient 用上面的 udp://192.168.43.42:2390 连接，确认状态变绿、Parameter/Log 树能正常展开读取（做完
+     T2-T5 其实已经顺带验证了这一条）。
+
+  T7 — 系留悬停
+
+  1. 用绳子/胶带把飞机系在稳定支架上，留出足够行程但不能真正飞脱。
+  2. 装回螺旋桨，小油门起飞到系留绳张力附近，观察是否发散（自振/持续漂移）。
+  3. 因为这次 ENABLE_POSITION_HOLD_MODE=y 已经打开，光流+ToF 都在线的情况下，用 cfclient
+     切换/确认飞行模式为 POSHOLD_MODE（isPmw3901Present 为真时代码会自动
+     setCommandermode(POSHOLD_MODE)），悬停时看水平方向是否比纯自稳更稳（光流在起作用）、range.zrange
+     是否随高度变化被用来做定高（可以轻推油门看能不能稳定在某个高度附近而不是持续爬升/下坠）。
+  4. 系留稳定后才考虑解开绳子自由试飞。
+
+✻ Worked for 1m 31s
+
+有测试架能否调整不拆桨？另外只连串口usb，桨是否有保护不会转？是软件控制的还是硬件控制的？
+
+这两个问题我分别说清楚，尤其第二个我在代码里找到了一个之前没提过的关键事实，务必看。
+
+  1. 有测试架能不能不拆桨？
+
+  分两种情况看，不能一概而论：
+
+  - T3（手动指定单电机转速验证方向）：如果测试架能做到——机身被牢牢固定/夹持（不会因为反推力而移位或翻倒）、
+    螺旋桨旋转面内没有手指/线材/杂物、旁边没有人站在桨盘正对方向——那用测试架代替拆桨是可以接受的，前提是只
+    用小油门（比如 motorPowerSet.m1=10000，满量程 65535 的 15% 左右），不要拉到大油门做应力测试。
+  - T1（第一次上电）：我不建议即使有测试架也带桨做。原因是这次是新固件+新引脚映射的第一次上电，未知风险最高
+    （万一某个 Kconfig 分支选错、CS/SCL/SDA
+    接反等），测试架能防止飞机飞走，但防不住桨盘范围内瞬间高速旋转的物理伤害风险。第一次上电成本很低（拆 4
+    个桨几分钟），建议还是拆了确认正常后，再上桨用测试架做后续。
+
+  2. 只接串口 USB，桨是否被保护、软件还是硬件控制？
+
+  这个问题我去查了电机驱动代码，有个重要发现，务必注意：
+
+  硬件层面（取决于板子供电拓扑，我在仓库里查不到这块自定义板/扩展硬件的原始图，不能替你下结论）
+
+  有刷电机电路的典型接法是：GPIO(LEDC PWM) 只驱动一个低边 N-MOS
+  管的栅极，电机另一端接的是系统/电池供电轨（VBAT），不是 3.3V 逻辑电。也就是说桨会不会转，最终取决于 VBAT
+  这条轨有没有电：
+
+  - 如果板子设计是"USB 只经过一个独立的 5V→3.3V LDO 给 MCU 供电，跟 VBAT 完全不搭",那只接
+    USB、不接电池时，电机那端根本没有电压源，GPIO 怎么开关 MOS
+    管都没用——这种情况下是硬件级保护，跟软件无关。
+  - 但如果板子上有电源管理/充电芯片（文档里提到过黄色 LED 是充电 STAT 脚，说明板上确实有一颗类似 TP4056
+    的芯片），而这颗芯片的系统输出轨在"只接 USB 不接电池"时依然会把
+    VBAT/系统轨拉起来（很多板子这么设计，方便台架调试不用挂电池）——那这种情况下电机supply
+    就是带电的，唯一的保护就是软件。
+
+  这一点我没法只看固件代码确定，建议你实测一下：只插 USB、不接电池，用万用表量任意一个电机负极那颗 N-MOS
+  的漏极（或者直接量 VBAT 测试点）对地电压——读到 ~0V 说明是硬件保护，读到接近电池电压说明是软件在兜底。
+
+  软件层面（这个是确定的，而且是个新发现）
+
+  我查到 components/drivers/general/motors/motors.c:157 的 motorsTest()：只要 VBAT
+  有电，固件在每次开机自检时，会按 M1→M2→M3→M4 顺序依次让每个电机以 20% 油门转 50ms、间隔 150ms——这是
+  stabilizerTest() → powerDistributionTest() → motorsTest()
+  这条自检链路里硬编码的行为（components/config/include/config.h:196 里 ACTIVATE_STARTUP_SOUND
+  默认是关的，所以走的是真实转一下而不是蜂鸣器哔一声这个分支）。
+
+  结论：这不是"万一软件出 bug 才会转"，而是"只要 VBAT 有电，每次开机固件本来就设计成会依次转一下 4
+  个电机"。 所以：
+  - 如果你的板子 USB-only 时 VBAT 是真的没电（硬件保护），那插 USB 看日志/调 Kconfig 是绝对安全的。
+  - 如果 VBAT 在 USB-only
+    时也带电，那这个自检序列每次开机都会跑一遍——即便你什么命令都没发，桨也会短暂转一下，这时候拆桨做 T1/T2
+    就不是"谨慎起见"，而是必须，因为这个动作是确定会发生的，不是假设性风险。
+	
+	
+claude --resume 4223bf5d-6b14-4a46-82a0-3017615f74f1
+
+
+
+I (1180) SYS: ESPlane 2.0  is up and running!                                                            
+                                                                                                           
+  I (1180) I2CDRV:  i2c 1 driver install return = 0                                                        
+  I (1184) EEPROM: spi_flash_init ... !                                                                    
+  I (1188) EEPROM: spi_flash_read ok !                                                                     
+  Characterized using Default Vref                                                                         
+  I (2451) I2CDRV:  i2c 0 driver install return = 0                                                        
+  E (3552) SENSORS: MPU6050 I2C connection [FAIL].                                                         
+                                                                                                           
+  E (3553) SENSORS: Please power off and power on the device.-------有这个错误，请分析                     
+
+  Thought for 13s (ctrl+o to expand)
+
+● Explore(Find MPU6050 init and I2C driver code)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● I'm digging into the ESP-Drone source to see how MPU6050 detection works and what could cause this
+  failure. I'll report back shortly with an analysis.
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "Find MPU6050 init and I2C driver code" finished · 3m 15s
+
+  Thought for 27s (ctrl+o to expand)
+
+● 这个报错是 ESP-Drone 固件在初始化阶段检测 MPU6050（陀螺仪/加速度计）时，通过 I2C 读取 WHO_AM_I
+  寄存器失败导致的。分析如下：
+
+  代码路径
+  - 打印位置：components/core/crazyflie/hal/src/sensors_mpu6050_hm5883L_ms5611.c:484-506，sensorsDeviceInit
+    () 中调用 mpu6050TestConnection() 判断连接是否成功。
+  - 检测逻辑：components/drivers/i2c_devices/mpu6050/mpu6050.c 里的 mpu6050TestConnection() 延时 100ms
+    后读取 WHO_AM_I(0x75) 寄存器，要求返回值等于 0x34，否则判定失败。
+  - 没有重试机制：只做一次读取，读取用的是
+    i2cdevReadReg8()（components/drivers/i2c_bus/i2cdev_esp32.c），I2C 事务超时只有 5 tick（约
+    5ms），一旦没读到就直接判失败，不会重试。
+  - 失败后行为：while(1) vTaskDelay(...) 死循环挂起，不会重启，只打印提示让你断电重插。
+
+  和之前那个 bug（#115）的关系
+  提交 527ee2e 已经修复过一次类似问题：之前 MPU6050 上电后没等稳定就立刻读，导致偶发失败后 assert(0)
+  直接崩溃重启；修复方式是加了 100ms 延时，并把失败行为从 crash 改成打印提示+挂起。但这次修复只加了固定
+  100ms 延时，没有加重试，所以如果模块需要更长的稳定时间，或者第一次 I2C
+  事务刚好抖动/超时，仍然会一次性判死，现在的表现就是你看到的“打印错误后卡死”而不是重启循环。
+
+  最可能的根因（按可能性排序）
+  1. 硬件/接线问题：MPU6050 挂在 I2C0（sensorsBus），该总线在代码里是
+     GPIO_PULLUP_DISABLE（i2c_drv.c:61），完全依赖板载外部上拉电阻。如果模块没接好、焊接虚焊、或者用错了
+     IMU 模块/替换过传感器板，上拉缺失或接触不良会直接导致 NACK/超时。
+  2. 编译目标(TARGET)与实际板子不匹配：I2C0 的 SDA/SCL 引脚号在 main/Kconfig.projbuild 里因
+     TARGET_ESPLANE_V1 / TARGET_ESPLANE_V2_S2 / TARGET_ESP32_S2_DRONE_V1_2 / TARGET_PYDRONE_S3 而不同（比如
+     ESPLANE_V1 是 GPIO21/22，ESPLANE_V2_S2 是 GPIO10/11）。日志里 "ESPlane 2.0"
+     只是运行时默认设备名（platform_cf2.c 里硬编码的默认值），不代表编译时选的是哪个
+     TARGET。如果实际板子和编译配置的引脚不一致，MPU6050 就会读不到。
+  3. 供电/上电时序问题：如果 3.3V 电源纹波大或上电瞬间电压不稳，MPU6050 可能需要比 100ms
+     更长的时间才能响应，尤其是刚从别的固件切换过来、或者是山寨/兼容模块。
+  4. 传感器模块本身损坏。
+
+  建议排查步骤
+  1. 确认 sdkconfig 里 CONFIG_TARGET_* 选的目标和你实际用的板子型号一致，核对 I2C0 引脚是否和实际接线对上。
+  2. 检查 MPU6050 到主板之间的焊点/接插件是否牢固，SDA/SCL
+     是否有外部上拉电阻（一般模块板上自带，但如果是裸片模块要注意）。
+  3. 尝试用万用表/逻辑分析仪确认 I2C0 SDA/SCL 电平，或者临时把 i2c_drv.c 里 sensorsBus 的
+     GPIO_PULLUP_DISABLE 改成 GPIO_PULLUP_ENABLE 测试是否是上拉问题。
+  4. 如果怀疑是启动时序问题，可以临时把 mpu6050TestConnection() 里的单次检测改成重试几次（比如像
+     sensorsMpu6050Hmc5883lMs5611Test() 里 mpu6050SelfTest() 那样重试 300
+     次/3秒的做法），验证是否只是偶发超时。
+
+  如果你能告诉我具体用的是哪个硬件版本（ESPlane V1/V2、pyDrone 等）以及编译时选的
+  TARGET，我可以帮你进一步确认引脚配置是否正确。
+
+✻ Cogitated for 3m 56s
+
+❯ i2c 0 和1 分别用了什么管脚？                                                                             
+
+  Thought for 12s, searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● I2C0（挂 MPU6050 传感器）和 I2C1（挂扩展 deck）的引脚是按编译目标（TARGET_*）分别配置的，具体在
+  main/Kconfig.projbuild:234-288：
+
+  ┌────────────────────────┬────────────┬───────────────┬─────────────────────┬────────────┐
+  │          信号          │ ESPLANE_V1 │ ESPLANE_V2_S2 │ ESP32_S2_DRONE_V1_2 │ PYDRONE_S3 │
+  ├────────────────────────┼────────────┼───────────────┼─────────────────────┼────────────┤
+  │ I2C0_PIN_SDA（传感器） │ GPIO21     │ GPIO11        │ GPIO11              │ GPIO16     │
+  ├────────────────────────┼────────────┼───────────────┼─────────────────────┼────────────┤
+  │ I2C0_PIN_SCL（传感器） │ GPIO22     │ GPIO10        │ GPIO10              │ GPIO15     │
+  ├────────────────────────┼────────────┼───────────────┼─────────────────────┼────────────┤
+  │ I2C1_PIN_SDA（deck）   │ GPIO16     │ GPIO40        │ GPIO40              │ GPIO6      │
+  ├────────────────────────┼────────────┼───────────────┼─────────────────────┼────────────┤
+  │ I2C1_PIN_SCL（deck）   │ GPIO17     │ GPIO41        │ GPIO41              │ GPIO1      │
+  ├────────────────────────┼────────────┼───────────────┼─────────────────────┼────────────┤
+  │ MPU_PIN_INT            │ GPIO19     │ GPIO12        │ GPIO12              │ GPIO7      │
+  └────────────────────────┴────────────┴───────────────┴─────────────────────┴────────────┘
+
+  注意 Kconfig 里有个针对 pyDrone
+  的警告（main/Kconfig.projbuild:272-274）：ESPLANE_V2_S2/ESP32_S2_DRONE_V1_2 上 GPIO40/41 是驱动 M3/M4
+  电机 MOSFET 的引脚，如果误把 deck 总线接到这两个脚上，开机时的
+  open-drain+上拉配置可能会导致电机转动，要特别小心不要接反 TARGET。
+
+  你现在编译用的是哪个 TARGET？我可以帮你核对实际接线是否匹配，这跟你之前的 MPU6050 检测失败很可能有关系。
+
+✻ Worked for 22s
+
+※ recap: You're diagnosing an MPU6050 I2C connection failure on your ESP-Drone board. I gave the I2C0/I2C1 
+  pin tables per TARGET; next step is telling me which TARGET you built for so I can check it matches your 
+  wiring. (disable recaps in /config)
+
+❯ components/drivers/i2c_bus/include/i2c_drv.h:33:5: error: unknown type name 'xQueueHandle'               
+     33 |     xQueueHandle     clientQueue;       //< Queue to send received messages to.                  
+        |     ^~~~~~~~~~~~                                                                                 
+  ninja: build stopped: subcommand failed.                                                                 
+
+  Thought for 19s, searched for 1 pattern (ctrl+o to expand)
+
+● Bash(grep -rn "configENABLE_BACKWARD_COMPATIBILITY" / --include="FreeRTOSConfig.h" 2>/dev/null; echo
+  pin tables per TARGET; next step is telling me which TARGET you built for so I can check it matches your
+  wiring. (disable recaps in /config)
+
+❯ components/drivers/i2c_bus/include/i2c_drv.h:33:5: error: unknown type name 'xQueueHandle'               
+     33 |     xQueueHandle     clientQueue;       //< Queue to send received messages to.                  
+        |     ^~~~~~~~~~~~                                                                                 
+  ninja: build stopped: subcommand failed.                                                                 
+
+  Thought for 19s, searched for 1 pattern (ctrl+o to expand)
+
+● Bash(grep -rn "configENABLE_BACKWARD_COMPATIBILITY" / --include="FreeRTOSConfig.h" 2>/dev/null; echo
+      "---"; find / -iname "FreeRTOSConfig.h" 2>/dev/null | grep -v bu…)
+  ⎿  /data/project/source/github/micropython/ports/cc3200/FreeRTOS/FreeRTOSConfig.h:124:#define config
+     ENABLE_BACKWARD_COMPATIBILITY     0
+     /data/project/source/esp-idf/components/freertos/config/include/freertos/FreeRTOSConfig.h:128:
+     … +15 lines (ctrl+o to expand)
+     
+  Thought for 15s, read 1 file (ctrl+o to expand)
+
+● Bash(cd /data/project/source/peakxie/esp-drone
+      echo "--- sdkconfig.defaults ---"…)
+  ⎿  Waiting…
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   │ cd /data/project/source/peakxie/esp-drone
+   │ echo "--- sdkconfig.defaults ---"
+  Thought for 19s, searched for 1 pattern (ctrl+o to expand)
+
+● Bash(grep -rn "configENABLE_BACKWARD_COMPATIBILITY" / --include="FreeRTOSConfig.h" 2>/dev/null; echo
+      "---"; find / -iname "FreeRTOSConfig.h" 2>/dev/null | grep -v bu…)
+  ⎿  /data/project/source/github/micropython/ports/cc3200/FreeRTOS/FreeRTOSConfig.h:124:#define config
+     ENABLE_BACKWARD_COMPATIBILITY     0
+     /data/project/source/esp-idf/components/freertos/config/include/freertos/FreeRTOSConfig.h:128:
+     … +15 lines (ctrl+o to expand)
+
+  Thought for 15s, read 1 file (ctrl+o to expand)
+
+● Bash(cd /data/project/source/peakxie/esp-drone
+      echo "--- sdkconfig.defaults ---"…)
+  ⎿  --- sdkconfig.defaults ---
+     sdkconfig.defaults:13:CONFIG_FREERTOS_ENABLE_BACKWARD_COMPATIBILITY=y
+     --- sdkconfig (if exists) ---
+     … +5 lines (ctrl+o to expand)
+
+  Thought for 11s (ctrl+o to expand)
+
+● Bash(cd /data/project/source/peakxie/esp-drone
+      find . -maxdepth 2 -iname "sdkconfig" -o -iname "build" -maxdepth 2 2>/dev/null…)
+  ⎿  ---
+     位于分支 pydrone-cc
+     您的分支与上游分支 'origin/pydrone-cc' 一致。
+     … +14 lines (ctrl+o to expand)
+
+  Thought for 16s (ctrl+o to expand)
+
+● 这是配置问题，不是代码 bug。
+
+  原因：xQueueHandle / xSemaphoreHandle 这些是 FreeRTOS 的旧式类型名，只有在开启
+  configENABLE_BACKWARD_COMPATIBILITY 时才会存在（新版本已改名为 QueueHandle_t 等）。这个仓库的
+  sdkconfig.defaults:13 已经正确写了：
+
+  CONFIG_FREERTOS_ENABLE_BACKWARD_COMPATIBILITY=y
+
+  但 sdkconfig.defaults 只在第一次生成 sdkconfig 时生效，如果你本地已经有一个之前生成的 sdkconfig（比如换过
+  IDF 版本、换过 target、或者是老项目残留的），里面没有这一项，新加的默认值就不会自动补进去，于是 FreeRTOS
+  编译时就没启用兼容层，导致 xQueueHandle 未定义。
+
+  解决方法（任选一种）：
+
+  1. 删掉旧的 sdkconfig（不是 sdkconfig.defaults，那个别删），重新配置：
+  rm sdkconfig
+  idf.py set-target <你的target>   # 如 esp32s2 / esp32s3
+  idf.py build
+     这样会重新按 sdkconfig.defaults 生成。
+  2. 或者不删，直接跑 idf.py menuconfig，进入：
+     Component config → FreeRTOS → Kernel → 勾选 Enable FreeRTOS backward compatibility
+     保存退出后再 idf.py build。
+
+  推荐用第 1 种，避免和其他手动改过的 sdkconfig 选项混在一起排查更麻烦。
+
+✻ Brewed for 2m 6s
+
+※ recap: We're debugging why the ESP-Drone build fails to compile. Next step: delete or regenerate your 
+  stale sdkconfig so it picks up sdkconfig.defaults, then rebuild with idf.py. (disable recaps in /config)
+
+❯ sdkconfig.defaults          sdkconfig.defaults.pydrone 这两个的关系是什么？                              
+
+  Thought for 7s (ctrl+o to expand)
+
+● Bash(cd /data/project/source/peakxie/esp-drone
+      echo "=== sdkconfig.defaults ==="…)
+  ⎿  === sdkconfig.defaults ===
+     CONFIG_ESP32_PHY_MAX_WIFI_TX_POWER=20
+     CONFIG_ESP32_PHY_MAX_TX_POWER=20
+     … +61 lines (ctrl+o to expand)
+
+  Thought for 17s (ctrl+o to expand)
+
+● sdkconfig.defaults.pydrone 是叠加在通用配置之上的板级增量配置，两者是分层叠加关系，不是互相替代：
+
+  - sdkconfig.defaults：所有硬件目标共用的基础配置（FreeRTOS 参数、编译优化选项、WiFi
+    发射功率等），跟具体是哪块板子无关。
+  - sdkconfig.defaults.pydrone：只包含 01Studio pyDrone v1.0（ESP32-S3-WROOM-1
+    N8R8）这块板子特有、需要覆盖/追加的选项，比如 CONFIG_TARGET_PYDRONE_S3=y、8MB flash、Octal PSRAM
+    配置、走 USB-Serial-JTAG 控制台而不是 UART 等。
+
+  文件开头的注释里已经写明了用法（sdkconfig.defaults.pydrone:1-8）：
+
+  idf.py set-target esp32s3
+  idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.defaults.pydrone"
+  reconfigure
+
+  即通过 SDKCONFIG_DEFAULTS 传一个用分号分隔的列表，idf.py 会按顺序依次应用这几个文件（sdkconfig.defaults →
+  sdkconfig.defaults.esp32s2/esp32s3 → 板级文件），后面的文件里的选项会覆盖前面的。这样通用配置只写一份，
+  各板子只需维护自己的差异部分，不用每块板子都复制一份完整 sdkconfig.defaults。
+
+  另外注释里也提到更简单的方式：在 idf.py menuconfig → ESPDrone Config 里直接选 "01Studio pyDrone with
+  ESP32-S3 onboard"，Kconfig 会自动帮你选中对应 TARGET，效果上等价于手动叠加这些 defaults
+  文件（前提是这个选择逻辑在 main/Kconfig.projbuild 里做了对应的 default 联动）。
+
+  如果你是要给 pyDrone 板子编译，记得用上面那条带 -D SDKCONFIG_DEFAULTS=... 的命令，而不是只跑 idf.py
+  build——否则不会应用 sdkconfig.defaults.pydrone
+  里的配置，这也是导致之前编译/配置项缺失问题的常见原因之一。
+
+✻ Baked for 24s
+
+※ recap: You're debugging the ESP-Drone build/config for the pyDrone S3 board. Next step: rebuild using the
+  multi-file SDKCONFIG_DEFAULTS command so pydrone-specific settings actually apply, then retry the build.
+  (disable recaps in /config)
+
+❯ CRTP RX queue full                                                                                       
+  Port: 4                                                                                                  
+                                                                                                           
+  abort() was called at PC 0x403779bf on core 0                                                            
+  0x403779bf: lock_init_generic at C:/Users/peakxie/esp/v5.0/esp-idf/components/newlib/locks.c:66          
+   (inlined by) lock_acquire_generic at C:/Users/peakxie/esp/v5.0/esp-idf/components/newlib/locks.c:118    
+                                                                                                           
+  Backtrace: 0x4037648e:0x3fca7140 0x4037f3d1:0x3fca7160 0x40386d32:0x3fca7180 0x403779bf:0x3fca71f0       
+  0x40377c3f:0x3fca7230 0x42086999:0x3fca7260 0x42089add:0x3fca7570 0x42094251:0x3fca75a0                  
+  0x42009641:0x3fca75d0 0x420096ca:0x3fca7610 0x4200b92e:0x3fca7660 0x4200d775:0x3fca7690                  
+  0x4037648e: panic_abort at C:/Users/peakxie/esp/v5.0/esp-idf/components/esp_system/panic.c:412           
+                                                                                                           
+  0x4037f3d1: esp_system_abort at C:/Users/peakxie/esp/v5.0/esp-idf/components/esp_system/esp_system.c:135 
+                                                                                                           
+  0x40386d32: abort at C:/Users/peakxie/esp/v5.0/esp-idf/components/newlib/abort.c:38                      
+                                                                                                           
+  0x403779bf: lock_init_generic at C:/Users/peakxie/esp/v5.0/esp-idf/components/newlib/locks.c:66          
+   (inlined by) lock_acquire_generic at C:/Users/peakxie/esp/v5.0/esp-idf/components/newlib/locks.c:118    
+                                                                                                           
+  0x40377c3f: _lock_acquire_recursive at C:/Users/peakxie/esp/v5.0/esp-idf/components/newlib/locks.c:158   
+  (discriminator 3)                                                                                        
+   (inlined by) __retarget_lock_acquire_recursive at                                                       
+  C:/Users/peakxie/esp/v5.0/esp-idf/components/newlib/locks.c:314 (discriminator 3)                        
+                                                                                                           
+  0x42086999: _vfprintf_r at ??:?                                                                          
+                                                                                                           
+  0x42089add: vprintf at /builds/idf/crosstool-NG/.build/HOST-x86_64-w64-mingw32/xtensa-esp32s3-elf/src/ne 
+  wlib/newlib/libc/stdio/vprintf.c:34 (discriminator 5)                                                    
+                                                                                                           
+  0x42094251: esp_log_writev at C:/Users/peakxie/esp/v5.0/esp-idf/components/log/log.c:200                 
+                                                                                                           
+  0x42009641: __wrap_esp_log_writev at                                                                     
+  D:/work/peakxie/esp-drone/managed_components/espressif__esp-now/src/debug/src/espnow_log.c:110           
+                                                                                                           
+  0x420096ca: __wrap_esp_log_write at                                                                      
+  D:/work/peakxie/esp-drone/managed_components/espressif__esp-now/src/debug/src/espnow_log.c:138           
+                                                                                                           
+  0x4200b92e: assertFail at D:/work/peakxie/esp-drone/components/core/crazyflie/utils/src/cfassert.c:83    
+                                                                                                           
+  0x4200d775: crtpRxTask at D:/work/peakxie/esp-drone/components/core/crazyflie/modules/src/crtp.c:191     
+                                                                                                           
+  ELF file SHA256: ebadf4da56e2089a                                                                        
+                                                                                                           
+  Rebooting...                                                                                             
+  ESP-ROM:esp32s3-20210327                                                                                 
+  Build:Mar 27 2021                                                                                        
+  rst:0x3 (RTC_SW_SYS_RST),boot:0xa (SPI_FAST_FLASH_BOOT)                                                  
+  Saved PC:0x40375dd1                                                                                      
+  0x40375dd1: esp_restart_noos_dig at                                                                      
+  C:/Users/peakxie/esp/v5.0/esp-idf/components/esp_system/esp_system.c:46 (discriminator 1)                
+                                                                                                           
+  SPIWP:0xee                                                                                               
+  mode:DIO, clock div:1                                                                                    
+  load:0x3fce3810,len:0x17d8                                                                               
+  load:0x403c9700,len:0xe6c                                                                                
+  load:0x403cc700,len:0x2f24                                                                               
+  entry 0x403c9930------cfclient连上后会不断重启                                                           
+
+  Thought for 39s (ctrl+o to expand)
+
+● Explore(Investigate CRTP RX queue full crash)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 正在深入排查 CRTP RX 队列满导致的崩溃根因，稍后给你分析结果。
+
+Agent "Investigate CRTP RX queue full crash" finished · 6m 10s
+
+  Thought for 6s, read 2 files (ctrl+o to expand)
+
+● Confirmed both. 分析结果：
+
+  根因是两个叠加的问题，触发链条如下：
+
+  1. crtp.c:184-192 — crtpRxTask 用非阻塞方式 xQueueSend(queues[p.port], &p, 0) 往每个 CRTP 端口对应的 RX
+     队列塞包，一旦队列满（errQUEUE_FULL），代码直接 ASSERT(0) 让整个系统硬崩溃：
+  if (xQueueSend(queues[p.port], &p, 0) == errQUEUE_FULL)
+  {
+      // We should never drop packet
+      printf("CRTP RX queue full\n");
+      printf("Port: %d\n", p.port);
+      ASSERT(0);
+  }
+     这里的 Port 4 = CRTP_PORT_MEM（内存子系统，负责枚举/读取 flash 上的固件信息、LED-ring 配置等），由
+     mem.c 里的 memTask 消费。cfclient 连上后会并发发多个 mem 枚举/读取请求，而每个端口的 RX 队列只有 16
+     个槽位（CRTP_RX_QUEUE_SIZE=16，crtp.c:78），memTask 优先级只有 2（远低于姿态/传感器任务的
+     6、7），一旦瞬间来的包稍多、consumer
+     被调度延迟，队列就会瞬间填满——这是个可以复现的触发条件，不是偶发内存损坏。
+  2. cfassert.c:79-91 — assertFail() 第一步就是 portDISABLE_INTERRUPTS()（关中断），然后才调用
+     DEBUG_PRINTE(...)，这个宏展开是完整的 ESP_LOGE，会走到 esp_log_writev → vprintf → newlib
+     的递归锁逻辑（lock_acquire_generic/lock_init_generic）。这个锁是第一次用时才惰性创建（内部要
+     pvPortMalloc
+     分配互斥量）。在关中断的上下文里去做这种需要分配/加锁的重操作，本身就是不安全的——这正是你看到的
+     abort() at lock_init_generic 崩溃的直接原因，而不是无关的 newlib bug 或堆损坏。
+
+  也就是说：表面异常的 "lock_init_generic 里 abort"，其实是 assert 处理函数自己写法不安全导致的二次崩溃，本
+  该只是"停机、点亮错误灯、死循环"，结果卡在了打印日志那一步，看门狗超时后设备重启，造成"连上 cfclient
+  就不断重启"的现象。
+
+  修复建议（两处都要改，缺一不可）：
+
+  1. crtp.c:186-192：把硬 ASSERT(0) 改成丢包容错（回到更早版本的行为），比如：
+  if (xQueueSend(queues[p.port], &p, 0) == errQUEUE_FULL)
+  {
+      printf("CRTP RX queue full, port %d, packet dropped\n", p.port);
+      // 丢弃这个包，不 assert
+  }
+     如果不想丢包，也可以适当加大 CRTP_RX_QUEUE_SIZE（尤其是 MEM/LOG/PARAM 用到的端口），或给 memTask
+     提高优先级。
+  2. cfassert.c:79-91：assertFail 在关中断之后不应该再调用会加锁/分配内存的
+     DEBUG_PRINTE/ESP_LOGE。要么把这行日志挪到 portDISABLE_INTERRUPTS()
+     之前，要么换成不依赖锁的最底层输出（比如 ets_printf/直接 UART
+     写），避免这个函数本身在"系统要停机"的时候又触发一次崩溃。
+
+  我可以直接帮你把这两处改掉，要我现在改吗？
+  
+  ● 两处修复已完成：
+
+  1. crtp.c:184-190：RX 队列满时不再 ASSERT(0) 硬崩溃，改为打印提示后正常丢弃该包，通信可以继续。
+  2. cfassert.c:79-91：把 DEBUG_PRINTE 日志调用挪到 portDISABLE_INTERRUPTS()
+     之前，避免在关中断状态下走加锁/分配内存的日志路径而触发 lock_init_generic 里的 abort()。
+
+  （诊断里报的 FreeRTOS.h not found、uint32_t unknown 等是编辑器 clangd 没配置 ESP-IDF
+  头文件搜索路径导致的误报，跟这次改动无关，用 idf.py build 编译不受影响。）
+
+  建议重新编译烧录后用 cfclient 连接测试一下,确认不再重启。
+这次问题的根因和上次不一样：不是 mem 模块本身的
+  bug，而是整个系统的自检门禁没通过，导致好几个任务永久卡死，port 4 队列爆满和 Flight Data
+  没数据都是这同一个根因的两个表现。
+
+  机制（system.c:168-268）：
+
+  systemTask() 启动后依次跑一堆自检：
+  pass &= wifiTest();          DEBUG_PRINTI("wifilinkTest = %d ", pass);
+  pass &= systemTest();        DEBUG_PRINTI("systemTest = %d ", pass);
+  pass &= configblockTest();   DEBUG_PRINTI("configblockTest = %d ", pass);
+  pass &= commTest();          DEBUG_PRINTI("commTest = %d ", pass);
+  pass &= commanderTest();     DEBUG_PRINTI("commanderTest = %d ", pass);
+  pass &= stabilizerTest();    DEBUG_PRINTI("stabilizerTest = %d ", pass);
+  pass &= estimatorKalmanTaskTest(); DEBUG_PRINTI("estimatorKalmanTaskTest = %d ", pass);
+  pass &= soundTest();         DEBUG_PRINTI("soundTest = %d ", pass);
+  pass &= memTest();           DEBUG_PRINTI("memTest = %d ", pass);
+  pass &= cfAssertNormalStartTest();
+
+  if (pass) {
+      systemStart();   // 只有全部自检通过才会调用
+  }
+
+  只要有任何一项自检返回 false（pass 变成 false），systemStart() 就永远不会被调用。而
+  memTask、stabilizerTask、estimatorKalmanTask 等一堆任务在初始化后第一件事就是
+  systemWaitStart()——卡在这里永远等不到信号量：
+
+  - memTask（mem.c:154-163）：先 crtpInitTaskQueue(CRTP_PORT_MEM) 创建了队列（所以队列能收包），然后卡在
+    systemWaitStart()，永远进不到接收循环去消费队列——这就是 port 4
+    一直满、一直丢包的原因，不是偶发拥堵而是彻底停摆。
+  - stabilizerTask / estimatorKalmanTask 同样卡住，姿态/传感器数据根本没在跑，所以 Flight Data
+    一直是空的（log 任务本身没被这个门禁卡住，能正常应答 TOC，但它没有新数据可发）。
+
+  也就是说，你的飞控固件其实卡在自检失败的死循环里（system.c:249-260，会一直跑 LED 报错灯效 seq_testFailed
+  并每 2 秒重试一次），只是 CRTP 通信部分还能正常连上，看起来像是"连上了但没数据"。
+
+  顺便发现一个附带 bug：代码注释说"可以从 cfclient 把参数设成 1 来强制启动"（system.c:253），但实际上
+  selftestPassed 参数被声明成了 PARAM_RONLY（只读，system.c:345），cfclient
+  根本写不进去，这个"强制启动"机制目前是失效的——不过这不是你现在问题的根因，只是顺带发现。
+
+  下一步排查：请把设备重新烧录、通过串口监视器（idf.py monitor）看开机后 systemTask 打印的这几行：
+  wifilinkTest = ?
+  systemTest = ?
+  configblockTest = ?
+  commTest = ?
+  commanderTest = ?
+  stabilizerTest = ?
+  estimatorKalmanTaskTest = ?
+  soundTest = ?
+  memTest = ?
+  把这几行贴给我，就能直接定位到底是哪一项自检失败（很可能和之前 MPU6050 相关，比如
+  stabilizerTest/estimatorKalmanTaskTest 依赖传感器数据有效），我再帮你看对应的测试函数具体卡在哪。
+  
+  这些诊断信息是编辑器 clangd 缺 ESP-IDF 头文件路径导致的误报（FreeRTOS.h not found
+  等），跟刚才的改动无关，可以忽略。
+
+  订阅 range.zrange 的步骤（cfclient 桌面客户端）：
+
+  1. 确保已连接上飞控（顶部选好 URI 后点 Connect）。
+  2. 在主界面左侧/顶部找到 "Log Blocks"（有的版本菜单路径是 View → Tabs → Log
+     Blocks，把它勾上让它显示为一个 tab）。
+  3. 打开 "Log Blocks" 标签后，点击 "Add"（或 +）新建一个 log 配置：
+     - 起个名字（随意，比如 zrange_test）。
+     - 设置更新周期（Period），比如 100 ms（10Hz）就够看数值变化了。
+  4. 在弹出的变量选择树（TOC 树）里展开找到分组 range，勾选/双击里面的 zrange，把它加到这个 log block
+     的内容列表里。
+  5. 点 OK/Create 确认创建。
+  6. 回到 Log Blocks 列表，勾选刚建好的这个 block 前面的复选框（或点
+     start/enable），它就会开始订阅并实时刷新——下面会出现一个表格显示 range.zrange 当前的数值，单位是 mm。
+
+  验证要点（对应你贴的那段检查描述）：
+  - 飞机静止放在桌面上，zrange 应该稳定在一个接近实际离地高度的数值（比如放在桌上大概 0~几十
+    mm，取决于传感器安装位置），且不是 0 或
+    0xFFFF（65535）——这两个值通常代表读数无效/超量程/传感器没真正采数。
+  - 用手在传感器下方移动，数值应该跟着变化，说明是实时在读数，不是初始化后卡死的固定值。
+
+  如果 TOC 树里根本找不到 range 这个分组：说明固件里没有注册这个 log 变量，通常意味着 VL53L1X 对应的
+  deck/驱动代码在这个 build 里没有被启用或没检测到（比如没调用相应的 LOG_ADD/deck
+  init）。这种情况需要回到固件端确认 zranger 驱动是否被编译进去、deck 检测逻辑有没有跑（联系上次提到的
+  deckInit() 目前在 system.c:195 是被注释掉的——如果 VL53L1X 是通过 deck
+  驱动接的，这行没打开的话传感器驱动可能根本没初始化）。你现在具体是通过 deck 接口接的
+  VL53L1X，还是直接在代码里手动初始化的？
+
+✻ Cogitated for 29s
+
+❯ range.zrange在log Toc中有，但没有地方可以看到值                                                          
+
+  Thought for 47s (ctrl+o to expand)
+
+● GUI 里看不到数值，最常见的原因是只添加了变量,但没有真正启动（start）这个 log 
+  block——加变量只是配置内容,真正让飞控开始往下发数据、面板才会刷新数值的动作是勾选/启动那个
+  block。给两个思路，第二个最保险：
+
+  方式一：在 Log Blocks 面板里
+  1. 新建的那个 log block（比如 zrange_test）会出现在列表里，它前面通常有个复选框——勾上它才是真正"Start
+     Logging"，光是加了 zrange 进去但没勾选，不会有任何数据流。
+  2. 勾上后，点这个 block
+     左边的展开箭头/三角，把它展开——单个变量的实时数值一般是显示在展开后子项那一行的"Value"列，不是在 block
+     本身那一行。
+  3. 如果你这个版本的 Log Blocks 面板确实没有 Value 列（不同版本 cfclient UI 差异挺大），可以换用 "Plotter"
+     这个 tab（View → Tabs → Plotter），把 range.zrange
+     加进去画曲线图——只要固件真的在发数据，曲线会实时跳动，这个肯定能看到。
+
+  方式二：用 cfclient 自带的 Python Console（最直接、不依赖任何面板逻辑）
+  打开 View → Tabs → Python Console，连接好之后在里面执行：
+  from cflib.crazyflie.log import LogConfig
+  lg = LogConfig(name='zrange_test', period_in_ms=100)
+  lg.add_variable('range.zrange', 'uint16_t')
+  cf.log.add_config(lg)
+  lg.data_received_cb.add_callback(lambda ts, data, conf: print(data))
+  lg.start()
+  执行后如果固件真的在往外发 zrange，终端会不断打印类似 {'range.zrange': 123} 这样的字典，数值就是
+  mm。如果什么都不打印，说明问题不在 UI 显示，而是固件那边根本没把数据发出来（比如 log block 没真正 start
+  成功，或者传感器读数没更新变量本身）。
+
+  你现在是卡在"完全没有任何值显示的地方"，还是"有个地方但一直是空白/0"？告诉我具体现象（或者试一下方式二的
+  Python console），能帮我判断是 UI 用法问题还是固件那边数据没发出来。
+
+✻ Churned for 47s
+
+❯ Log Blocks下面没有添加按钮，有没有其他方式验证zrange？                                                   
+
+  Thought for 25s (ctrl+o to expand)
+
+● UI 里找不到 Add 按钮的话，最省事、最不依赖界面版本差异的办法是直接用一段独立的 Python 脚本（cflib 通常是
+  cfclient 依赖的库，装了 cfclient 一般就有），完全绕开 GUI 去验证：
+
+  import time
+  import cflib.crtp
+  from cflib.crazyflie import Crazyflie
+  from cflib.crazyflie.log import LogConfig
+  from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
+
+  URI = 'udp://192.168.43.42:2390'  # 换成你在 cfclient 连接框里用的那个地址
+
+  cflib.crtp.init_drivers()
+
+  with SyncCrazyflie(URI, cf=Crazyflie(rw_cache='./cache')) as scf:
+      lg = LogConfig(name='zrange_test', period_in_ms=100)
+      lg.add_variable('range.zrange', 'uint16_t')
+
+      with scf.cf.log.add_config(lg) as logger:
+          for ts, data, conf in logger:
+              print(ts, data)
+
+  保存成 test_zrange.py，在装了 cfclient/cflib 的 Python 环境里跑 python
+  test_zrange.py。如果传感器真的在回数据，终端会每 100ms 打印一行类似：
+  1234 {'range.zrange': 87}
+  持续变化说明是实时读数；如果一直报错连不上、或者一直是 0/65535，说明问题在固件端而不是 UI。
+
+  几点排查方向：
+  - 如果 URI 不确定，先看 cfclient 连接框里当时用的地址是什么，原样填进去。
+  - 如果这段代码报 ImportError: No module named cflib，说明当前 Python 环境不是 cfclient
+    用的那个环境，需要用 cfclient 安装时用的 venv/conda 环境运行。
+  - 如果连接都连不上（跟 cfclient 能连上矛盾），检查是不是 cfclient
+    本身占着连接没断开——两边不能同时连同一个飞控。
+
+  这个脚本比 GUI 面板更可靠，能直接确认到底是"UI 面板没用对"还是"固件真的没把 zrange
+  发出来"。你可以先试一下，把结果（打印内容或报错）发给我。
+
+✻ Worked for 25s
+
+※ recap: You've been debugging ESP-Drone firmware issues and just fixed two crash bugs; now you're 
+  verifying the VL53L1X zrange sensor is actually producing live data. Next step: run the standalone Python
+  script to check if range.zrange updates in real time.
+
+❯ python .\test_zrange.py                                                                                  
+  Traceback (most recent call last):                                                                       
+    File "D:\flight\espdrone\crazyflie-clients-python\test_zrange.py", line 15, in <module>                
+      with scf.cf.log.add_config(lg) as logger:                                                            
+  TypeError: 'NoneType' object does not support the context manager protocol                               
+
+  Thought for 13s (ctrl+o to expand)
+
+● Bash(python3 -c "import cflib; print(cflib.__file__)" 2>/dev/null; find / -iname "syncLogger.py"
+      2>/dev/null | head -5)
+  ⎿  (No output)
+
+  Thought for 6s (ctrl+o to expand)
+
+● 我之前给的脚本用错了 API——add_config() 本身不是上下文管理器，正确的方式要用 SyncLogger。改成这样：
+
+● Bash(echo done)
+  ⎿  done
+
+● import cflib.crtp
+  from cflib.crazyflie import Crazyflie
+  from cflib.crazyflie.log import LogConfig
+  from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
+  from cflib.crazyflie.syncLogger import SyncLogger
+
+  URI = 'udp://192.168.43.42:2390'  # 换成你在 cfclient 连接框里用的那个地址
+
+  cflib.crtp.init_drivers()
+
+  with SyncCrazyflie(URI, cf=Crazyflie(rw_cache='./cache')) as scf:
+      lg = LogConfig(name='zrange_test', period_in_ms=100)
+      lg.add_variable('range.zrange', 'uint16_t')
+
+      with SyncLogger(scf, lg) as logger:
+          for ts, data, conf in logger:
+              print(ts, data)
+
+  改动点：把 scf.cf.log.add_config(lg) 换成 SyncLogger(scf, lg)，这是 cflib 官方推荐的同步读取 log
+  数据的方式（add_config 只是把配置注册给底层 log 系统，不是用来当 context manager 迭代的）。
+
+  重新跑一下 python .\test_zrange.py，把打印出来的内容（或者新的报错）发给我。
+
+✻ Sautéed for 30s
+flight control面板 flight data中的数据只持续了几秒后就不更新了                                           
+
+  Thought for 50s (ctrl+o to expand)
+
+● 这个新现象很可能是另一个原因（跟之前 mem/soundTest
+  不是一回事）——现在自检能过了，stabilizerTask/estimatorKalmanTask/memTask 这些之前一直卡在
+  systemWaitStart()
+  的任务第一次真正跑起来，很可能是这些任务里潜藏的问题（比如姿态估计用到无效传感器数据、某个任务死循环卡住
+  CPU）导致运行几秒后整个系统被拖住甚至看门狗重启，只是因为 UDP 是无连接协议，cfclient
+  不一定立刻提示"断开"，看起来就像"数据不再更新"。
+
+  在没有串口日志的情况下我不想瞎猜，能不能麻烦你：
+
+  1. 打开 idf.py monitor（或你用的串口终端）盯着看，
+  2. 让飞控通电、连上 cfclient，正常观察 Flight Data 有数据，
+  3. 等它卡住/停止更新的那一刻，看串口有没有：
+     - 类似之前的 abort()/backtrace 崩溃信息、
+     - Task watchdog got triggered 之类的看门狗提示、
+     - 又开始刷 CRTP RX queue full（哪个 port）、
+     - 或者干脆什么都不打印，只是安静卡住不动。
+  4. 顺便看看 cfclient 界面上的连接状态图标/连接质量指示，是显示仍然"已连接"，还是之后也变成断开了。
+
+  把这段时间的串口输出（哪怕只是最后几十行）贴给我，我才能确定具体卡在哪个任务/哪个环节。
+
+✻ Churned for 50s
+
+❯ 1.串口只有一条I (2941185) WIFI_UDP: udp packet cksum unmatched                                           
+  2.连接状态正常，而且可以cancel                                                                           
+  3.什么都不打印，只是安静卡住不动                                                                         
+  4.可能是cfclient没有主动拉取数据了，需要固件给cfclient发某种消息，以前碰到过                             
+
+  Thought for 55s (ctrl+o to expand)
+
+● Explore(Investigate WiFi UDP checksum mismatch causing frozen log stream)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 有意思的线索，这个 checksum 报错很可能就是卡死的触发点——正在深入排查 wifi_esp32.c
+  里这个校验失败之后的处理逻辑，看是不是让接收状态机卡死或者某个锁没释放，稍后反馈。
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "Investigate WiFi UDP checksum mismatch causing frozen log stream" finished · 3m 53s
+
+  Thought for 7s (ctrl+o to expand)
+
+● Bash(cd /data/project/source/peakxie/esp-drone
+      echo "=== wifilink.c timeout & isConnected ==="…)
+  ⎿  === wifilink.c timeout & isConnected ===
+     49:#define WIFI_ACTIVITY_TIMEOUT_MS (1000)
+     55:static uint32_t lastPacketTick;
+     … +18 lines (ctrl+o to expand)
+
+  Thought for 19s, read 1 file (ctrl+o to expand)
+
+● Bash(cd /data/project/source/peakxie/esp-drone
+      grep -rn "crtpIsConnected\b" --include="*.c" --include="*.h" .)
+  ⎿  components/core/crazyflie/modules/interface/crtp.h:180:bool crtpIsConnected(void);
+     components/core/crazyflie/modules/src/log.c:863:  if (!crtpIsConnected())
+     components/core/crazyflie/modules/src/crtp.c:242:bool crtpIsConnected(void)
+
+  Thought for 22s (ctrl+o to expand)
+
+● 找到了，跟你的猜测方向一致——根因不是网络真的断了，而是固件把 WiFi/UDP 链路的"活跃检测"逻辑直接照抄了 
+  Crazyflie 无线电（有硬件 ACK 保证）的那套 1 秒超时机制，但 UDP 没有这种保证，一次丢包就能把它触发。
+
+  完整链路（已核实代码行号）：
+
+  1. wifi_esp32.c:155-163：ESP-Drone 在裸 UDP 上又加了一层自制的 1 字节校验和。校验失败时（udp packet cksum
+     unmatched）直接整包丢弃，不重传、不通知任何人，只打印这一行日志，本身不会破坏任何状态。
+  2. wifilink.c:49,55,63-65：
+  #define WIFI_ACTIVITY_TIMEOUT_MS (1000)
+  static uint32_t lastPacketTick;
+  static bool wifilinkIsConnected(void)
+  {
+      return (xTaskGetTickCount() - lastPacketTick) < M2T(WIFI_ACTIVITY_TIMEOUT_MS);
+  }
+     lastPacketTick 只有校验和通过的包才会刷新（wifilink.c:103）。cfclient
+     在空闲时（没有主动摇杆输入）本身发包频率就不高，一旦刚好有一个包被上面那个校验和坑掉，很容易就凑够 1
+     秒的空窗。
+  3. log.c:861-867：
+  // Check if the connection is still up, oherwise disable
+  // all the logging and flush all the CRTP queues.
+  if (!crtpIsConnected())
+  {
+    logReset();
+    crtpReset();
+  }
+     log 任务每次跑 block 都会检查这个"活跃"标志——只要超过 1 秒没收到一个校验和正确的包，就静默地把
+     cfclient 配置的所有 log block 全部删掉、清空 CRTP
+     队列，不打印任何东西。这之后自然就没数据可发了，Flight Data 永远冻住，但 UDP socket 本身没出错，所以
+     cfclient 显示的连接状态和"可以正常 cancel"完全不受影响——跟你观察到的现象完全对上。
+
+  我确认了 crtpIsConnected() 在全仓库里只有 log.c 这一处在用（`飞控安全相关的 commander watchdog/failsafe
+  是另一套独立机制，不受影响），所以调整这个超时是安全的，不会影响飞控安全逻辑。
+
+  建议修复：把 wifilink.c:49 的 WIFI_ACTIVITY_TIMEOUT_MS 从 1000ms 调大（比如 5000ms），给 UDP
+  丢包留出容错空间，避免一次校验和错误就整个清空 log
+  配置。真正意义上更彻底的做法是干脆去掉这套针对无线电设计的"RX
+  活跃度=连接状态"逻辑，改成基于真正的心跳/保活机制，但这个改动量更大；先把超时放宽是最小、最安全的修复。
+
+  要我先把超时改成 5000ms 试一下吗？
+
+✻ Worked for 5m 39s
+
+❯ 好的                                                                                                     
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(components/core/crazyflie/hal/src/wifilink.c)
+  ⎿  Added 1 line, removed 1 line
+      46  #include "debug_cf.h"
+      47  #include "static_mem.h"
+      48  
+      49 -#define WIFI_ACTIVITY_TIMEOUT_MS (1000)                                                   
+      49 +#define WIFI_ACTIVITY_TIMEOUT_MS (5000)                                                   
+      50  
+      51  static bool isInit = false;
+      52  static xQueueHandle crtpPacketDelivery;
+
+● 已把 wifilink.c:49 的 WIFI_ACTIVITY_TIMEOUT_MS 从 1000ms 改成 5000ms。重新编译烧录后测试，看 Flight Data
+  是不是能持续更新不再冻住。如果偶尔还是会卡（比如网络环境更差、丢包更频繁），可以再往上调，或者以后有空我
+  们可以把这套"用 RX 活跃度判断连接状态"的逻辑换成更可靠的心跳机制。
+  
+  这个结果反而印证了根因判断是对的——超时从 1000ms 提到 5000ms，卡住的时间正好从"几秒"顺延到了 7
+  秒左右（差值约等于我们多加的 4 秒）。这说明触发机制确实是这个"RX 
+  活跃度超时"，只是问题比想的更彻底：cfclient 
+  在完成初始连接握手后，稳定运行时本来就不会一直主动往飞控发包（它只是被动接收
+  telemetry，没有摇杆输入时没什么要发的），这是完全正常的客户端行为。也就是说不管超时设多大，只要客户端进入
+  "只收不发"的正常状态，早晚都会撞到这个超时——调大超时只是治标，不是治本。
+
+  真正的问题是设计错了方向：wifilinkIsConnected() 把"最近有没有收到 PC
+  发来的包"当作"链路是否还活着"的依据，这是从无线电（Crazyradio，每次发送都有硬件
+  ACK）那套逻辑直接搬过来的，但 UDP 场景下 PC
+  端安静地看数据、不发任何东西完全正常，不代表链路断了。所以只要客户端保持沉默超过这个时间窗，firmware
+  就会误判"断开"，然后 log.c:863-866 直接把所有 log block 清空、CRTP 队列冲掉——这才是数据永久停更的原因。
+
+  该做的修复：这个判断在全仓库只有 log.c:863 这一处用到（前面已确认），对 WiFi
+  这种连接无关的传输方式，用"收包活跃度"来决定要不要清空 log 配置本身就不成立。最直接的修法是让 WiFi
+  链路的这个判断始终为真，不再依赖收包节奏：
+
+  Thought for 9s, read 1 file (ctrl+o to expand)
+  
+  ● 改完了，diff 如上（clangd 报的那些还是同一批 include 路径找不到的误报，可以忽略）。
+
+  这次的改动：wifilinkIsConnected() 现在直接返回 true，不再依赖"最近有没有收到 PC
+  发来的包"这个指标。同时清掉了变成死代码的 WIFI_ACTIVITY_TIMEOUT_MS 和 lastPacketTick。这样 log.c:863 那个
+  crtpIsConnected() 判断永远为真，logReset()/crtpReset() 就不会再被这个误判触发,Flight Data
+  应该能一直稳定更新,不管 PC 端是不是在发包。
+
+  重新编译烧录后按刚才的场景多测几次（连上后什么都不操作，光看 Flight Data
+  是否持续刷新），看看这次是不是真的稳定了。
+  
+   在你用的这个 fork（leeebo/crazyflie-clients-python）里找到了：src/cfclient/ui/main.py:118-119
+
+  self.cf = Crazyflie(ro_cache=None,
+                      rw_cache=cfclient.config_path + "/cache")
+
+  cfclient.config_path 定义在 src/cfclient/__init__.py：
+
+  config_path = AppDirs("cfclient", "Bitcraze").user_config_dir
+
+  对应到实际路径（appdirs 库的标准解析）：
+
+  - Linux: ~/.config/cfclient/cache
+  - Windows: %LOCALAPPDATA%\Bitcraze\cfclient\cache
+  - macOS: ~/Library/Preferences/cfclient/cache（部分版本是 ~/Library/Application Support/cfclient/cache）
+
+  操作步骤
+
+  1. 先关闭 cfclient。
+  2. 删除（或先重命名备份）上面路径里 cache 目录下的所有文件——这些是按 TOC CRC 命名的缓存文件。
+
+     Linux 示例：
+  rm -rf ~/.config/cfclient/cache/*
+  3. 重新打开 cfclient，重新连接飞机。连接时它会重新从固件拉取最新的参数/日志 TOC 并生成新缓存。
+  4. 再去 Parameter 面板试着 set stabilizer.stop 或 motorPowerSet.enable，看是否生效。
+
+  如果清缓存后仍然不生效，就要按之前建议的第 1、3 步走：看串口有没有 CRTP RX queue full
+  日志，或者直接抓包确认 set 请求真的从 PC 发出去了。
+
+✻ Sautéed for 1m 17s
+
+※ recap: Debugging why cfclient parameter writes (motorPowerSet, stabilizer.stop) aren't taking effect on 
+  your ESP-Drone. Next: clear the cfclient TOC cache at ~/.config/cfclient/cache, reconnect, and retry 
+  setting the params. (disable recaps in /config)
+
+❯ 清理缓存了，还是写不进去。串口没有CRTP RX queue full日志。抓包不方便                                     
+
+  Thought for 47s (ctrl+o to expand)
+
+● 再确认几个细节，帮忙定位是链路问题还是别的：
+
+● User answered Claude's questions:
+  ⎿  · 点击 set 时，cfclient 界面上具体是什么表现？ → 值保持不变，从未改变过
+     · 是否方便临时改固件加一行调试打印（在 param.c 
+     的写处理函数里打印收到的写请求），重新编译烧录后用串口确认写包有没有真正到达固件？ → 可以，帮我加上
+ 
+  Thought for 24s, read 1 file (ctrl+o to expand)
+
+● Update(components/core/crazyflie/modules/src/param.c)
+  ⎿  Error editing file
+
+  Thought for 15s, read 1 file (ctrl+o to expand)
+
+● Update(components/core/crazyflie/modules/src/param.c)
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+● User answered Claude's questions:
+  ⎿  · 点击 set 时，cfclient 界面上具体是什么表现？ → 值保持不变，从未改变过
+     · 是否方便临时改固件加一行调试打印（在 param.c
+     的写处理函数里打印收到的写请求），重新编译烧录后用串口确认写包有没有真正到达固件？ → 可以，帮我加上
+
+  Thought for 24s, read 1 file (ctrl+o to expand)
+
+● Update(components/core/crazyflie/modules/src/param.c)
+  ⎿  Error editing file
+
+  Thought for 15s, read 1 file (ctrl+o to expand)
+
+● Update(components/core/crazyflie/modules/src/param.c)
+  ⎿  Added 3 lines, removed 1 line
+      176        paramTOCProcess(p.data[0]);
+      177      else if (p.channel==READ_CH)
+      178        paramReadProcess();
+      179 -    else if (p.channel==WRITE_CH)                                                        
+      179 +    else if (p.channel==WRITE_CH) {                                                      
+      180 +      DEBUG_PRINT("[DBG] WRITE_CH pkt recv, size=%d useV2=%d\n", p.size, useV2);         
+      181        paramWriteProcess();
+      182 +    }                                                                                    
+      183      else if (p.channel==MISC_CH) {
+      184        if (p.data[0] == MISC_SETBYNAME) {
+      185          int i, nzero = 0;
+
+  Thought for 7s (ctrl+o to expand)
+
+● Update(components/core/crazyflie/modules/src/param.c)
+  ⎿  Added 5 lines, removed 1 line
+      334  
+      335      id = variableGetIndex(ident);
+      336  
+      337 +    DEBUG_PRINT("[DBG] V2 write ident=%d id=%d val0=%d val1=%d\n", ident, id, p.data[2], 
+          +p.data[3]);                                                                              
+      338 +                                                                                         
+      339      if (id<0) {
+      340        p.data[2] = ENOENT;
+      341        p.size = 3;
+     ...
+      344        return;
+      345      }
+      346  
+      345 -    if (params[id].type & PARAM_RONLY)                                                   
+      347 +    if (params[id].type & PARAM_RONLY) {                                                 
+      348 +      DEBUG_PRINT("[DBG] V2 write id=%d is RONLY, dropped\n", id);                       
+      349        return;
+      350 +    }                                                                                    
+      351  
+      352      switch (params[id].type & PARAM_BYTES_MASK)
+      353      {
+
+● Now the legacy (V1) branch:
+
+● Update(components/core/crazyflie/modules/src/param.c)
+  ⎿  Added 5 lines, removed 1 line
+      373  
+      374      id = variableGetIndex(ident);
+      375  
+      376 +    DEBUG_PRINT("[DBG] V1 write ident=%d id=%d val0=%d\n", ident, id, p.data[1]);        
+      377 +                                                                                         
+      378      if (id<0) {
+      379        p.data[0] = -1;
+      380        p.data[1] = ident;
+     ...
+      385        return;
+      386      }
+      387  
+      386 -        if (params[id].type & PARAM_RONLY)                                               
+      388 +        if (params[id].type & PARAM_RONLY) {                                             
+      389 +                DEBUG_PRINT("[DBG] V1 write id=%d is RONLY, dropped\n", id);             
+      390                  return;
+      391 +        }                                                                                
+      392  
+      393      switch (params[id].type & PARAM_BYTES_MASK)
+      394      {
+
+  Thought for 30s, searched for 1 pattern, read 1 file (ctrl+o to expand)
+  ⎿  Found 10 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● 为了避免默认日志级别把 DEBUG 级别的打印过滤掉，我把刚加的三处打印统一换成 INFO
+  级别（DEBUG_PRINTI），这样更容易在串口看到。
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(sed -i 's/DEBUG_PRINT("\[DBG\]/DEBUG_PRINTI("[DBG]/' components/core/crazyflie/modules/src/param.c
+      grep -n "\[DBG\]" components/core/crazyflie/modules/src/param…)
+  ⎿  180:                 DEBUG_PRINTI("[DBG] WRITE_CH pkt recv, size=%d useV2=%d\n", p.size, useV2);
+     337:    DEBUG_PRINTI("[DBG] V2 write ident=%d id=%d val0=%d val1=%d\n", ident, id, p.data[2], p.d
+     ata[3]);
+     … +3 lines (ctrl+o to expand)
+
+  Thought for 17s (ctrl+o to expand)
+
+● 已经在 param.c 里加了 3 处临时调试打印（用 DEBUG_PRINTI，Info 级别，默认日志等级下应该能看到）：
+
+  1. paramTask() 收到 WRITE_CH 包时打印包大小和 useV2 标志
+  2. V2 写分支：打印 ident、查到的参数 id、以及负载前两个字节
+  3. V1（旧协议）写分支：打印 ident、id、负载第一个字节
+  4. 如果命中 PARAM_RONLY 会额外打印一行"dropped"
+
+  接下来请你做
+
+  1. 重新编译烧录：
+  idf.py build
+  idf.py -p <你的串口> flash monitor
+  2. 用 cfclient 连接飞机，打开串口 monitor，在 Parameter 面板对 stabilizer.stop 点 set → 1。
+  3. 看串口有没有出现 [DBG] 开头的行。
+
+  结果怎么判断
+
+  - 完全没有 [DBG] 打印：说明写请求根本没到固件——问题在 cfclient/主机端（UI 控件没触发真正的写请求，或者
+    UDP 包没发出去/被网络丢了），不是这份固件代码的问题。
+  - 打印了 WRITE_CH pkt recv 但没打印 V1/V2 write ident=...：说明包到了 paramTask 但 useV2
+    分支判断有问题（不太可能，代码逻辑很直接，但能进一步定位）。
+  - 打印了 ident=... id=... 且 id 
+    是个正常小整数（不是负数）：说明固件确实收到并识别了这个参数，此时再看是否打印了 "is RONLY,
+    dropped"——如果没有，理论上赋值语句已经执行，值应该已经改了，那问题就变成"为什么改了但 cfclient
+    没读到最新值"（读回显示问题）。
+  - id 打印为负数（比如 -1）：说明 ident 对不上，固件里没找到这个参数——这就是之前怀疑的 TOC 缓存/index
+    不一致问题的确凿证据，值得贴出打印的具体数值我再帮你对。
+
+  把串口输出贴给我，我根据打印内容继续判断。
+  
+  重新算了一下：既然 pydrone 硬件本身就是
+  M1=右上、M2=右下、M3=左下、M4=左上（前=上），把这四个位置按前/后、左/右分组：
+
+  - 右侧一对：M1(前右)、M2(后右)
+  - 左侧一对：M3(后左)、M4(前左)
+  - 前侧一对：M1(前右)、M4(前左)
+  - 后侧一对：M2(后右)、M3(后左)
+
+  对照 power_distribution_stock.c 里没改过的原始公式：
+  m1 = thrust - r + p + yaw
+  m2 = thrust - r - p - yaw
+  m3 = thrust + r - p + yaw
+  m4 = thrust + r + p - yaw
+  - roll 项 r：m1、m2 同号（都是 -r）——正好是"右侧一对"共享同一个 roll 符号 ✓；m3、m4 同号（都是
+    +r）——"左侧一对" ✓
+  - pitch 项 p：m1、m4 同号（都是 +p）——"前侧一对" ✓；m2、m3 同号（都是 -p）——"后侧一对" ✓
+
+  完全自洽，没有轴线错位的问题。所以原始、未修改的 pin 映射本来就是对的，不需要动
+  MOTOR01_PIN..MOTOR04_PIN。之前我把任务描述里那句"按文档结论应为 M1 左上…"当成了 pydrone
+  硬件本身的正确基准，其实那是通用 ESP-Drone/Crazyflie 惯例，跟 pydrone
+  自己的板子设计对不上，是我的参照错了，抱歉。
+
+  motors.h 现在已经还原成原样（跟你 atitude 那次提交一致），T3 第 1-3
+  步（电机映射）到这里就算验证通过，不需要再改代码。
+
+  下一步就是第 4 步：pitch 符号验证。CONFIG_PITCH_DISTRIBUTION_INVERTED 这个开关只会翻转 p
+  的符号（不会重新分组前后/左右，我上面验证过分组本身是对的），所以它要解决的是"符号方向对不对"，不是"轴线
+  错没错"。要确定符号，需要飞控闭环下给一个真实的 pitch
+  指令，看实际转速变化跟公式预期是否一致。你想现在就设计这一步的测试方式吗？
+
+✻ Crunched for 1m 15s
+
+❯ 还有一个问题，刚才测试的时候同样的值， M4明显比其他3个电机转的响，可能是什么原因？                       
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+  Thought for 28s (ctrl+o to expand)
+
+● Bash(sed -n '1,120p' components/drivers/general/motors/motors.c)
+  ⎿  /**
+      *
+      * ESP-Drone Firmware
+     … +117 lines (ctrl+o to expand)
+
+  Thought for 33s (ctrl+o to expand)
+
+● PWM 生成这块我看了 motors.c，四个电机的配置是完全对称的——同一个 LEDC
+  timer（LEDC_TIMER_0）、同样的频率（15kHz）、同样的 duty 分辨率，只是 GPIO 和 channel
+  号不同，代码里没有任何针对某个电机的特殊处理。所以基本可以排除是固件 PWM 逻辑的问题。
+
+  剩下的可能性基本都在硬件侧：
+
+  1. 电机个体差异（最常见）：这是有刷空心杯电机，同批次电机的摩擦力、电刷磨损、绕组阻值都会有个体差异，尤其
+     是没装桨空转时，负载很小，这种差异会被放大——转得快/响不代表这个电机"更好"，也可能是磨损更松、内阻更低
+     。
+  2. 接线/焊点问题：M4 那路的导线更短、焊点接触更好（阻值更小）→ 实际到电机的电压更高 →
+     转速更高更响；反过来接触不良会更慢更弱，跟你观察的"更响"方向不一致，但仍值得用万用表量一下四路空载时电
+     机两端的实际电压，排除压降差异。
+  3. 机械问题（如果"响"指噪音而不是转速）：电机没装正、和机架有轻微摩擦、轴承有杂音，这种"响"是噪声而不是真
+     的转速快，值得摸一下机身有没有异常震动。
+
+  建议一个能定位问题的简单测试
+
+  把 M4 位置的电机和另一个电机（比如 M1）物理互换插座（同样的 pin/线不动，只换电机本体），再跑一次
+  t3_motor_mapping.py 用同样的值测 M1、M4：
+
+  - 如果"响"跟着电机本体换到了新位置 → 确认是电机个体差异，硬件问题，跟固件/接线无关。
+  - 如果"响"还是留在M4 这个位置/接口上 → 那就是这个位置的接线、焊点或 GPIO
+    驱动电路有问题，需要再往硬件排查（比如量那根线的接触电阻）。
+
+  这个交换测试成本最低，能直接把"电机本身"和"这个位置的电路"两种可能性分开。你要是方便的话可以先做这个测试
+  ，看结果再判断要不要继续往下查。
+  
+  
+  不验证这个了。继续验证第 4 步：pitch 符号验证                                                            
+
+  Thought for 2m 46s, searched for 3 patterns, read 2 files (ctrl+o to expand)
+
+● Bash(sed -n '100,135p' main/Kconfig.projbuild
+      echo "=== record.md ==="…)
+  ⎿              int "PITCH_CALIB deg*100"
+                 range -200 200
+                 default 0
+     … +73 lines (ctrl+o to expand)
+
+  Thought for 39s (ctrl+o to expand)
+
+● 这个之前有更完整的排查记录，我刚翻到 records/record.md 和 main/Kconfig.projbuild 里
+  PITCH_DISTRIBUTION_INVERTED 的说明，里面已经指出一个关键点，比我之前想的更细：
+
+  ▎ 若查明是 IMU 贴装朝向而非电机编号，则应改 processAccGyroMeasurements() 
+  ▎ 的轴映射（sensors_mpu6050_hm5883L_ms5611.c:429-475），而不是动力分配。
+
+  也就是说"pitch 符号反了"可能有两个完全不同的病灶：
+  1. 电机混控公式的符号（改 CONFIG_PITCH_DISTRIBUTION_INVERTED）
+  2. IMU 姿态估计本身的轴向/符号错了（该改传感器轴映射，不该动混控）
+
+  这两个原因光看代码分不出来，但用电机转速做测试也分不出来——因为无论哪个环节错了，最终电机响应都会看起来"反
+  了"。所以应该先做一个完全不需要转电机、零风险的测试来排除第 2 种：
+
+  先测：手动倾斜机身，看姿态估计对不对（不用转电机）
+
+  Thought for 1m 51s, searched for 3 patterns, read 1 file (ctrl+o to expand)
+
+● 刚查到关键背景：records/record.md 里之前就记过这件事——pitch 反不反，分不清是电机混控公式的符号问题，还是 
+  IMU 贴装朝向的问题，两者会导致完全一样的"电机响应反了"现象，但修法不同（一个改
+  CONFIG_PITCH_DISTRIBUTION_INVERTED，另一个要改 sensors_mpu6050_hm5883L_ms5611.c:429-475
+  里的轴映射）。所以你原计划的"转电机看响应"这一种测试，其实不足以分辨到底是哪个环节错的。
+
+  建议分两步测，第一步完全不涉及转电机、零风险：
+
+  第一步：只测 IMU 姿态估计对不对（电机可以完全不转）
+
+  思路：stabilizer.pitch / stabilizer.roll 这两个 LOG 变量（stabilizer.c:613-614）是纯粹的姿态估计结果，跟
+  电机、跟飞控输出完全无关。用手把机身立起来倾斜，同时拿 cflib 读这两个 LOG，看：
+
+  1. 只做"低头/抬头"动作（pitch 方向倾斜）时，stabilizer.pitch 有没有响应，stabilizer.roll
+     是否基本不动（±很小噪声）。
+  2. 只做"左右倾斜"（roll 方向）时，反过来，stabilizer.roll 响应、stabilizer.pitch 基本不动。
+  3. 记下"抬头"和"低头"分别对应 stabilizer.pitch 的正负号。
+
+  如果第 1、2 点出现"倾斜 pitch 方向但 roll 也跟着动"（或反过来），说明是 IMU 轴映射错了（X/Y
+  轴互换或某轴取反），要去改传感器轴映射，跟 CONFIG_PITCH_DISTRIBUTION_INVERTED
+  完全无关，这个开关这时候怎么调都没用。
+
+  如果 pitch/roll 各自独立、不串轴，只是"抬头该是正号还是负号"你不确定——那才需要进入第二步（真正让飞控闭环
+  去驱动电机，测的是"这个已确认正确的姿态估计信号，经过混控公式后有没有指挥对电机"）。
+
+  要不要我先写这个第一步的读数脚本？这一步不用碰
+  motorPowerSet，电机也不用转，比继续做电机响应测试更安全，而且能先把"哪个环节错"这个更大的不确定性排除掉。
+
+✻ Churned for 5m 19s
+
+❯ 好的。另外看pydrone硬件，mpu6050芯片y指向机尾，x指向飞机的左侧，z执行上方。mpu是焊接在飞机的上方表面，点 
+  在飞机的右下角方位                                                                                       
+  
+  Thought for 1m 4s, searched for 1 pattern, read 2 files (ctrl+o to expand)
+
+● 这个信息刚好能对上代码里的轴映射，我算了一下，是个好消息——先说结论，然后给你 Step A 的读数脚本。
+
+  代码里的轴变换 vs 你说的实际焊接方向
+
+  sensors_mpu6050_hm5883L_ms5611.c:437-445（非 ESPLANE_V1 分支，pydrone 用这个）：
+  accelRaw.y = buffer[0-1]   // MPU6050 寄存器里 X 轴原始值
+  accelRaw.x = buffer[2-3]   // MPU6050 寄存器里 Y 轴原始值
+  accelRaw.z = buffer[4-5]   // Z 轴不变
+  再加上后面 accScaled.x = -(accelRaw.x)（line 474），合起来就是：
+
+  固件的 X = -(芯片的 Y)
+  固件的 Y =   芯片的 X
+  固件的 Z =   芯片的 Z
+
+  代入你说的实际焊接方向（芯片 Y 指向机尾，芯片 X 指向飞机左侧，芯片 Z 朝上）：
+
+  - 固件 X = -(芯片Y) = -(指向机尾) = 指向机头
+  - 固件 Y = 芯片X = 指向飞机左侧
+  - 固件 Z = 芯片Z = 朝上
+
+  也就是固件认为的机体坐标系是 X=前、Y=左、Z=上，而且验证了一下叉乘 X×Y=Z
+  成立，是右手系、没有镶像/取反错误（不是那种"看起来对但实际左右手搞反"的隐蔽 bug）。这跟飞控常见的机体坐标
+  系约定是吻合的，说明目前这份轴映射代码本身,对着你现在焊接的这个朝向，大概率是对的，不像是 IMU
+  装反导致的问题。
+
+  不过这只是代码层面的交叉验证，我还没有 100%确认互补滤波/姿态估计后续用的正负号约定跟这个"X前Y左Z上"是不是
+  完全匹配（这个只能实测确认）。所以还是建议按之前说的做一次 Step A
+  手动倾斜测试，把这个结论落到实测上。要我现在写这个读数脚本吗？
+
+✻ Baked for 1m 17s
+
+❯ 需要                                                                                                     
+
+  Thought for 22s (ctrl+o to expand)
+
+● Write(t4_imu_axis_check.py)
+  ⎿  Wrote 55 lines to t4_imu_axis_check.py
+       1 #!/usr/bin/env python3
+       2 # Step A / T4 前置检查：只读姿态估计（stabilizer.pitch/roll/yaw），
+       3 # 手动倾斜机身，看轴向和符号对不对。
+       4 # 不碰 motorPowerSet、不发 commander，电机完全不需要转，零风险。
+       5 
+       6 import time
+       7
+       8 import cflib.crtp
+       9 from cflib.crazyflie.log import LogConfig
+      10 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
+     … +46 lines (ctrl+o to expand)
+
+● 脚本写好了：t4_imu_axis_check.py。
+
+  用法
+
+  1. 换成能连上的 URI。
+  2. python3 t4_imu_axis_check.py，会持续打印 stabilizer.roll/pitch/yaw。
+  3. 按脚本提示做三步动作：水平静置记基线 → 单独抬头/低头看 pitch 响应、roll 是否串轴 → 单独左右倾斜看 roll
+     响应、pitch 是否串轴。
+  4. Ctrl+C 结束。
+
+  不涉及 motorPowerSet、不发 commander
+  setpoint，电机完全不用转，也不需要拆桨（不过桨在不在都不影响这个测试）。
+
+  把观察到的现象告诉我：
+
+  - 抬头时 pitch 变化方向（正/负），低头时是不是反过来
+  - pitch 倾斜时 roll 有没有跟着明显漂移（串轴)
+  - 左右倾斜时同理看 roll/pitch
+  
+  
+ 抬头动作 pitch是正的，低头是负的 
+ pitch 倾斜时 roll 有轻微变化，可忽略
+ 机身左翼抬起时 roll是正的，右翼抬起时roll是负的
+ roll 倾斜时 pitch 有轻微变化，可忽略
+ 看向机身顶部的方向，逆时针旋转 yaw是正。顺时针旋转yaw是负
+ 
+ recap: We're debugging the ESP-Drone/pydrone motor and pitch-axis setup. Motor mapping is confirmed 
+  correct; now waiting on you to run t4_imu_axis_check.py by hand-tilting the drone and report the 
+  pitch/roll readings.
+  roll 方向我也顺手验证了一下:你测的"左翼抬起 roll
+  为正",同样代入后发现"左翼抬起时右侧电机(M1,M2)增速、左侧电机(M3,M4)减速",同样是正确的自修正方向。
+
+  结论
+
+  - 电机物理映射(T3):不需要改 pin,原样正确(之前已确认)。
+  - IMU 轴映射:代码 + 实测都干净,没有串轴,不需要改传感器轴映射。
+  - CONFIG_PITCH_DISTRIBUTION_INVERTED:保持默认关闭即可,不要打开——打开反而会变成正反馈(桨一动就翻),跟
+    Kconfig 里那段警告说的完全一致。
+
+  如果还想要一次实测兜底
+
+  以上是纯代码推导,如果想要一次物理实测直接验证(零风险、不需要发
+  commander,只需要正常上电、motorPowerSet.enable=0,用手抬机头,读 motor.m1~m4 这四个 LOG 值,看是不是 M1/M4
+  变小、M2/M3 变大),我可以再给你写一个这样的确认脚本。要不要?
+  
+  t4b_pitch_response_check.py 写好了
+
+  用法
+
+  1. 换成能连上的 URI。
+  2. python3 t4b_pitch_response_check.py，输入 yes 二次确认安全条件。
+  3. 会把 motorPowerSet.enable 设成 0（确保走真实闭环，不是 override），然后以 20Hz 持续发送
+     roll=pitch=yaw=0、thrust=15000 的水平设定点，同时打印 motor.m1~m4。
+  4. 等电机转稳后，缓慢抬头 → 期望 m1、m4 变小，m2、m3 变大；再缓慢低头 → 反过来。
+  5. Ctrl+C 结束，会自动多发几次 thrust=0 把电机停下、重新锁定 thrust lock。
+
+  安全说明
+
+  - thrust 设定点始终指向水平（0,0,0），不会主动要求一个不可能达到的姿态角，所以不会有 PID
+    积分持续跑飞的风险——你随时把机身放平，纠正量就会自动回落。
+  - BASE_THRUST=15000 是低速基线，跟你 T3 时用的量级差不多，不会突然全速。
+  - 中断/异常都会走 finally，保证归零。
+
+  跑完把观察到的现象（尤其是 m1/m4 vs m2/m3 的变化方向对不对）告诉我，就能最终确认这次 pitch
+  符号排查是否可以收尾了。
+
+不太对，首先，静置不动的时候，刚开始m1=19000 m2=41000 m3=20000 m4=0。等70s后 m1=16000 m2=49000 m3=18000 m4=0其中m2会缓慢变大。 其次，抬头的时m1=38000 m2=32000 m3=42000 m4=0 低头时 m1=65000 m2=0 m3=24000 m4=0
+静置一会后，再次抬头：m1=47000 m2=13000 m3=57 m4= 变化规律不太对
+
+t4b_pitch_response_check.py 写好了
+
+  用法
+
+  1. 换成能连上的 URI。
+  2. python3 t4b_pitch_response_check.py，输入 yes 二次确认安全条件。
+  3. 会把 motorPowerSet.enable 设成 0（确保走真实闭环，不是 override），然后以 20Hz 持续发送
+     roll=pitch=yaw=0、thrust=15000 的水平设定点，同时打印 motor.m1~m4。
+  4. 等电机转稳后，缓慢抬头 → 期望 m1、m4 变小，m2、m3 变大；再缓慢低头 → 反过来。
+  5. Ctrl+C 结束，会自动多发几次 thrust=0 把电机停下、重新锁定 thrust lock。
+
+  安全说明
+
+  - thrust 设定点始终指向水平（0,0,0），不会主动要求一个不可能达到的姿态角，所以不会有 PID
+    积分持续跑飞的风险——你随时把机身放平，纠正量就会自动回落。
+  - BASE_THRUST=15000 是低速基线，跟你 T3 时用的量级差不多，不会突然全速。
+  - 中断/异常都会走 finally，保证归零。
+
+  跑完把观察到的现象（尤其是 m1/m4 vs m2/m3 的变化方向对不对）告诉我，就能最终确认这次 pitch
+  符号排查是否可以收尾了。
+
+✻ Crunched for 55s
+
+※ recap: You're debugging pydrone/ESP-Drone motor and pitch-axis config. Mapping and pitch-sign math check 
+  out, so run t4b_pitch_response_check.py and report whether m1/m4 vs m2/m3 respond correctly when you tilt
+  the nose up/down.
+
+❯ 不太对，首先，静置不动的时候，刚开始m1=19000 m2=41000 m3=20000 m4=0。等70s后 m1=16000 m2=49000 m3=18000  
+  m4=0其中m2会缓慢变大。 其次，抬头的时m1=38000 m2=32000 m3=42000 m4=0 低头时 m1=65000 m2=0 m3=24000 m4=0  
+  静置一会后，再次抬头：m1=47000 m2=13000 m3=57 m4= 变化规律不太对                                         
+
+  Thought for 1m 33s (ctrl+o to expand)
+
+● 这个数据不太干净,先解释一下——我觉得测试方法本身有个设计缺陷,不是电机坏了或者符号错了。
+
+  m4=0、m2 持续增大是怎么回事
+
+  M2 和 M4 在你的机架上是对角线(M2=右下,M4=左上)。公式里它俩的 roll、pitch 符号刚好相反:
+  m2 = thrust - r - p - yaw
+  m4 = thrust + r + p - yaw
+  如果 r+p 这个合成偏置一直往一个方向走,会表现成"m2 一直涨、m4 一直被顶到 0(被 limitThrust
+  钳到下限)"——跟你观察到的现象完全对应。所以这不是 M4 单独坏了,是姿态环积分项在持续跑飞。
+
+  为什么会跑飞——测试方法的问题
+
+  没装桨的情况下,电机转动不会产生真实的空气动力矩,姿态估计感受不到任何"纠正生效"的反馈。但姿态 PID
+  的积分项(I)是假设"输出会让误差变小"设计的——在台架上这个假设从物理上就是错的,只要存在一丁点姿态零偏(传感器
+  没校准到绝对零、桌面不是绝对水平),积分项就会无止境地越攒越大,而且完全不会收敛。我这个脚本让闭环持续跑几十
+  秒,刚好踩中了这个坑,数据被积分误差污染了,不能用来判断符号对不对。这是我测试设计的问题,不是你操作的问题。
+
+  之前的代数推导仍然成立
+
+  之前那版逐层追踪 PID
+  误差方向→输出符号→混控公式的推导,是纯代码路径,不受这个台架积分饱和问题影响。结论不变:默认设置(不打开
+  CONFIG_PITCH_DISTRIBUTION_INVERTED)是对的。
+
+  如果还想要一次不受积分污染的实测
+
+  有更干净的做法:不读最终电机值,直接读 PID
+  的纯比例项(不含积分),这样瞬时读一次就行,不需要让闭环持续跑。让我确认一下具体的 LOG
+  变量名（attitude_pid_controller.c里的 pitch_outP 那组）:
+
+  Thought for 10s, searched for 1 pattern (ctrl+o to expand)
+
+● Bash(sed -n '60,150p' components/core/crazyflie/modules/src/controller_pid.c)
+  ⎿  }
+
+     void controllerPid(control_t *control, setpoint_t *setpoint,
+     … +88 lines (ctrl+o to expand)
+
+  Thought for 47s (ctrl+o to expand)
+
+● 刚翻了 controller_pid.c:127-142，找到了这段窗口现象的根源，正好印证了我上面的猜测：
+
+  if (control->thrust == 0)
+  {
+      control->thrust = 0;
+      control->roll = 0;
+      control->pitch = 0;
+      control->yaw = 0;
+      ...
+      attitudeControllerResetAllPID();   // 这里才会清零所有 PID 积分项
+      positionControllerResetAllPID();
+  }
+
+  也就是说，只有 thrust=0 时才会重置积分项，只要 thrust 保持非零（我们的脚本一直发
+  thrust=15000），积分就会一直累积、永不清零。台架上没有桨提供真实空气阻力反馈，姿态只要有一点点零偏就会被
+  积分无限放大——这正好解释了你看到的现象，不是电机坏、也不是符号错。
+
+  结论：这个台架闭环测试方法本身就不适合验证符号
+
+  要拿到一次"干净"的瞬时读数，需要精确卡在 thrust 刚从 0 跳到非零的那一瞬间去采样
+  pid_attitude.pitch_outP（纯比例项，不含积分），这种时序在 Python
+  脚本隔着网络去精确同步很不现实，投入产出比不高。
+
+  鉴于：
+  1. 之前那版逐行代码追踪的推导（pid.c 误差方向 → controller_pid.c 直通无额外反号 →
+     混控公式）本身是可验证、可复现的，不依赖这次台架读数；
+  2. Stage A（纯姿态估计读数）已经是一次干净、无积分污染的实测，而且结果自洽；
+
+  我建议到这里为止，不再纠结这次台架闭环读数，按之前的推导结论走：CONFIG_PITCH_DISTRIBUTION_INVERTED
+  保持默认关闭。剩下真正靠谱的验证只能是实际试飞（先小油门离地几厘米悬停，旁边留好随时切断电源的手，标准第
+  一次试飞流程），如果姿态环符号真错了，试飞时会立刻表现为"一给杆就翻"，而不是台架上这种慢慢积分跑飞的现象—
+  —两者特征很不一样，容易区分。
+
+  要不要我们现在梳理一下首次试飞前还需要检查哪些项？
+  
+   T4 — 传感器读数                                                                                        
+                                                                                                           
+  1. cfclient Log                                                                                          
+     面板订阅：acc.x/y/z、gyro.x/y/z、mag.x/y/z、baro.asl、range.zrange、motion.deltaX/deltaY。            
+  2. 静置在水平桌面：                                                                                      
+     - acc.z ≈ 1.0（g），acc.x/y ≈ 0（有偏差用 PITCH_CALIB/ROLL_CALIB 校正，单位 deg*100）                 
+     - gyro.x/y/z ≈ 0，绕某轴手动转动飞机，对应轴数值应按右手定则变化                                      
+     - 抬升飞机高度，baro.asl 应单调增大；用手掌在飞机下方由远到近移动，range.zrange 应单调减小到几十 mm   
+       量级                                                                                                
+     - 手托着飞机平移，motion.deltaX/deltaY                                                                
+       应有非零脉冲，方向要和平移方向对应（不对的话是光流安装朝向问题，代码里 flowdeck_v1v2.c 已经做了     
+       -deltaY/-deltaX 翻转，如果反了要重新核对贴装方向再决定是否再加一次翻转）---继续用脚本验证这些读数？ 
+
+  Thought for 31s, searched for 1 pattern (ctrl+o to expand)
+
+● Bash(sed -n '620,660p' components/core/crazyflie/modules/src/stabilizer.c
+      echo "=== search zrange ==="…)
+  ⎿  LOG_GROUP_STOP(stabilizer)
+
+     LOG_GROUP_START(acc)
+     … +93 lines (ctrl+o to expand)
+
+  Thought for 32s (ctrl+o to expand)
+
+● Write(t4_sensor_readings_check.py)
+  ⎿  Wrote 90 lines to t4_sensor_readings_check.py
+      1 #!/usr/bin/env python3
+      2 # T4：传感器读数检查（纯读，不碰电机/commander，零风险）
+      3 # 订阅 acc/gyro/mag/baro/range/motion 全部打印出来，方便对照预期现象手动验证。
+      4 
+      5 import time
+      6 
+      7 import cflib.crtp
+      8 from cflib.crazyflie.log import LogConfig
+      9 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
+     … +83 lines (ctrl+o to expand)
+
+  Thought for 13s (ctrl+o to expand)
+
+● t4_sensor_readings_check.py 写好了，纯读取，不涉及电机/commander，零风险。
+
+  先说一下核对代码时发现的两点：
+
+  1. range.zrange 确实存在（range.c:66，绑定的是 ranges[rangeDown]，来自 VL53L0/VL53L1 下视测距），之前
+     grep 只看到 front/back/up/left/right 是因为没截全，补充确认过了没问题。
+  2. motion.deltaX/deltaY 在 flowdeck_v1v2.c:232-233，确认存在。
+
+  脚本说明
+
+  CRTP 单个 LOG 包 payload 大概只有 26 字节左右，acc+gyro+mag+baro+range+motion
+  全部变量加起来放不进一个包，所以拆成了三组分别订阅：
+
+  - imu：acc.x/y/z + gyro.x/y/z（100ms 一次）
+  - env：mag.x/y/z + baro.asl（200ms 一次）
+  - aux：range.zrange + motion.deltaX/deltaY（100ms 一次）
+
+  用法
+
+  1. 换成能连上的 URI。
+  2. python3 t4_sensor_readings_check.py，会同时打印三行标签（[imu]/[env]/[aux]），按你原计划的顺序依次做：
+     水平静置看 acc → 绕轴转动看 gyro → 抬升看 baro.asl → 手掌靠近看 range.zrange → 平移看
+     motion.deltaX/deltaY。
+  3. Ctrl+C 结束。
+
+  跑完把哪几项对不上（尤其是 motion 方向、range 有没有数据）告诉我。
+
+✻ Baked for 1m 18s
+
+❯ 预期应该是怎么样的？                                                                                     
+
+  Thought for 1m 37s, searched for 1 pattern (ctrl+o to expand)
+
+● 按你列的六项,分别说一下期望现象和判断标准:
+
+  1. acc（加速度计，单位 g）
+
+  水平静置：acc.z ≈ +1.00，acc.x ≈ 0，acc.y ≈ 0（容差大概 ±0.05g 以内算合理，MEMS 传感器本身有噪声）。
+
+  - 原理：静止时加速度计测的是"对抗重力的反作用力"，跟机体哪个轴对齐重力反方向，那个轴就读 ~1g。
+  - 如果 acc.z 明显不是 1.0（比如 0.9 或 1.1），大概率是加速度计比例/零偏没校准好，不是这次要解决的问题。
+  - 如果 acc.x/y 有个固定的小偏差（比如稳定在 0.05
+    左右，不是噪声抖动），说明机身没绝对水平或者有安装角误差，用 PITCH_CALIB/ROLL_CALIB（单位
+    deg×100，比如误差 0.9°就填 90）去抵消。
+  - 额外可选验证（跟之前 pitch/roll 符号那套结论一致）：抬头(pitch为正)时 acc.x
+    应该变正；左翼抬起(roll为正)时 acc.y
+    应该变正。这个不是你原计划要求的，但如果你想多一层交叉验证可以顺便看一眼。
+
+  2. gyro（角速度，单位 deg/s）
+
+  静置：gyro.x/y/z 应该都在 0 附近小幅抖动（零偏噪声，几 deg/s 以内正常）。
+
+  注意一个容易搞混的地方：这里打印的是原始 sensorData.gyro.x/y/z，而不是姿态估计。原始 gyro
+  严格按右手定则定义：
+
+  - gyro.x（绕机体 X=前 轴）：右手握住 X 轴，从 Y(左)转向 Z(上) 为正——也就是"左翼往上抬"的转动方向，gyro.x
+    读正值。这个跟 Stage A 测的 roll 符号（左翼抬起=roll正）方向是一致的。
+  - gyro.z（绕机体 Z=上 轴）：右手握住 Z 轴，从 X(前)转向 Y(左) 为正——也就是从上往下看，逆时针转动时 gyro.z
+    为正，跟你测的 yaw 符号（逆时针为正）一致。
+  - gyro.y（绕机体 Y=左 轴）：右手握住 Y 轴，从 Z(上)转向 X(前)
+    为正——这个转动方向其实是"低头"（机头往下）。也就是说原始 gyro.y 在低头时读正值，跟你测的
+    stabilizer.pitch（抬头为正）符号是反的！这不是 bug——controller_pid.c:109,123 里两处都写的是
+    -sensors->gyro.y，代码故意把原始 gyro.y 取反后才当作 pitch
+    速率用，这样才能跟"抬头为正"的姿态估计约定对上。所以你测 gyro.y
+    时如果发现"抬头读负值、低头读正值"，那是符合预期的，不用当成问题。
+
+  3. baro.asl（气压高度，单位 m）
+
+  缓慢抬升整机：baro.asl 应该单调增大，但气压计本身噪声大、响应慢，别指望它像超声波那样跳变精确——抬升几十厘
+  米可能只看到零点几米的变化,趋势对就行，不要求线性精确对应实际高度。
+
+  4. range.zrange（下视测距，单位 mm）
+
+  ranges[] 数组初始值是 0（range.c:35），如果这个方向没装测距传感器（VL53L0/VL53L1），会一直显示
+  0，不是什么"超范围"的特殊值。有传感器的话：手掌从远处伸近，应该单调减小到几十 mm
+  量级；手掌移开应该恢复到较大值（该传感器量程内的最大读数，通常几百到一两千 mm，取决于具体是 VL53L0 还是
+  VL53L1）。
+
+  5. motion.deltaX/deltaY（光流，单位：像素/采样周期，无量纲整数）
+
+  静置不动：应该在 0
+  附近小幅抖动。手托机身做水平平移：往哪个方向移动，对应轴应该出现一串非零脉冲(正负号跟移动方向对应，具体是
+  "往右移=正"还是"往右移=负"取决于代码里已经做的那次翻转，你自己实测记一下就行，不需要我给绝对值)。
+
+  这一项你原计划已经提到过要注意的点：flowdeck_v1v2.c 里已经对原始光流芯片输出做了一次 -deltaX/-deltaY
+  翻转。如果实测发现方向还是反的，先去核对光流芯片实际贴装朝向是否跟代码假设的朝向一致，别在这基础上再叠加
+  一次翻转——两次翻转互相抵消等于没翻转，会把已经修对的方向重新弄反，排查起来更难定位。
+
+  跑起来后把每一项的实测现象告诉我。
+  
+  
+  分析下现有mpu6050跟飞机的坐标系的关系？并给出t4_sensor_readings_check.py测的飞机放置时的acc方向值的正负  
+  情况                                                                                                     
+  
+  Thought for 41s, searched for 3 patterns, read 2 files (ctrl+o to expand)
+
+● Bash(grep -rln "M1\|motor1\|MOTOR_M1\|前\|forward"
+      /data/project/source/peakxie/esp-drone/components/platform/*.c 2>/dev/null; echo ---; sed -n '1,80p'
+      /data/project/…)
+  ⎿  ---
+     /**
+     *
+     … +77 lines (ctrl+o to expand)
+
+  Thought for 1m 17s, searched for 2 patterns (ctrl+o to expand)
+
+● MPU6050 与机身坐标系的关系
+
+  processAccGyroMeasurements()（components/core/crazyflie/hal/src/sensors_mpu6050_hm5883L_ms5611.c:423-483
+  ）中，非 ESPLANE_V1（即 pydrone-s3 用的分支，见 sdkconfig.defaults.pydrone:10 
+  CONFIG_TARGET_PYDRONE_S3=y）分支做了这件事：
+
+  accelRaw.y = ...buffer[0..1]   // MPU6050 ACCEL_XOUT 寄存器
+  accelRaw.x = ...buffer[2..3]   // MPU6050 ACCEL_YOUT 寄存器
+  accelRaw.z = ...buffer[4..5]   // MPU6050 ACCEL_ZOUT 寄存器
+  ...
+  accScaled.x = -(accelRaw.x) * G_PER_LSB / accScale   // = -mpu.Y
+  accScaled.y =  (accelRaw.y) * G_PER_LSB / accScale   // = +mpu.X
+  accScaled.z =  (accelRaw.z) * G_PER_LSB / accScale   // = +mpu.Z
+
+  即：
+
+  - 机身 X（前）= −芯片 Y
+  - 机身 Y（左）= +芯片 X
+  - 机身 Z（上）= +芯片 Z
+
+  换算成旋转关系：芯片相对机身绕 Z 轴转了 +90°（芯片 X 轴实际指向机身左侧，芯片 Y 轴指向机身后方，Z
+  轴与机身 Z 轴重合、都朝上）。这正是代码注释 "Note the ordering to correct the rotated 90º IMU coordinate
+  system" 所说的——MPU6050 芯片在 PCB 上物理贴装方向和机身前向差 90°，固件在这里把它转回机身坐标系。
+
+  之后 sensorsAccAlignToGravity()（同文件 1138-1156 行）只做 ROLL_CALIB/PITCH_CALIB 的小角度配平旋转，log
+  里的 acc.x/y/z 就是已经转换到机身坐标系（X 前、Y 左、Z 上，右手系）下的读数，不是芯片原始坐标。
+
+  t4_sensor_readings_check.py 各放置姿态下 acc 的正负
+
+  加速度计静止时测的是"支持力"方向，规律是：机身某轴朝正上方（远离地心）时该轴读数为 +1g，朝正下方为
+  −1g，水平时为 0。据此可以给出脚本运行时几种典型摆放姿态的预期值（前提：ROLL_CALIB/PITCH_CALIB
+  已配平，机身完全静止）：
+
+  ┌────────────────────────────────┬─────────────┬─────────────┬─────────────┐
+  │            放置方式            │ acc.x（前） │ acc.y（左） │ acc.z（上） │
+  ├────────────────────────────────┼─────────────┼─────────────┼─────────────┤
+  │ 水平正放（脚架朝下，正常姿态） │ ≈0          │ ≈0          │ +1.0        │
+  ├────────────────────────────────┼─────────────┼─────────────┼─────────────┤
+  │ 完全倒扣（机腹朝上）           │ ≈0          │ ≈0          │ −1.0        │
+  ├────────────────────────────────┼─────────────┼─────────────┼─────────────┤
+  │ 立起，机头朝下（机头触地）     │ −1.0        │ ≈0          │ ≈0          │
+  ├────────────────────────────────┼─────────────┼─────────────┼─────────────┤
+  │ 立起，机头朝上（机尾触地）     │ +1.0        │ ≈0          │ ≈0          │
+  ├────────────────────────────────┼─────────────┼─────────────┼─────────────┤
+  │ 侧立，左侧朝下（左边触地）     │ ≈0          │ −1.0        │ ≈0          │
+  ├────────────────────────────────┼─────────────┼─────────────┼─────────────┤
+  │ 侧立，右侧朝下（右边触地）     │ ≈0          │ +1.0        │ ≈0          │
+  └────────────────────────────────┴─────────────┴─────────────┴─────────────┘
+
+  脚本注释里已经给出的 "水平桌面静置：acc.z 应 ~1.0g，acc.x/y 应 ~0"
+  正好对应表格第一行，可以作为验证基准；其余几种姿态可以在做 T4
+  测试时补充验证机身坐标系和固件里的转换是否正确（比如立起机头向下时，如果看到的是 acc.x 变成 +1.0 而不是
+  −1.0，说明 X 轴方向定义或"机头"朝向的物理认定反了，需要回头核对 PCB 上哪个方向被固件当作"前"）。
+
+✻ Baked for 2m 5s
+
+claude --resume 9ce458c1-3fd1-41b8-b239-df2bbab7dbaa
+
+
+t3_motor_mapping.py测试的时候，设置30000的时候一会之后，系统就重启了，可能是什么原因？如何进一步测试验证 
+
+  Thought for 18s (ctrl+o to expand)
+
+● Agent(Find motor mapping test script and related motor/power code)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 我先启动一个后台调研任务，去查代码库里的t3_motor_mapping.py测试脚本、电机控制/看门狗/掉线保护相关代码，找
+  证据支撑可能原因。调研完成后我会给你完整分析。
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "Find motor mapping test script and related motor/power code" finished · 2m 57s
+
+  Thought for 37s (ctrl+o to expand)
+
+● 调研完成，关键结论如下:
+
+  可能原因
+
+  30000/65535 ≈ 46%油门，这个值本身在合法范围内，不是参数越界问题（motors.h里PWM是16位参数，转换成8位LEDC
+  duty时右移8位，30000→duty
+  117/255）。真正可疑的是"持续一段时间后重启"这个现象，结合代码看，最可能是硬件Brownout复位：
+
+  - t3_motor_mapping.py 里设置电机后会阻塞在 input()
+    等你按回车，也就是电机会以固定duty持续转很长时间（不是脉冲测试）。
+  - 该脚本走的是 motorPowerSet.enable=1 直接写 power_distribution_stock.c 里的
+    motorPowerSet.m1~m4，完全绕过了commander/stabilizer，所以commander的通信超时保护根本不会触发（它也从来
+    不会导致MCU重启，只会把setpoint清零）。
+  - 全仓库搜不到任何 brownout 相关配置，说明ESP-IDF的默认硬件brownout检测（约2.43V
+    VDD33阈值）是启用状态，没有被关闭或调低。
+  - 固件里没有真正的过流/欠压软件保护——pmSystemShutdown() 是空的TODO实现，ACTIVATE_AUTO_SHUTDOWN
+    没定义，所以电池电压跌落时软件不会主动降功率或保护性关闭。
+
+  也就是说：单个/多个电机在46%油门下持续转动，电流拉高导致电池/3.3V共用电源轨电压跌落，触发ESP32自带的brown
+  out detector把芯片复位——这和"设置30000一会儿后系统重启"的现象高度吻合。
+
+  次要可能性：代码中若某个ASSERT()触发，会进入 cfassert.c 里 portDISABLE_INTERRUPTS(); while(1); 的死循环，
+  进而被任务/中断看门狗判定为卡死强制复位芯片，但目前没找到该路径被触发的直接证据，优先级低于brownout。
+
+  如何进一步验证
+
+  1. 直接读取复位原因（最关键、最直接的证据）：在固件里加一行调用 esp_reset_reason()（ESP-IDF
+     API）并通过UART/CDC log打印出来，或看是否已有代码打印。复位后串口应输出类似
+     RTCWDT_BROWN_OUT_RESET（brownout）或
+     TG0WDT_SYS_RESET/RTC_SW_CPU_RESET（看门狗/assert死循环）。这一步能直接区分两种猜测，不需要猜。
+  2. 测电压：设置30000让电机持续转动时，用万用表或示波器实测电池电压和3.3V
+     rail，看是否在重启瞬间跌到~2.4~2.5V附近（brownout阈值区间）。如果确认，就是电源/brownout问题。
+  3. 梯度测试定位阈值：把 TEST_VALUE
+     从10000开始按步长（15000/20000/25000/30000...）测试，记录每个值能持续转多久不重启，看是否存在明显的电
+     流/占空比阈值——如果阈值一致地对应某个电压跌落点，进一步坐实brownout假设。
+  4. 换电源排除电池因素：用稳压实验室电源（带足够电流余量）替代电池供电做同样测试，如果换电源后不再重启，说
+     明是电池内阻/电量不足导致的电压跌落，而非固件逻辑bug。
+  5. 检查串口log是否在重启前打印过ASSERT相关信息，排查/确认是否是assert死循环+看门狗路径。
+  6. 如果确认是brownout触发，后续修复方向是：在sdkconfig里调整/关闭brownout阈值（需谨慎，brownout本身是保护
+     机制）、改善供电（加大电容、独立供电电机与MCU）、或者补上pmSystemShutdown()的软件低压保护逻辑，在电压
+     跌落前主动限制电机输出而不是让硬件强制复位。
+
+✻ Baked for 3m 52s
+
+❯ 如何通过udp查看复位原因?                                                                                 
+
+  Thought for 25s (ctrl+o to expand)
+
+● fork(Research UDP console/log path for reset reason)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 正在查esp-drone的UDP链路和console日志机制，看复位原因（esp_reset_reason）能不能通过UDP的console端口打印出
+  来，以及PC端怎么接收。调研完再给你具体方案。
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "Research UDP console/log path for reset reason" finished · 2m 56s
+
+  Thought for 18s (ctrl+o to expand)
+
+● 调研结果：固件目前完全没有调用过 esp_reset_reason()，所以现在无论怎么看都拿不到复位原因，得先加一点代码。
+  直接用console即时打印这条路有时序坑（UDP链路要等PC先发一包才算"已连接"，开机瞬间打印很容易在客户端连上前
+  就被丢弃），所以更稳妥的做法是把复位原因存成一个log变量，客户端随时连上都能读到。
+
+  固件侧改动
+
+  components/core/crazyflie/modules/src/system.c：
+
+  #include "esp_system.h"   // 文件头部加这个include
+
+  static uint8_t resetReason;   // 和其他static变量放一起
+
+  void systemInit(void)
+  {
+    if(isInit)
+      return;
+
+    resetReason = (uint8_t)esp_reset_reason();
+    DEBUG_PRINT_LOCAL("Reset reason: %d\n", resetReason);  // 顺便留一份到UART
+    ...
+
+  在文件末尾已有的 LOG_GROUP_START(sys) 里加一行：
+
+  LOG_GROUP_START(sys)
+  LOG_ADD(LOG_INT8, canfly, &canFly)
+  LOG_ADD(LOG_INT8, armed, &armed)
+  LOG_ADD(LOG_UINT8, resetReason, &resetReason)   // 新加
+  LOG_GROUP_STOP(sys)
+
+  背景：UDP链路端口是2390（wifi_esp32.c:29），console/log都是走同一个UDP
+  tx队列，isUDPConnected标志要等PC先发第一包才置true（wifi_esp32.c:160），之前没置位时数据会被直接丢弃——这
+  就是为什么console即时打印不可靠，而log变量没有这个问题（客户端连上后随时能读到当前值）。
+
+  PC侧读取（复位后随时连上跑一下就行）
+
+  import cflib.crtp
+  from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
+  from cflib.crazyflie.log import LogConfig
+  from cflib.crazyflie.syncLogger import SyncLogger
+
+  URI = "udp://192.168.43.42:2390"
+
+  cflib.crtp.init_drivers()
+  with SyncCrazyflie(URI) as scf:
+      lg = LogConfig(name="ResetReason", period_in_ms=100)
+      lg.add_variable("sys.resetReason", "uint8_t")
+      with SyncLogger(scf, lg) as logger:
+          for entry in logger:
+              print("resetReason =", entry[1]["sys.resetReason"])
+              break
+
+  对照 ESP-IDF esp_reset_reason_t 判断具体原因：
+
+  ┌─────┬──────────────────────────────────────┐
+  │ 值  │                 含义                 │
+  ├─────┼──────────────────────────────────────┤
+  │ 1   │ POWERON（正常上电）                  │
+  ├─────┼──────────────────────────────────────┤
+  │ 3   │ SW（软件重启）                       │
+  ├─────┼──────────────────────────────────────┤
+  │ 4   │ PANIC（异常/assert崩溃）             │
+  ├─────┼──────────────────────────────────────┤
+  │ 5   │ INT_WDT（中断看门狗超时）            │
+  ├─────┼──────────────────────────────────────┤
+  │ 6   │ TASK_WDT（任务看门狗超时）           │
+  ├─────┼──────────────────────────────────────┤
+  │ 9   │ BROWNOUT（掉压复位）← 之前怀疑的这个 │
+  └─────┴──────────────────────────────────────┘
+
+  跑30000的测试触发重启后，重新连上跑这段脚本读一次sys.resetReason，如果是9就印证了电压跌落触发brownout的判
+  断；如果是4/5/6，则要转向查cfassert.c的assert死循环路径。
+
+  需要我直接帮你把这两处代码改到固件里吗？
+
+✻ Worked for 3m 40s
+
+❯ 好的                                                                                                     
+
+  Thought for 8s, read 1 file (ctrl+o to expand)
+
+● Now I'll add the reset-reason capture and log entry.
+
+● Update(components/core/crazyflie/modules/src/system.c)
+  ⎿  Added 1 line
+      27  
+      28  #include <stdbool.h>
+      29  #include <inttypes.h>
+      30 +#include "esp_system.h"                                                                   
+      31  /* FreeRtos includes */
+      32  #include "FreeRTOS.h"
+      33  #include "task.h"
+
+  Thought for 7s (ctrl+o to expand)
+
+● Update(components/core/crazyflie/modules/src/system.c)
+  ⎿  Added 1 line
+      86  static bool armed = ARM_INIT;
+      87  static bool forceArm;
+      88  static bool isInit;
+      89 +static uint8_t resetReason;                                                               
+      90  
+      91  STATIC_MEM_TASK_ALLOC(systemTask, SYSTEM_TASK_STACKSIZE);
+      92  
+
+● Update(components/core/crazyflie/modules/src/system.c)
+  ⎿  Added 3 lines
+      109    if(isInit)
+      110      return;
+      111  
+      112 +  resetReason = (uint8_t)esp_reset_reason();                                             
+      113 +                                                                                         
+      114    DEBUG_PRINT_LOCAL("----------------------------\n");
+      115    DEBUG_PRINT_LOCAL("%s is up and running!\n", platformConfigGetDeviceTypeName());
+      116 +  DEBUG_PRINT_LOCAL("Reset reason: %d\n", resetReason);                                  
+      117  
+      118    canStartMutex = xSemaphoreCreateMutexStatic(&canStartMutexBuffer);
+      119    xSemaphoreTake(canStartMutex, portMAX_DELAY);
+
+● Update(components/core/crazyflie/modules/src/system.c)
+  ⎿  Added 1 line
+      355  LOG_GROUP_START(sys)
+      356  LOG_ADD(LOG_INT8, canfly, &canFly)
+      357  LOG_ADD(LOG_INT8, armed, &armed)
+      358 +LOG_ADD(LOG_UINT8, resetReason, &resetReason)                                            
+      359  LOG_GROUP_STOP(sys)
+
+● Let me verify the final result and check that LOG_UINT8 exists in the log macro definitions.
+
+  Thought for 10s, searched for 2 patterns (ctrl+o to expand)
+  ⎿  Found 10 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Good, esp_system.h is already used elsewhere (wifi_esp32.c, espnow_ctrl.c) and exists in the ESP-IDF tree
+  — the "file not found" diagnostics are just clangd's editor tooling not resolving the ESP-IDF include
+  paths outside the real idf.py build, not an actual compile error. Let's confirm with an actual build.
+
+  Thought for 23s, searched for 1 pattern, listed 2 directories (ctrl+o to expand)
+
+● Bash(source /data/project/source/esp-idf/export.sh >/tmp/idf_export.log 2>&1 && idf.py build 2>&1 | tail
+      -100)
+  ⎿  Running in the background (↓ to manage)
+
+● 已完成 system.c 的代码修改，正在后台跑一次完整的 idf.py build
+  验证是否能编译通过，构建结束后我会告诉你结果。
+
+  Change 摘要：
+  - 加了 #include "esp_system.h"
+  - 加了静态变量 resetReason，在 systemInit() 最前面用 esp_reset_reason() 赋值，并顺手打一行UART日志
+  - 在 LOG_GROUP_START(sys) 里新增 LOG_ADD(LOG_UINT8, resetReason, &resetReason)，这样PC端就能通过
+    sys.resetReason 这个log变量在UDP连上后随时读取。
+	
+解决电池掉压问题，是不是可以把大电容并联到电池的两端？                                                   
+
+  Thought for 28s (ctrl+o to expand)
+
+● 让我先看一下仓库里电源管理相关的代码，确认这个"掉压"问题的具体场景（比如是否和最近的复位日志相关）。
+
+  Thought for 36s, searched for 2 patterns (ctrl+o to expand)
+
+● 可以缓解，但效果有限，取决于掉压的具体原因和电容的位置/类型。
+
+  电容能解决的部分：
+  - 电池内阻（ESR）在电机启动/PWM高频通断时会产生瞬态电压尖峰/跌落。在电池到主控/传感器供电入口处并联低ESR
+    电容（钽电容、固态电容，甚至陶瓷电容+电解电容组合），可以就近补充瞬态电流，减小这类高频毛刺。
+  - 如果掉压表现为MCU复位、传感器读数抖动、Wi-Fi/无线模块重启，通常就是这类高频噪声耦合到逻辑电源轨，加电容
+    （尤其在MCU/IMU供电入口，而不是电池两端）见效更快。
+
+  电容解决不了的部分：
+  - 如果是电池老化、内阻本身过大，或C-rating不够，在大电流持续拉载（如爬升、翻滚）时电压持续下降数百毫秒以
+    上——这种"能量不够"的持续掉压，普通电容储能太小（几百µF/几十mF
+    撑不了这种能量需求），基本没用，除非上超级电容（法拉级），但esp-drone这种小机重量/体积很难塞下。
+  - 电池两端并联只是"离电源近"，但如果电机走线/连接器本身电阻大（接触不良、线径细），压降发生在电池到电机之
+    间的路径上，电容加在电池两端也救不了负载端的压降。
+
+  建议顺序：
+  1. 先确认掉压是瞬态噪声还是持续性下降（用示波器看波形，区分成因）。
+  2. 检查电池内阻/健康度、连接器接触电阻、走线线径——这些往往是根因。
+  3. 若是逻辑电源轨受电机电流干扰，优先做电源分域（MCU/传感器独立稳压+就近去耦），而不是在电池两端堆大电容
+     。
+  4. 电容选型上，低ESR的钽/固态电容效果远好于普通铝电解，位置尽量靠近受影响的负载（MCU/IMU），而不是电池端
+     子本身。
+
+  如果你能说一下具体现象（是MCU复位、姿态传感器抖动，还是电机响应变弱/无力），我可以帮你更精确定位是该加电
+  容、换电池，还是改供电架构。
+
+✻ Worked for 1m 7s
