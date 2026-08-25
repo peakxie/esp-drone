@@ -10,6 +10,7 @@ docs/__pycache__
 docs/en/md/sphinx-warning-log.txt
 ./claude
 /.cache
+__pycache__
 # MacOS directory files
 .DS_Store
 

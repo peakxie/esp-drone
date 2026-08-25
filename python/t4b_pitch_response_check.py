@@ -72,6 +72,15 @@ def main():
         time.sleep(0.1)
 
         log_state = {"last": None}
+        # 姿态/角速度 PID 分量 + 实际姿态角，用于坐实"电机尖峰是不是角速度环 D 项打出来的"、
+        # "手动掰 pitch 时是不是也带了 roll 耦合"，跟 motor 日志分开一路，避免单个 log block
+        # 超出 CRTP payload 限制。数值可能比 motor 那一路晚最多一个周期，人工读数够用。
+        diag_state = {
+            "pid_rate.pitch_outP": None,
+            "pid_rate.pitch_outD": None,
+            "stateEstimate.roll": None,
+            "stateEstimate.pitch": None,
+        }
 
         lg = LogConfig(name="motor", period_in_ms=50)
         lg.add_variable("motor.m1", "uint32_t")
@@ -80,16 +89,40 @@ def main():
         lg.add_variable("motor.m4", "uint32_t")
         cf.log.add_config(lg)
 
+        lg_diag = LogConfig(name="pid_diag", period_in_ms=50)
+        lg_diag.add_variable("pid_rate.pitch_outP", "float")
+        lg_diag.add_variable("pid_rate.pitch_outD", "float")
+        lg_diag.add_variable("stateEstimate.roll", "float")
+        lg_diag.add_variable("stateEstimate.pitch", "float")
+        cf.log.add_config(lg_diag)
+
         def log_cb(timestamp, data, logconf):
             log_state["last"] = time.monotonic()
+            outp = diag_state["pid_rate.pitch_outP"]
+            outd = diag_state["pid_rate.pitch_outD"]
+            roll = diag_state["stateEstimate.roll"]
+            pitch = diag_state["stateEstimate.pitch"]
+            outp_s = f"{outp:8.1f}" if outp is not None else "    n/a"
+            outd_s = f"{outd:8.1f}" if outd is not None else "    n/a"
+            roll_s = f"{roll:6.1f}" if roll is not None else "   n/a"
+            pitch_s = f"{pitch:6.1f}" if pitch is not None else "   n/a"
             print(
                 f"t={timestamp:>8}  m1={data['motor.m1']:6d}  m2={data['motor.m2']:6d}  "
-                f"m3={data['motor.m3']:6d}  m4={data['motor.m4']:6d}",
+                f"m3={data['motor.m3']:6d}  m4={data['motor.m4']:6d}  |  "
+                f"rateP={outp_s}  rateD={outd_s}  roll={roll_s}  pitch={pitch_s}",
                 flush=True,
             )
 
+        def log_diag_cb(timestamp, data, logconf):
+            diag_state["pid_rate.pitch_outP"] = data["pid_rate.pitch_outP"]
+            diag_state["pid_rate.pitch_outD"] = data["pid_rate.pitch_outD"]
+            diag_state["stateEstimate.roll"] = data["stateEstimate.roll"]
+            diag_state["stateEstimate.pitch"] = data["stateEstimate.pitch"]
+
         lg.data_received_cb.add_callback(log_cb)
+        lg_diag.data_received_cb.add_callback(log_diag_cb)
         lg.start()
+        lg_diag.start()
 
         # 先确认遥测通路活着，再考虑给电机上电，绝不盲发推力
         print("等待第一帧 motor 日志，确认遥测通路正常...", flush=True)
@@ -104,6 +137,7 @@ def main():
                 flush=True,
             )
             lg.stop()
+            lg_diag.stop()
             return
 
         print("日志已确认在收，即将开始发送推力基线（斜坡爬升，避免电流冲击）。", flush=True)
@@ -155,6 +189,9 @@ def main():
         print("电机转动、稳定几秒后，请缓慢抬起机头，观察打印：")
         print("  期望：m1、m4（前）变小，m2、m3（后）变大")
         print("  再缓慢低头，期望反过来：m1、m4 变大，m2、m3 变小")
+        print("新增的 rateP/rateD 是角速度环 pitch 通道的 P/D 分量，roll/pitch 是实际估计姿态角：")
+        print("  如果电机尖峰时 |rateD| 远大于 |rateP|，说明是未滤波的 D 项被陀螺噪声/震动打出来的尖峰")
+        print("  如果你在掰 pitch 时 roll 也明显跟着变，说明手动动作带了耦合，m1m4/m2m3 规律会被 roll 项打乱")
         print("按 Ctrl+C 结束测试。\n")
 
         sp_thread.start()
@@ -178,6 +215,7 @@ def main():
             else:
                 send_zero_burst(cf)
             lg.stop()
+            lg_diag.stop()
             print("测试结束。", flush=True)
 
 
