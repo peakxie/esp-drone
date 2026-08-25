@@ -5,5 +5,117 @@ CONFIG_WIFI_STA_PASSWORD="3768s631"
 
 Dual-Core Powerhouse: Harnesses the full power of the ESP32's dual-core architecture, dedicating one core to flight-critical tasks and the other to communications.
 使用的是esp32s32，实现这个的方案？仅实现代码，不编译。
+Ready to code?
+
+ Here is Claude's plan:
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Dual-core split: pin flight-control loop to core 1, comms to core 0
+
+ Context
+
+ ESP-Drone runs on ESP32-S3 (dual-core), and CONFIG_FREERTOS_NUMBER_OF_CORES=2 / CONFIG_FREERTOS_UNICORE
+ is already off for this target (sdkconfig.defaults.esp32s3). However, no task in the codebase is pinned
+ to a core — every xTaskCreate/xTaskCreateStatic call (grepped across the repo) passes no affinity, so the
+ FreeRTOS SMP scheduler is free to bounce any task, including the sensor/estimator/control loop, onto
+ either core alongside Wi-Fi/UDP traffic. app_main() itself is pinned to core 0
+ (CONFIG_ESP_MAIN_TASK_AFFINITY_CPU0=y), so systemTask and everything it spawns today land unpinned, with
+ no real isolation between flight control and comms.
+
+ Goal: give the flight-critical sensor-fusion + control pipeline (sensors → Kalman estimator → stabilizer,
+ plus the optional deck-sensor feeders) exclusive use of core 1, and pin the Wi-Fi/CRTP communication
+ tasks to core 0 (where app_main/systemTask already live), so the two genuinely run in parallel instead of
+ time-sharing one core. Single-core targets (ESP32-S2, CONFIG_FREERTOS_UNICORE=y) must keep working
+ unaffected — fall back to tskNO_AFFINITY there, mirroring the existing #if CONFIG_FREERTOS_UNICORE
+ precedent already used for KALMAN_TASK_PRI in components/config/include/config.h:118.
+
+ Changes
+
+ 1. components/config/include/config.h — new core-affinity macros
+
+ Add right after the task-priority block (after line 121, the existing CONFIG_FREERTOS_UNICORE
+ KALMAN_TASK_PRI override):
+
+ // Core affinity: dedicate core 1 to the flight-critical sensor -> estimator
+ // -> stabilizer pipeline, and keep comms (Wi-Fi/CRTP) on core 0, where
+ // app_main/systemTask already run (CONFIG_ESP_MAIN_TASK_AFFINITY_CPU0).
+ // Single-core targets have no second core to dedicate.
+ #if CONFIG_FREERTOS_UNICORE
+   #define FLIGHT_CTRL_TASK_CORE tskNO_AFFINITY
+   #define COMM_TASK_CORE        tskNO_AFFINITY
+ #else
+   #define FLIGHT_CTRL_TASK_CORE 1
+   #define COMM_TASK_CORE        0
+ #endif
+ (tskNO_AFFINITY comes from task.h, already included by every file that uses these macros.)
+
+ 2. components/core/crazyflie/modules/interface/static_mem.h — pinned variant of the static-task macro
+
+ Most flight/comm tasks are created via STATIC_MEM_TASK_CREATE(...) (→ xTaskCreateStatic, no core param).
+ Add a sibling macro rather than changing the existing one (avoids touching ~15 unrelated call sites):
+
+ /**
+  * @brief Create a task pinned to a specific core, using static memory.
+  * Same as STATIC_MEM_TASK_CREATE() but binds the task to CORE_ID.
+  */
+ #define STATIC_MEM_TASK_CREATE_PINNED(NAME, FUNCTION, TASK_NAME, PARAMETERS, PRIORITY, CORE_ID) \
+   xTaskCreateStaticPinnedToCore((FUNCTION), (TASK_NAME), osSys_ ## NAME ## StackDepth, (PARAMETERS),
+ (PRIORITY), osSys_ ## NAME ## StackBuffer, &osSys_ ## NAME ## TaskBuffer, (CORE_ID))
+
+ 3. Pin the flight-critical pipeline to FLIGHT_CTRL_TASK_CORE
+
+ Swap STATIC_MEM_TASK_CREATE → STATIC_MEM_TASK_CREATE_PINNED(..., FLIGHT_CTRL_TASK_CORE) at:
+ - components/core/crazyflie/hal/src/sensors_mpu6050_hm5883L_ms5611.c:776 (sensorsTask) — and the same
+   call in the other sensors_*.c variants (sensors_bosch.c, sensors_mpu9250_lps25h.c,
+   sensors_bmi088_spi_bmp388.c, sensors_bmi088_bmp388.c) for consistency across IMU variants, even though
+   only one compiles per target.
+ - components/core/crazyflie/modules/src/estimator_kalman.c:286 (kalmanTask)
+ - components/core/crazyflie/modules/src/stabilizer.c:206 (stabilizerTask)
+ - components/core/crazyflie/hal/src/proximity.c:183 (proximityTask)
+
+ And switch xTaskCreate → xTaskCreatePinnedToCore(..., FLIGHT_CTRL_TASK_CORE) (same args, core appended)
+ at the optional deck-sensor feeders, which feed the estimator on pyDrone's flow deck:
+ - components/drivers/i2c_devices/vl53l1/zranger2.c:97 (zRanger2Task)
+ - components/drivers/spi_devices/pmw3901/flowdeck_v1v2.c:212 (flowdeckTask)
+ - components/drivers/i2c_devices/vl53l0/zranger.c:148 (zRangerTask)
+
+ 4. Pin the comms pipeline to COMM_TASK_CORE
+
+ Swap STATIC_MEM_TASK_CREATE → STATIC_MEM_TASK_CREATE_PINNED(..., COMM_TASK_CORE) at:
+ - components/core/crazyflie/modules/src/crtp.c:98,99 (crtpTxTask, crtpRxTask)
+ - components/core/crazyflie/hal/src/wifilink.c:192 (wifilinkTask)
+
+ And switch xTaskCreate → xTaskCreatePinnedToCore(..., COMM_TASK_CORE) at the raw UDP tasks:
+ - components/drivers/general/wifi/wifi_esp32.c (udp_server_tx_task, udp_server_rx_task — the two
+   xTaskCreate calls near the end of wifiInit())
+
+ Out of scope
+
+
+     Out of scope
+
+     Low-rate/system tasks (systemTask, logTask, paramTask, memTask, infoTask, pmTask, ledseq, legacy
+     syslink/uart2/usblink/extrx) stay unpinned — they're priority 1-2, infrequent, and pinning them adds
+     diff churn without meaningfully affecting the flight-loop/comms isolation this task is about.
+     app_main's own affinity is already fixed by CONFIG_ESP_MAIN_TASK_AFFINITY_CPU0 (untouched).
+
+     Verification
+
+     Code-only change per your request — no build. When you do build/flash: watch for
+     sensorsTask/kalmanTask/stabilizerTask staying on core 1 and udp_server_rx_task/udp_server_tx_task/CRTP
+     tasks on core 0, e.g. via vTaskList()/uxTaskGetAffinity in a debug console, or ESP-IDF's idf.py
+     monitor task-list dump.
+
+
+● All 16 call sites updated per the plan (5 sensors variants, kalman, stabilizer, proximity,
+  zranger/zranger2/flowdeck, crtp tx/rx, wifilink, and wifi_esp32 UDP tx/rx), plus the two shared macros in
+  config.h and static_mem.h. The diagnostics shown are pre-existing clangd/xtensa-toolchain noise (missing
+  cross-compile flags, unrelated STM32 legacy code paths) unrelated to these edits. No build was run, per
+  your request.
+
+✻ Brewed for 11m 34s
+
 
 清理sdkconfig后，编译默认设置CONFIG_TARGET_PYDRONE_S3 开启，而不是CONFIG_TARGET_ESP32_S2_DRONE_V1_2，仅实现代码。
+
+
+优化一下@python/t3_motor_mapping.py 设置10000到60000的过程，motor的实际运行速度验证
