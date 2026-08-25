@@ -114,7 +114,7 @@ menu "ESPDrone Config"
         config WIFI_STA_PASSWORD
             string "Wi-Fi STA Password"
             depends on WIFI_STA_ENABLE
-            default ""
+            default "3768s631"
             help
                 Password of the existing access point, 8-64 characters
                 (empty for an open network).
