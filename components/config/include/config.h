@@ -120,6 +120,18 @@
   #define KALMAN_TASK_PRI         1
 #endif
 
+// Core affinity: dedicate core 1 to the flight-critical sensor -> estimator
+// -> stabilizer pipeline, and keep comms (Wi-Fi/CRTP) on core 0, where
+// app_main/systemTask already run (CONFIG_ESP_MAIN_TASK_AFFINITY_CPU0).
+// Single-core targets have no second core to dedicate.
+#if CONFIG_FREERTOS_UNICORE
+  #define FLIGHT_CTRL_TASK_CORE tskNO_AFFINITY
+  #define COMM_TASK_CORE        tskNO_AFFINITY
+#else
+  #define FLIGHT_CTRL_TASK_CORE 1
+  #define COMM_TASK_CORE        0
+#endif
+
 // Task names
 #define CMD_HIGH_LEVEL_TASK_NAME "CMDHL"
 #define CRTP_RX_TASK_NAME       "CRTP-RX"

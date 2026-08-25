@@ -180,7 +180,7 @@ void proximityInit(void)
 
 #if defined(PROXIMITY_ENABLED)
   /* Only start the task if the proximity subsystem is enabled in conf.h */
-  STATIC_MEM_TASK_CREATE(proximityTask, proximityTask, PROXIMITY_TASK_NAME, NULL, PROXIMITY_TASK_PRI);
+  STATIC_MEM_TASK_CREATE_PINNED(proximityTask, proximityTask, PROXIMITY_TASK_NAME, NULL, PROXIMITY_TASK_PRI, FLIGHT_CTRL_TASK_CORE);
 #endif
 
   isInit = true;

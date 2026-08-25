@@ -209,7 +209,7 @@ void flowdeck2Init()
     // zRanger->init(NULL);
 
     if (pmw3901Init(NCS_PIN)) {
-        xTaskCreate(flowdeckTask, FLOW_TASK_NAME, FLOW_TASK_STACKSIZE, NULL, FLOW_TASK_PRI, NULL);
+        xTaskCreatePinnedToCore(flowdeckTask, FLOW_TASK_NAME, FLOW_TASK_STACKSIZE, NULL, FLOW_TASK_PRI, NULL, FLIGHT_CTRL_TASK_CORE);
 
         isInit2 = true;
     }

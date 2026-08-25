@@ -203,7 +203,7 @@ void stabilizerInit(StateEstimatorType estimator)
   estimatorType = getStateEstimator();
   controllerType = getControllerType();
 
-  STATIC_MEM_TASK_CREATE(stabilizerTask, stabilizerTask, STABILIZER_TASK_NAME, NULL, STABILIZER_TASK_PRI);
+  STATIC_MEM_TASK_CREATE_PINNED(stabilizerTask, stabilizerTask, STABILIZER_TASK_NAME, NULL, STABILIZER_TASK_PRI, FLIGHT_CTRL_TASK_CORE);
 
   isInit = true;
 }

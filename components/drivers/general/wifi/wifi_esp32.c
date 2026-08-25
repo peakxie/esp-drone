@@ -358,7 +358,7 @@ void wifiInit(void)
     } else {
         DEBUG_PRINT_LOCAL("UDP server create socket succeed");
     }
-    xTaskCreate(udp_server_tx_task, UDP_TX_TASK_NAME, UDP_TX_TASK_STACKSIZE, NULL, UDP_TX_TASK_PRI, NULL);
-    xTaskCreate(udp_server_rx_task, UDP_RX_TASK_NAME, UDP_RX_TASK_STACKSIZE, NULL, UDP_RX_TASK_PRI, NULL);
+    xTaskCreatePinnedToCore(udp_server_tx_task, UDP_TX_TASK_NAME, UDP_TX_TASK_STACKSIZE, NULL, UDP_TX_TASK_PRI, NULL, COMM_TASK_CORE);
+    xTaskCreatePinnedToCore(udp_server_rx_task, UDP_RX_TASK_NAME, UDP_RX_TASK_STACKSIZE, NULL, UDP_RX_TASK_PRI, NULL, COMM_TASK_CORE);
     isInit = true;
 }

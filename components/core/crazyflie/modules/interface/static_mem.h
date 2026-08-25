@@ -212,3 +212,18 @@
  * @param PRIORITY The task priority
  */
 #define STATIC_MEM_TASK_CREATE(NAME, FUNCTION, TASK_NAME, PARAMETERS, PRIORITY) xTaskCreateStatic((FUNCTION), (TASK_NAME), osSys_ ## NAME ## StackDepth, (PARAMETERS), (PRIORITY), osSys_ ## NAME ## StackBuffer, &osSys_ ## NAME ## TaskBuffer)
+
+/**
+ * @brief Create a task pinned to a specific core, using static memory.
+ *
+ * Same as STATIC_MEM_TASK_CREATE() but binds the task to CORE_ID, so the
+ * FreeRTOS SMP scheduler can't move it to the other core.
+ *
+ * @param NAME A name used as base name for the variables, same name that was used in STATIC_MEM_TASK_ALLOC()
+ * @param FUNCTION The function that implements the task
+ * @param TASK_NAME A descriptive name for the task
+ * @param PARAMETERS Passed on as argument to the function implementing the task
+ * @param PRIORITY The task priority
+ * @param CORE_ID The core to pin the task to (0, 1, or tskNO_AFFINITY)
+ */
+#define STATIC_MEM_TASK_CREATE_PINNED(NAME, FUNCTION, TASK_NAME, PARAMETERS, PRIORITY, CORE_ID) xTaskCreateStaticPinnedToCore((FUNCTION), (TASK_NAME), osSys_ ## NAME ## StackDepth, (PARAMETERS), (PRIORITY), osSys_ ## NAME ## StackBuffer, &osSys_ ## NAME ## TaskBuffer, (CORE_ID))

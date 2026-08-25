@@ -189,7 +189,7 @@ void wifilinkInit()
     crtpPacketDelivery = STATIC_MEM_QUEUE_CREATE(crtpPacketDelivery);
     DEBUG_QUEUE_MONITOR_REGISTER(crtpPacketDelivery);
 
-    STATIC_MEM_TASK_CREATE(wifilinkTask, wifilinkTask, WIFILINK_TASK_NAME,NULL, WIFILINK_TASK_PRI);
+    STATIC_MEM_TASK_CREATE_PINNED(wifilinkTask, wifilinkTask, WIFILINK_TASK_NAME, NULL, WIFILINK_TASK_PRI, COMM_TASK_CORE);
 
     isInit = true;
 }
