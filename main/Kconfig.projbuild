@@ -96,7 +96,7 @@ menu "ESPDrone Config"
 
         config WIFI_STA_ENABLE
             bool "Join an existing Wi-Fi AP (STA mode) instead of SoftAP"
-            default n
+            default y
             help
                 When enabled, ESP-Drone connects to an existing access point
                 as a station instead of creating its own SoftAP. cfclient

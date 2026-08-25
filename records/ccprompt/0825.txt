@@ -4,6 +4,6 @@ CONFIG_WIFI_STA_PASSWORD="3768s631"
 飞控使用sta模式，cfclient也连接这个ap去控制飞控。仅实现代码
 
 Dual-Core Powerhouse: Harnesses the full power of the ESP32's dual-core architecture, dedicating one core to flight-critical tasks and the other to communications.
-使用的是esp32s32，实现这个的方案？
+使用的是esp32s32，实现这个的方案？仅实现代码，不编译。
 
 清理sdkconfig后，编译默认设置CONFIG_TARGET_PYDRONE_S3 开启，而不是CONFIG_TARGET_ESP32_S2_DRONE_V1_2，仅实现代码。
