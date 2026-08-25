@@ -3,6 +3,7 @@
 # 手动倾斜机身，看轴向和符号对不对。
 # 不碰 motorPowerSet、不发 commander，电机完全不需要转，零风险。
 
+import threading
 import time
 
 import cflib.crtp
@@ -11,6 +12,42 @@ from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 
 from config import URI
 
+ESTIMATOR_NAMES = {0: "any", 1: "complementary", 2: "kalman"}
+
+
+def read_current_estimator(cf, timeout_s=2.0):
+    """读取 stabilizer.estimator 参数，返回当前值（1=complementary, 2=kalman），超时返回 None。"""
+    result = {}
+    got_value = threading.Event()
+
+    def estimator_cb(_name, value):
+        try:
+            val = int(value)
+        except (TypeError, ValueError):
+            val = None
+        label = ESTIMATOR_NAMES.get(val, f"未知({value})")
+        print(f"当前 stabilizer.estimator = {value} ({label})")
+        result["value"] = val
+        got_value.set()
+
+    cf.param.add_update_callback(group="stabilizer", name="estimator", cb=estimator_cb)
+    cf.param.request_param_update("stabilizer.estimator")
+
+    if not got_value.wait(timeout=timeout_s):
+        print("警告：读取 stabilizer.estimator 超时，未确认当前估计器。")
+        return None
+    return result["value"]
+
+
+def ensure_complementary_estimator(cf):
+    """若当前是 kalman(2)，强制切成 complementary(1)，避免光流模块把估计器锁死成 kalman。"""
+    current = read_current_estimator(cf)
+    if current == 2:
+        print("检测到当前是 kalman，强制切换为 complementary...")
+        cf.param.set_value("stabilizer.estimator", "1")
+        time.sleep(0.5)
+        read_current_estimator(cf)
+
 
 def main():
     cflib.crtp.init_drivers()
@@ -18,6 +55,8 @@ def main():
     with SyncCrazyflie(URI) as scf:
         cf = scf.cf
         print("已连接。")
+
+        ensure_complementary_estimator(cf)
 
         lg = LogConfig(name="attitude", period_in_ms=100)
         lg.add_variable("stabilizer.roll", "float")
