@@ -446,7 +446,7 @@ CONFIG_ROLL_CALIB=0
 #
 # power distribution
 #
-CONFIG_PITCH_DISTRIBUTION_INVERTED=y
+# CONFIG_PITCH_DISTRIBUTION_INVERTED is not set
 # end of power distribution
 
 #

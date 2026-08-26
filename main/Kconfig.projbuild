@@ -139,7 +139,6 @@ menu "ESPDrone Config"
     menu "power distribution"
         config PITCH_DISTRIBUTION_INVERTED
             bool "Invert the pitch term in the motor mix"
-            default y if TARGET_PYDRONE_S3
             default n
             help
                 Flips the sign of the pitch contribution in

@@ -1043,6 +1043,1920 @@ I've spotted a clear anomaly in the log and kicked off a code search to confirm 
 
 ✻ Cogitated for 3m 45s · done 11:04
 
+再次确认：桨叶已拆除、飞机已固定在支架上（转不动）、你会全程盯着电机。
+确认无误请输入 yes 继续: yes
+Could not save cache, no writable directory
+Could not save cache, no writable directory
+已连接。
+当前 stabilizer.estimator = 2 (kalman)
+检测到当前是 kalman，强制切换为 complementary...
+当前 stabilizer.estimator = 2 (kalman)
+当前 stabilizer.estimator = 1 (complementary)
+当前 stabilizer.estimator = 1 (complementary)
+当前 stabilizer.estimator = 1 (complementary)
+当前 flightmode.althold=1  flightmode.poshold=1
+检测到 althold/poshold 开启，强制关闭，改用原始 thrust/roll/pitch/yaw...
+当前 flightmode.althold=0  flightmode.poshold=0
+等待第一帧 motor 日志，确认遥测通路正常...
+t=   22168  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    n/a,    n/a,    n/a)  |  est(r,p,y)=(   n/a,   n/a,   n/a)
+日志已确认在收，即将开始发送推力基线（斜坡爬升，避免电流冲击）。
+
+即将开始：thrust 从 0 斜坡爬升到低速基线，稳定后依次对 roll/pitch/yaw 各发一正一负
+的短脉冲阶跃，机身应保持固定不动，只看 motor.m1~m4 的加减速方向对不对。
+每个阶跃结束后会真的把 thrust 打到 0 一瞬间再爬回基线，触发固件清零积分，
+避免上一个阶跃的残留污染下一个阶跃的读数（这个过程中电机会短暂停一下，是预期行为）。
+rateP(r,p,y) 是三个轴角速度环的 P 分量，用来判断是不是积分饱和触发了自动保护。
+est(r,p,y) 是姿态估计的实际角度：机身固定在支架上应该基本不动（接近阶跃前的基线），
+如果阶跃时 est 也跟着明显偏离，说明支架不是刚性固定、有间隙/形变，会影响结论。
+按 Ctrl+C 可随时提前结束测试。
+
+t=   22218  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    309,   -154,     99)  |  est(r,p,y)=( -0.21,  0.10, -0.00)
+t=   22268  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    333,   -168,    128)  |  est(r,p,y)=( -0.22,  0.11, -0.01)
+t=   22318  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    339,   -166,     -9)  |  est(r,p,y)=( -0.22,  0.11, -0.01)
+t=   22368  m1=  1371  m2=  1205  m3=  1601  m4=  1823  |  rateP(r,p,y)=(    352,   -164,     -3)  |  est(r,p,y)=( -0.23,  0.11, -0.01)
+t=   22418  m1=  2137  m2=  1943  m3=  2353  m4=  2567  |  rateP(r,p,y)=(    360,   -167,     14)  |  est(r,p,y)=( -0.24,  0.12, -0.01)
+t=   22468  m1=  2859  m2=  2623  m3=  3145  m4=  3373  |  rateP(r,p,y)=(    374,   -177,      6)  |  est(r,p,y)=( -0.24,  0.12, -0.01)
+t=   22518  m1=  3616  m2=  3388  m3=  3890  m4=  4106  |  rateP(r,p,y)=(    406,   -189,     -2)  |  est(r,p,y)=( -0.25,  0.12, -0.01)
+t=   22568  m1=  4378  m2=  4064  m3=  4642  m4=  4916  |  rateP(r,p,y)=(    393,   -204,     -4)  |  est(r,p,y)=( -0.25,  0.12, -0.01)
+t=   22618  m1=  5076  m2=  4828  m3=  5402  m4=  5694  |  rateP(r,p,y)=(    417,   -185,    -11)  |  est(r,p,y)=( -0.26,  0.12, -0.01)
+t=   22668  m1=  5803  m2=  5501  m3=  6203  m4=  6493  |  rateP(r,p,y)=(    435,   -189,     11)  |  est(r,p,y)=( -0.26,  0.12, -0.01)
+t=   22718  m1=  6583  m2=  6203  m3=  6925  m4=  7289  |  rateP(r,p,y)=(    457,   -216,      1)  |  est(r,p,y)=( -0.27,  0.12, -0.01)
+t=   22768  m1=  7295  m2=  6909  m3=  7685  m4=  8111  |  rateP(r,p,y)=(    463,   -227,     -5)  |  est(r,p,y)=( -0.28,  0.13, -0.01)
+t=   22818  m1=  8044  m2=  7624  m3=  8496  m4=  8836  |  rateP(r,p,y)=(    492,   -240,     10)  |  est(r,p,y)=( -0.28,  0.13, -0.01)
+t=   22868  m1=  8771  m2=  8323  m3=  9237  m4=  9669  |  rateP(r,p,y)=(    500,   -229,    -20)  |  est(r,p,y)=( -0.28,  0.13, -0.01)
+t=   22918  m1=  9523  m2=  8991  m3=  9997  m4= 10489  |  rateP(r,p,y)=(    500,   -238,     -5)  |  est(r,p,y)=( -0.29,  0.13, -0.01)
+t=   22968  m1= 10186  m2=  9740  m3= 10814  m4= 11260  |  rateP(r,p,y)=(    525,   -254,    -11)  |  est(r,p,y)=( -0.29,  0.14, -0.01)
+t=   23018  m1= 10935  m2= 10419  m3= 11563  m4= 12083  |  rateP(r,p,y)=(    564,   -242,      0)  |  est(r,p,y)=( -0.29,  0.14, -0.01)
+t=   23068  m1= 11665  m2= 11117  m3= 12361  m4= 12857  |  rateP(r,p,y)=(    561,   -248,      2)  |  est(r,p,y)=( -0.30,  0.14, -0.01)
+t=   23118  m1= 12454  m2= 11822  m3= 13054  m4= 13670  |  rateP(r,p,y)=(    596,   -269,    -18)  |  est(r,p,y)=( -0.30,  0.14, -0.01)
+t=   23168  m1= 13136  m2= 12532  m3= 13856  m4= 14476  |  rateP(r,p,y)=(    585,   -293,     -5)  |  est(r,p,y)=( -0.30,  0.14, -0.01)
+t=   23218  m1= 13918  m2= 13236  m3= 14552  m4= 15294  |  rateP(r,p,y)=(    601,   -300,      4)  |  est(r,p,y)=( -0.31,  0.15, -0.01)
+t=   23268  m1= 14649  m2= 13911  m3= 15365  m4= 16075  |  rateP(r,p,y)=(    610,   -299,     16)  |  est(r,p,y)=( -0.31,  0.15, -0.01)
+基线已到 15000，停留 1.0s 确认稳定...
+t=   23318  m1= 14611  m2= 13907  m3= 15383  m4= 16099  |  rateP(r,p,y)=(    630,   -308,     -8)  |  est(r,p,y)=( -0.31,  0.15, -0.01)
+t=   23368  m1= 14599  m2= 13829  m3= 15375  m4= 16197  |  rateP(r,p,y)=(    640,   -305,      3)  |  est(r,p,y)=( -0.32,  0.15, -0.01)
+t=   23418  m1= 14566  m2= 13760  m3= 15472  m4= 16202  |  rateP(r,p,y)=(    668,   -313,     13)  |  est(r,p,y)=( -0.32,  0.15, -0.01)
+t=   23468  m1= 14545  m2= 13745  m3= 15433  m4= 16277  |  rateP(r,p,y)=(    688,   -314,    -20)  |  est(r,p,y)=( -0.33,  0.15, -0.01)
+t=   23518  m1= 14536  m2= 13652  m3= 15462  m4= 16350  |  rateP(r,p,y)=(    692,   -328,     12)  |  est(r,p,y)=( -0.33,  0.16, -0.01)
+t=   23568  m1= 14499  m2= 13617  m3= 15495  m4= 16389  |  rateP(r,p,y)=(    712,   -341,      1)  |  est(r,p,y)=( -0.33,  0.16, -0.01)
+t=   23618  m1= 14490  m2= 13572  m3= 15526  m4= 16412  |  rateP(r,p,y)=(    724,   -342,      3)  |  est(r,p,y)=( -0.34,  0.16, -0.01)
+t=   23668  m1= 14501  m2= 13487  m3= 15501  m4= 16511  |  rateP(r,p,y)=(    730,   -351,     -9)  |  est(r,p,y)=( -0.34,  0.16, -0.01)
+t=   23718  m1= 14425  m2= 13429  m3= 15569  m4= 16577  |  rateP(r,p,y)=(    746,   -361,     -1)  |  est(r,p,y)=( -0.34,  0.16, -0.01)
+t=   23768  m1= 14377  m2= 13397  m3= 15599  m4= 16627  |  rateP(r,p,y)=(    770,   -357,      3)  |  est(r,p,y)=( -0.35,  0.16, -0.01)
+t=   23818  m1= 14407  m2= 13339  m3= 15583  m4= 16671  |  rateP(r,p,y)=(    781,   -371,     12)  |  est(r,p,y)=( -0.35,  0.16, -0.01)
+t=   23868  m1= 14390  m2= 13266  m3= 15608  m4= 16736  |  rateP(r,p,y)=(    792,   -367,      5)  |  est(r,p,y)=( -0.35,  0.16, -0.01)
+t=   23918  m1= 14328  m2= 13236  m3= 15644  m4= 16792  |  rateP(r,p,y)=(    816,   -387,      1)  |  est(r,p,y)=( -0.35,  0.16, -0.01)
+t=   23968  m1= 14331  m2= 13129  m3= 15655  m4= 16885  |  rateP(r,p,y)=(    822,   -388,     14)  |  est(r,p,y)=( -0.36,  0.16, -0.01)
+t=   24018  m1= 14264  m2= 13078  m3= 15726  m4= 16932  |  rateP(r,p,y)=(    855,   -402,      7)  |  est(r,p,y)=( -0.36,  0.17, -0.02)
+t=   24068  m1= 14268  m2= 13016  m3= 15738  m4= 16978  |  rateP(r,p,y)=(    870,   -395,     12)  |  est(r,p,y)=( -0.36,  0.17, -0.01)
+t=   24118  m1= 14214  m2= 12960  m3= 15752  m4= 17074  |  rateP(r,p,y)=(    875,   -398,     -4)  |  est(r,p,y)=( -0.37,  0.17, -0.01)
+t=   24168  m1= 14206  m2= 12904  m3= 15756  m4= 17134  |  rateP(r,p,y)=(    893,   -401,     17)  |  est(r,p,y)=( -0.37,  0.17, -0.01)
+t=   24218  m1= 14220  m2= 12806  m3= 15780  m4= 17194  |  rateP(r,p,y)=(    894,   -407,     19)  |  est(r,p,y)=( -0.37,  0.17, -0.01)
+t=   24268  m1= 14163  m2= 12737  m3= 15831  m4= 17269  |  rateP(r,p,y)=(    924,   -450,     -1)  |  est(r,p,y)=( -0.38,  0.17, -0.02)
+
+>>> [第1轮] ROLL  +5deg  保持 0.3s  期望 m1,m2 变小；m3,m4 变大
+t=   24318  m1= 14147  m2= 12659  m3= 15855  m4= 17339  |  rateP(r,p,y)=(    942,   -438,      3)  |  est(r,p,y)=( -0.38,  0.17, -0.02)
+t=   24368  m1=  9997  m2=  8471  m3= 19977  m4= 21555  |  rateP(r,p,y)=(    953,   -444,     -2)  |  est(r,p,y)=( -0.38,  0.18, -0.01)
+t=   24418  m1=  9595  m2=  8003  m3= 20393  m4= 22009  |  rateP(r,p,y)=(   8505,   -461,     13)  |  est(r,p,y)=( -0.38,  0.18, -0.02)
+t=   24468  m1=  9097  m2=  7529  m3= 20861  m4= 22513  |  rateP(r,p,y)=(   8689,   -470,     11)  |  est(r,p,y)=( -0.38,  0.18, -0.02)
+t=   24518  m1=  8667  m2=  7011  m3= 21313  m4= 23009  |  rateP(r,p,y)=(   8852,   -457,     20)  |  est(r,p,y)=( -0.39,  0.18, -0.02)
+t=   24568  m1=  8170  m2=  6460  m3= 21808  m4= 23562  |  rateP(r,p,y)=(   9024,   -484,      9)  |  est(r,p,y)=( -0.39,  0.18, -0.02)
+    回中：thrust 打 0 触发积分复位（0.15s）...
+t=   24618  m1=  7728  m2=  5978  m3= 22230  m4= 24064  |  rateP(r,p,y)=(   9224,   -487,     10)  |  est(r,p,y)=( -0.39,  0.18, -0.02)
+t=   24668  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(   9374,   -495,     20)  |  est(r,p,y)=( -0.40,  0.19, -0.02)
+t=   24719  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    612,   -278,    -23)  |  est(r,p,y)=( -0.40,  0.19, -0.02)
+t=   24768  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    605,   -288,      2)  |  est(r,p,y)=( -0.40,  0.19, -0.02)
+t=   24818  m1=  2834  m2=  2486  m3=  3190  m4=  3490  |  rateP(r,p,y)=(    603,   -283,     -5)  |  est(r,p,y)=( -0.41,  0.19, -0.02)
+t=   24868  m1=  5813  m2=  5457  m3=  6207  m4=  6523  |  rateP(r,p,y)=(    619,   -287,     -3)  |  est(r,p,y)=( -0.41,  0.19, -0.02)
+t=   24919  m1=  8793  m2=  8425  m3=  9223  m4=  9559  |  rateP(r,p,y)=(    638,   -286,    -10)  |  est(r,p,y)=( -0.41,  0.19, -0.02)
+t=   24968  m1= 11760  m2= 11316  m3= 12268  m4= 12656  |  rateP(r,p,y)=(    641,   -298,     -9)  |  est(r,p,y)=( -0.41,  0.19, -0.02)
+t=   25018  m1= 14768  m2= 14280  m3= 15236  m4= 15716  |  rateP(r,p,y)=(    665,   -310,    -14)  |  est(r,p,y)=( -0.41,  0.19, -0.02)
+    已回到基线 15000，停留 0.5s 确认稳定...
+t=   25068  m1= 14751  m2= 14215  m3= 15253  m4= 15781  |  rateP(r,p,y)=(    681,   -324,     -2)  |  est(r,p,y)=( -0.42,  0.19, -0.02)
+t=   25118  m1= 14735  m2= 14189  m3= 15263  m4= 15813  |  rateP(r,p,y)=(    683,   -331,     -2)  |  est(r,p,y)=( -0.42,  0.20, -0.02)
+t=   25168  m1= 14661  m2= 14129  m3= 15349  m4= 15861  |  rateP(r,p,y)=(    710,   -329,      2)  |  est(r,p,y)=( -0.42,  0.20, -0.02)
+t=   25218  m1= 14639  m2= 14055  m3= 15391  m4= 15915  |  rateP(r,p,y)=(    725,   -326,     -6)  |  est(r,p,y)=( -0.42,  0.20, -0.02)
+t=   25268  m1= 14657  m2= 13997  m3= 15357  m4= 15989  |  rateP(r,p,y)=(    732,   -337,    -16)  |  est(r,p,y)=( -0.42,  0.20, -0.02)
+t=   25318  m1= 14589  m2= 13941  m3= 15405  m4= 16065  |  rateP(r,p,y)=(    763,   -354,     -7)  |  est(r,p,y)=( -0.42,  0.20, -0.02)
+t=   25368  m1= 14577  m2= 13873  m3= 15423  m4= 16127  |  rateP(r,p,y)=(    786,   -349,      3)  |  est(r,p,y)=( -0.43,  0.20, -0.02)
+t=   25418  m1= 14549  m2= 13833  m3= 15461  m4= 16157  |  rateP(r,p,y)=(    807,   -370,      1)  |  est(r,p,y)=( -0.43,  0.20, -0.02)
+t=   25468  m1= 14547  m2= 13741  m3= 15459  m4= 16253  |  rateP(r,p,y)=(    813,   -360,      1)  |  est(r,p,y)=( -0.43,  0.20, -0.02)
+t=   25518  m1= 14512  m2= 13704  m3= 15492  m4= 16292  |  rateP(r,p,y)=(    840,   -386,     -3)  |  est(r,p,y)=( -0.43,  0.20, -0.02)
+
+>>> [第1轮] ROLL  -5deg  保持 0.3s  期望 m1,m2 变大；m3,m4 变小
+t=   25568  m1= 18442  m2= 17600  m3= 11562  m4= 12396  |  rateP(r,p,y)=(    844,   -385,     -1)  |  est(r,p,y)=( -0.44,  0.20, -0.02)
+t=   25618  m1= 18852  m2= 17968  m3= 11152  m4= 12028  |  rateP(r,p,y)=(  -6607,   -381,     -3)  |  est(r,p,y)=( -0.44,  0.20, -0.02)
+t=   25668  m1= 19248  m2= 18252  m3= 10790  m4= 11710  |  rateP(r,p,y)=(  -6767,   -394,     -3)  |  est(r,p,y)=( -0.44,  0.20, -0.02)
+t=   25718  m1= 19607  m2= 18611  m3= 10367  m4= 11415  |  rateP(r,p,y)=(  -6916,   -419,     -4)  |  est(r,p,y)=( -0.44,  0.20, -0.02)
+t=   25768  m1= 20018  m2= 18988  m3=  9988  m4= 11006  |  rateP(r,p,y)=(  -7041,   -426,     14)  |  est(r,p,y)=( -0.44,  0.20, -0.02)
+t=   25818  m1= 20452  m2= 19356  m3=  9558  m4= 10634  |  rateP(r,p,y)=(  -7179,   -425,     -3)  |  est(r,p,y)=( -0.44,  0.20, -0.02)
+t=   25868  m1= 20827  m2= 19725  m3=  9191  m4= 10257  |  rateP(r,p,y)=(  -7330,   -429,     -5)  |  est(r,p,y)=( -0.44,  0.20, -0.02)
+    回中：thrust 打 0 触发积分复位（0.15s）...
+t=   25918  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(  -7468,   -430,    -11)  |  est(r,p,y)=( -0.44,  0.20, -0.02)
+t=   25968  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    659,   -301,      1)  |  est(r,p,y)=( -0.45,  0.20, -0.02)
+t=   26018  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    646,   -286,    -13)  |  est(r,p,y)=( -0.45,  0.20, -0.02)
+t=   26068  m1=  2816  m2=  2470  m3=  3174  m4=  3540  |  rateP(r,p,y)=(    650,   -295,      7)  |  est(r,p,y)=( -0.45,  0.20, -0.02)
+t=   26118  m1=  5799  m2=  5413  m3=  6207  m4=  6581  |  rateP(r,p,y)=(    671,   -319,     15)  |  est(r,p,y)=( -0.45,  0.20, -0.02)
+t=   26168  m1=  5742  m2=  5346  m3=  6274  m4=  6638  |  rateP(r,p,y)=(    690,   -311,     -3)  |  est(r,p,y)=( -0.45,  0.21, -0.02)
+t=   26218  m1=  8747  m2=  8331  m3=  9239  m4=  9683  |  rateP(r,p,y)=(    709,   -322,     -9)  |  est(r,p,y)=( -0.45,  0.20, -0.02)
+t=   26268  m1= 11707  m2= 11241  m3= 12289  m4= 12763  |  rateP(r,p,y)=(    712,   -325,      8)  |  est(r,p,y)=( -0.45,  0.20, -0.02)
+t=   26318  m1= 14704  m2= 14226  m3= 15266  m4= 15804  |  rateP(r,p,y)=(    736,   -325,      3)  |  est(r,p,y)=( -0.45,  0.21, -0.02)
+    已回到基线 15000，停留 0.5s 确认稳定...
+t=   26368  m1= 14687  m2= 14159  m3= 15309  m4= 15845  |  rateP(r,p,y)=(    745,   -340,     15)  |  est(r,p,y)=( -0.45,  0.21, -0.02)
+t=   26418  m1= 14669  m2= 14081  m3= 15311  m4= 15939  |  rateP(r,p,y)=(    758,   -349,      3)  |  est(r,p,y)=( -0.46,  0.21, -0.03)
+t=   26468  m1= 14637  m2= 14029  m3= 15341  m4= 15993  |  rateP(r,p,y)=(    774,   -365,     10)  |  est(r,p,y)=( -0.46,  0.21, -0.03)
+t=   26518  m1= 14590  m2= 13988  m3= 15406  m4= 16016  |  rateP(r,p,y)=(    799,   -358,     11)  |  est(r,p,y)=( -0.46,  0.21, -0.03)
+t=   26568  m1= 14550  m2= 13916  m3= 15410  m4= 16124  |  rateP(r,p,y)=(    816,   -359,      2)  |  est(r,p,y)=( -0.46,  0.21, -0.03)
+t=   26618  m1= 14565  m2= 13807  m3= 15405  m4= 16223  |  rateP(r,p,y)=(    826,   -354,     20)  |  est(r,p,y)=( -0.46,  0.21, -0.03)
+t=   26668  m1= 14507  m2= 13787  m3= 15465  m4= 16241  |  rateP(r,p,y)=(    848,   -399,     22)  |  est(r,p,y)=( -0.46,  0.21, -0.03)
+t=   26718  m1= 14518  m2= 13726  m3= 15468  m4= 16288  |  rateP(r,p,y)=(    869,   -394,     14)  |  est(r,p,y)=( -0.46,  0.21, -0.03)
+t=   26768  m1= 14504  m2= 13664  m3= 15482  m4= 16350  |  rateP(r,p,y)=(    879,   -397,      7)  |  est(r,p,y)=( -0.47,  0.21, -0.03)
+t=   26818  m1= 14451  m2= 13583  m3= 15547  m4= 16419  |  rateP(r,p,y)=(    891,   -421,      6)  |  est(r,p,y)=( -0.47,  0.21, -0.03)
+
+>>> [第1轮] PITCH +5deg  保持 0.3s  期望 m1,m4 变大；m2,m3 变小
+t=   26868  m1= 18433  m2=  9521  m3= 11575  m4= 20471  |  rateP(r,p,y)=(    917,   -418,      1)  |  est(r,p,y)=( -0.47,  0.21, -0.03)
+t=   26918  m1= 18785  m2=  9075  m3= 11205  m4= 20935  |  rateP(r,p,y)=(    915,  -7911,      5)  |  est(r,p,y)=( -0.47,  0.21, -0.03)
+t=   26968  m1= 19162  m2=  8562  m3= 10824  m4= 21452  |  rateP(r,p,y)=(    940,  -8069,     10)  |  est(r,p,y)=( -0.47,  0.21, -0.03)
+t=   27018  m1= 19563  m2=  8085  m3= 10409  m4= 21943  |  rateP(r,p,y)=(    958,  -8232,     22)  |  est(r,p,y)=( -0.47,  0.21, -0.03)
+t=   27068  m1= 19998  m2=  7576  m3=  9998  m4= 22428  |  rateP(r,p,y)=(    966,  -8389,     14)  |  est(r,p,y)=( -0.47,  0.21, -0.03)
+t=   27118  m1= 20379  m2=  7091  m3=  9593  m4= 22937  |  rateP(r,p,y)=(    984,  -8566,      1)  |  est(r,p,y)=( -0.47,  0.21, -0.03)
+    回中：thrust 打 0 触发积分复位（0.15s）...
+t=   27168  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(   1004,  -8722,     14)  |  est(r,p,y)=( -0.47,  0.21, -0.03)
+t=   27218  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    706,   -313,     -0)  |  est(r,p,y)=( -0.47,  0.22, -0.03)
+t=   27268  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    704,   -334,      3)  |  est(r,p,y)=( -0.48,  0.22, -0.03)
+t=   27318  m1=  2747  m2=  2485  m3=  3159  m4=  3609  |  rateP(r,p,y)=(    704,   -333,    -11)  |  est(r,p,y)=( -0.48,  0.22, -0.03)
+t=   27368  m1=  5789  m2=  5443  m3=  6197  m4=  6571  |  rateP(r,p,y)=(    742,   -343,     48)  |  est(r,p,y)=( -0.48,  0.22, -0.04)
+t=   27418  m1=  8732  m2=  8352  m3=  9258  m4=  9658  |  rateP(r,p,y)=(    728,   -321,      7)  |  est(r,p,y)=( -0.48,  0.22, -0.04)
+t=   27468  m1= 11741  m2= 11311  m3= 12229  m4= 12719  |  rateP(r,p,y)=(    753,   -327,      5)  |  est(r,p,y)=( -0.48,  0.22, -0.04)
+t=   27518  m1= 14758  m2= 14232  m3= 15214  m4= 15796  |  rateP(r,p,y)=(    749,   -347,     16)  |  est(r,p,y)=( -0.48,  0.22, -0.04)
+    已回到基线 15000，停留 0.5s 确认稳定...
+t=   27568  m1= 14715  m2= 14149  m3= 15291  m4= 15845  |  rateP(r,p,y)=(    767,   -363,     14)  |  est(r,p,y)=( -0.48,  0.22, -0.04)
+t=   27618  m1= 14661  m2= 14117  m3= 15325  m4= 15897  |  rateP(r,p,y)=(    787,   -380,    -10)  |  est(r,p,y)=( -0.48,  0.22, -0.04)
+t=   27668  m1= 14642  m2= 14056  m3= 15340  m4= 15962  |  rateP(r,p,y)=(    808,   -369,      8)  |  est(r,p,y)=( -0.48,  0.22, -0.04)
+t=   27718  m1= 14602  m2= 13992  m3= 15384  m4= 16022  |  rateP(r,p,y)=(    825,   -382,      9)  |  est(r,p,y)=( -0.48,  0.22, -0.04)
+t=   27768  m1= 14598  m2= 13934  m3= 15380  m4= 16088  |  rateP(r,p,y)=(    843,   -381,      7)  |  est(r,p,y)=( -0.48,  0.22, -0.04)
+t=   27818  m1= 14529  m2= 13885  m3= 15401  m4= 16185  |  rateP(r,p,y)=(    847,   -398,     11)  |  est(r,p,y)=( -0.49,  0.22, -0.04)
+t=   27868  m1= 14540  m2= 13822  m3= 15442  m4= 16196  |  rateP(r,p,y)=(    876,   -400,     35)  |  est(r,p,y)=( -0.49,  0.22, -0.04)
+t=   27918  m1= 14498  m2= 13716  m3= 15480  m4= 16306  |  rateP(r,p,y)=(    885,   -398,     23)  |  est(r,p,y)=( -0.49,  0.22, -0.04)
+t=   27968  m1= 14500  m2= 13636  m3= 15476  m4= 16388  |  rateP(r,p,y)=(    910,   -424,     11)  |  est(r,p,y)=( -0.49,  0.22, -0.04)
+t=   28018  m1= 14495  m2= 13603  m3= 15487  m4= 16415  |  rateP(r,p,y)=(    928,   -435,     12)  |  est(r,p,y)=( -0.49,  0.22, -0.04)
+
+>>> [第1轮] PITCH -5deg  保持 0.3s  期望 m1,m4 变小；m2,m3 变大
+t=   28068  m1= 10645  m2= 17261  m3= 19307  m4= 12787  |  rateP(r,p,y)=(    940,   -442,      9)  |  est(r,p,y)=( -0.49,  0.23, -0.04)
+t=   28118  m1= 10269  m2= 17557  m3= 19739  m4= 12435  |  rateP(r,p,y)=(    966,   6954,     24)  |  est(r,p,y)=( -0.49,  0.23, -0.04)
+t=   28168  m1=  9792  m2= 17936  m3= 20166  m4= 12106  |  rateP(r,p,y)=(    975,   7109,    -10)  |  est(r,p,y)=( -0.49,  0.23, -0.04)
+t=   28218  m1=  9401  m2= 18277  m3= 20595  m4= 11727  |  rateP(r,p,y)=(   1007,   7254,     21)  |  est(r,p,y)=( -0.49,  0.23, -0.04)
+t=   28268  m1=  8891  m2= 18629  m3= 21085  m4= 11395  |  rateP(r,p,y)=(    994,   7411,      7)  |  est(r,p,y)=( -0.49,  0.23, -0.04)
+t=   28318  m1=  8438  m2= 18966  m3= 21558  m4= 11038  |  rateP(r,p,y)=(   1024,   7555,     12)  |  est(r,p,y)=( -0.49,  0.23, -0.04)
+    回中：thrust 打 0 触发积分复位（0.15s）...
+t=   28368  m1=  7977  m2= 19389  m3= 21977  m4= 10657  |  rateP(r,p,y)=(   1040,   7719,      2)  |  est(r,p,y)=( -0.49,  0.23, -0.04)
+t=   28418  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(   1041,   7864,     32)  |  est(r,p,y)=( -0.49,  0.23, -0.05)
+t=   28468  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    742,   -343,     -4)  |  est(r,p,y)=( -0.50,  0.23, -0.04)
+t=   28518  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    741,   -350,    -14)  |  est(r,p,y)=( -0.50,  0.23, -0.05)
+t=   28568  m1=  2796  m2=  2402  m3=  3196  m4=  3606  |  rateP(r,p,y)=(    748,   -344,      4)  |  est(r,p,y)=( -0.50,  0.23, -0.05)
+t=   28618  m1=  5803  m2=  5349  m3=  6211  m4=  6637  |  rateP(r,p,y)=(    769,   -354,      5)  |  est(r,p,y)=( -0.50,  0.23, -0.04)
+t=   28668  m1=  8736  m2=  8318  m3=  9254  m4=  9692  |  rateP(r,p,y)=(    756,   -369,    -17)  |  est(r,p,y)=( -0.50,  0.23, -0.04)
+t=   28718  m1= 11741  m2= 11187  m3= 12271  m4= 12801  |  rateP(r,p,y)=(    782,   -351,      6)  |  est(r,p,y)=( -0.50,  0.23, -0.04)
+t=   28768  m1= 14701  m2= 14155  m3= 15293  m4= 15851  |  rateP(r,p,y)=(    796,   -387,     -2)  |  est(r,p,y)=( -0.50,  0.23, -0.04)
+    已回到基线 15000，停留 0.5s 确认稳定...
+t=   28818  m1= 14672  m2= 14092  m3= 15316  m4= 15920  |  rateP(r,p,y)=(    822,   -384,      3)  |  est(r,p,y)=( -0.50,  0.23, -0.04)
+t=   28868  m1= 14653  m2= 13991  m3= 15345  m4= 16011  |  rateP(r,p,y)=(    822,   -391,     24)  |  est(r,p,y)=( -0.50,  0.23, -0.04)
+t=   28918  m1= 14643  m2= 13947  m3= 15339  m4= 16071  |  rateP(r,p,y)=(    857,   -403,      2)  |  est(r,p,y)=( -0.50,  0.23, -0.05)
+t=   28968  m1= 14605  m2= 13847  m3= 15399  m4= 16149  |  rateP(r,p,y)=(    864,   -417,      9)  |  est(r,p,y)=( -0.50,  0.23, -0.05)
+t=   29018  m1= 14540  m2= 13796  m3= 15460  m4= 16204  |  rateP(r,p,y)=(    893,   -426,     -2)  |  est(r,p,y)=( -0.50,  0.23, -0.05)
+t=   29068  m1= 14587  m2= 13781  m3= 15435  m4= 16197  |  rateP(r,p,y)=(    912,   -412,      0)  |  est(r,p,y)=( -0.50,  0.23, -0.04)
+t=   29118  m1= 14563  m2= 13627  m3= 15497  m4= 16313  |  rateP(r,p,y)=(    900,   -424,    -11)  |  est(r,p,y)=( -0.50,  0.23, -0.04)
+t=   29168  m1= 14492  m2= 13630  m3= 15502  m4= 16376  |  rateP(r,p,y)=(    937,   -450,    -31)  |  est(r,p,y)=( -0.50,  0.23, -0.04)
+t=   29218  m1= 14461  m2= 13555  m3= 15523  m4= 16461  |  rateP(r,p,y)=(    947,   -451,      4)  |  est(r,p,y)=( -0.51,  0.24, -0.04)
+t=   29268  m1= 14394  m2= 13472  m3= 15598  m4= 16536  |  rateP(r,p,y)=(    959,   -453,      4)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+
+>>> [第1轮] YAW   +25deg/s  保持 0.3s  期望 m1,m3 变大；m2,m4 变小
+t=   29318  m1= 15957  m2= 11839  m3= 17137  m4= 15067  |  rateP(r,p,y)=(   1006,   -459,      5)  |  est(r,p,y)=( -0.51,  0.24, -0.04)
+t=   29368  m1= 16738  m2= 10974  m3= 17972  m4= 14316  |  rateP(r,p,y)=(   1012,   -469,  -1542)  |  est(r,p,y)=( -0.51,  0.24, -0.04)
+t=   29418  m1= 17504  m2= 10094  m3= 18790  m4= 13612  |  rateP(r,p,y)=(   1017,   -478,  -2338)  |  est(r,p,y)=( -0.51,  0.24, -0.04)
+t=   29468  m1= 18320  m2=  9182  m3= 19640  m4= 12858  |  rateP(r,p,y)=(   1041,   -474,  -3114)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   29518  m1= 19140  m2=  8238  m3= 20530  m4= 12092  |  rateP(r,p,y)=(   1058,   -488,  -3960)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   29568  m1= 19920  m2=  7368  m3= 21354  m4= 11358  |  rateP(r,p,y)=(   1069,   -502,  -4754)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+    回中：thrust 打 0 触发积分复位（0.15s）...
+t=   29618  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(   1087,   -511,  -5565)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   29668  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    750,   -365,     10)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   29718  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    751,   -342,      1)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   29768  m1=  2783  m2=  2417  m3=  3209  m4=  3591  |  rateP(r,p,y)=(    742,   -353,      6)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   29818  m1=  5775  m2=  5361  m3=  6219  m4=  6645  |  rateP(r,p,y)=(    769,   -362,      4)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   29868  m1=  8772  m2=  8302  m3=  9220  m4=  9706  |  rateP(r,p,y)=(    774,   -371,      3)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   29918  m1= 11756  m2= 11234  m3= 12252  m4= 12758  |  rateP(r,p,y)=(    790,   -363,      5)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   29968  m1= 14691  m2= 14195  m3= 15315  m4= 15799  |  rateP(r,p,y)=(    808,   -389,     -5)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+    已回到基线 15000，停留 0.5s 确认稳定...
+t=   30018  m1= 14705  m2= 14101  m3= 15291  m4= 15903  |  rateP(r,p,y)=(    832,   -377,     -4)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   30068  m1= 14670  m2= 14026  m3= 15334  m4= 15970  |  rateP(r,p,y)=(    845,   -389,      3)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   30118  m1= 14608  m2= 13986  m3= 15374  m4= 16032  |  rateP(r,p,y)=(    859,   -404,     -3)  |  est(r,p,y)=( -0.51,  0.23, -0.05)
+t=   30168  m1= 14574  m2= 13924  m3= 15418  m4= 16084  |  rateP(r,p,y)=(    890,   -407,     10)  |  est(r,p,y)=( -0.51,  0.23, -0.05)
+t=   30218  m1= 14567  m2= 13841  m3= 15433  m4= 16159  |  rateP(r,p,y)=(    895,   -402,      4)  |  est(r,p,y)=( -0.51,  0.23, -0.05)
+t=   30268  m1= 14551  m2= 13785  m3= 15443  m4= 16221  |  rateP(r,p,y)=(    907,   -421,      0)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   30318  m1= 14519  m2= 13677  m3= 15497  m4= 16307  |  rateP(r,p,y)=(    926,   -417,      3)  |  est(r,p,y)=( -0.51,  0.23, -0.05)
+t=   30368  m1= 14512  m2= 13656  m3= 15492  m4= 16340  |  rateP(r,p,y)=(    940,   -430,     -9)  |  est(r,p,y)=( -0.51,  0.23, -0.05)
+t=   30418  m1= 14448  m2= 13594  m3= 15536  m4= 16422  |  rateP(r,p,y)=(    954,   -453,     -3)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   30468  m1= 14438  m2= 13488  m3= 15560  m4= 16514  |  rateP(r,p,y)=(    982,   -437,      8)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   30518  m1= 14397  m2= 13373  m3= 15595  m4= 16635  |  rateP(r,p,y)=(    976,   -460,      1)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+
+>>> [第1轮] YAW   -25deg/s  保持 0.3s  期望 m1,m3 变小；m2,m4 变大
+t=   30568  m1= 12751  m2= 15003  m3= 13887  m4= 18359  |  rateP(r,p,y)=(   1017,   -468,      5)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   30618  m1= 11885  m2= 15745  m3= 13159  m4= 19211  |  rateP(r,p,y)=(   1009,   -487,   1675)  |  est(r,p,y)=( -0.51,  0.23, -0.05)
+t=   30668  m1= 11064  m2= 16460  m3= 12402  m4= 20074  |  rateP(r,p,y)=(   1045,   -474,   2460)  |  est(r,p,y)=( -0.51,  0.23, -0.05)
+t=   30718  m1= 10175  m2= 17187  m3= 11625  m4= 21013  |  rateP(r,p,y)=(   1054,   -481,   3260)  |  est(r,p,y)=( -0.51,  0.23, -0.05)
+t=   30768  m1=  9336  m2= 17980  m3= 10762  m4= 21922  |  rateP(r,p,y)=(   1091,   -485,   4070)  |  est(r,p,y)=( -0.51,  0.23, -0.05)
+t=   30818  m1=  8415  m2= 18719  m3=  9967  m4= 22899  |  rateP(r,p,y)=(   1086,   -514,   4866)  |  est(r,p,y)=( -0.51,  0.23, -0.05)
+t=   30868  m1=  7533  m2= 19527  m3=  9115  m4= 23825  |  rateP(r,p,y)=(   1110,   -516,   5728)  |  est(r,p,y)=( -0.51,  0.23, -0.05)
+    回中：thrust 打 0 触发积分复位（0.15s）...
+t=   30918  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(   1120,   -523,   6521)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   30968  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    776,   -368,     -9)  |  est(r,p,y)=( -0.52,  0.24, -0.05)
+t=   31018  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    753,   -347,     11)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   31068  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    771,   -363,      4)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   31118  m1=  2774  m2=  2390  m3=  3196  m4=  3640  |  rateP(r,p,y)=(    768,   -366,      7)  |  est(r,p,y)=( -0.52,  0.24, -0.05)
+t=   31168  m1=  5741  m2=  5349  m3=  6243  m4=  6667  |  rateP(r,p,y)=(    777,   -374,     16)  |  est(r,p,y)=( -0.52,  0.24, -0.05)
+t=   31218  m1=  8723  m2=  8253  m3=  9263  m4=  9761  |  rateP(r,p,y)=(    793,   -359,      9)  |  est(r,p,y)=( -0.51,  0.24, -0.05)
+t=   31268  m1= 11730  m2= 11220  m3= 12262  m4= 12788  |  rateP(r,p,y)=(    820,   -372,      7)  |  est(r,p,y)=( -0.52,  0.24, -0.05)
+t=   31318  m1= 14728  m2= 14118  m3= 15298  m4= 15856  |  rateP(r,p,y)=(    816,   -384,      4)  |  est(r,p,y)=( -0.52,  0.23, -0.05)
+    已回到基线 15000，停留 0.5s 确认稳定...
+t=   31368  m1= 14664  m2= 14106  m3= 15334  m4= 15896  |  rateP(r,p,y)=(    841,   -392,    -14)  |  est(r,p,y)=( -0.52,  0.24, -0.05)
+t=   31418  m1= 14594  m2= 13980  m3= 15392  m4= 16034  |  rateP(r,p,y)=(    849,   -394,     -9)  |  est(r,p,y)=( -0.52,  0.24, -0.05)
+t=   31468  m1= 14608  m2= 13968  m3= 15404  m4= 16020  |  rateP(r,p,y)=(    893,   -404,      7)  |  est(r,p,y)=( -0.52,  0.24, -0.05)
+t=   31518  m1= 14583  m2= 13891  m3= 15399  m4= 16127  |  rateP(r,p,y)=(    889,   -402,     -6)  |  est(r,p,y)=( -0.52,  0.24, -0.06)
+t=   31568  m1= 14602  m2= 13784  m3= 15410  m4= 16204  |  rateP(r,p,y)=(    913,   -410,     10)  |  est(r,p,y)=( -0.52,  0.24, -0.06)
+t=   31618  m1= 14524  m2= 13762  m3= 15476  m4= 16238  |  rateP(r,p,y)=(    924,   -429,     -7)  |  est(r,p,y)=( -0.52,  0.24, -0.06)
+t=   31668  m1= 14485  m2= 13667  m3= 15501  m4= 16347  |  rateP(r,p,y)=(    934,   -417,      1)  |  est(r,p,y)=( -0.52,  0.24, -0.06)
+t=   31718  m1= 14452  m2= 13594  m3= 15532  m4= 16422  |  rateP(r,p,y)=(    971,   -437,      8)  |  est(r,p,y)=( -0.52,  0.24, -0.05)
+t=   31768  m1= 14450  m2= 13488  m3= 15560  m4= 16502  |  rateP(r,p,y)=(    975,   -442,      9)  |  est(r,p,y)=( -0.52,  0.24, -0.06)
+t=   31818  m1= 14391  m2= 13413  m3= 15613  m4= 16583  |  rateP(r,p,y)=(   1003,   -464,     -5)  |  est(r,p,y)=( -0.52,  0.24, -0.05)
+
+全部阶跃已跑完，正常结束测试。
+
+正在停止并归零...
+t=   31868  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(   1016,   -446,     -3)  |  est(r,p,y)=( -0.52,  0.24, -0.06)
+t=   31918  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    773,   -350,     -3)  |  est(r,p,y)=( -0.52,  0.23, -0.06)
+t=   31968  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    781,   -350,     -2)  |  est(r,p,y)=( -0.52,  0.23, -0.05)
+t=   32018  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    766,   -345,     -7)  |  est(r,p,y)=( -0.52,  0.23, -0.05)
+t=   32068  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    773,   -344,     -3)  |  est(r,p,y)=( -0.52,  0.23, -0.06)
+t=   32118  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    771,   -316,      3)  |  est(r,p,y)=( -0.52,  0.23, -0.06)
+t=   32168  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP(r,p,y)=(    772,   -341,    -12)  |  est(r,p,y)=( -0.52,  0.23, -0.05)
+测试结束。
+
+[链路] disconnected
+
 优化 @python/t4b_pitch_response_check.py 目前测试看：手动调整支架使飞机头抬起的时候m1m4变大，m2m3变小（应该是m1m4变小，注：m1在飞机右上 m2在右下 m3在左下，m4在左上），跟预期相反。另外还有一个 "警告：pid_rate.pitch_outP=-15467 超过 15000，疑似姿态角环积分饱和(windup)——机身没放平或被夹具固定住转不动，自动停止并归零！请把机身调平后再测。"
 
+User answered Claude's questions:
+  ⎿  · 这次测试基本坐实是 CONFIG_PITCH_DISTRIBUTION_INVERTED
+     配错了（当前未设置，但实测行为跟“已设置”一致），而不是 t4b 脚本本身有问题。要怎么处理？ →
+     CONFIG_PITCH_DISTRIBUTION_INVERTED=y是生效的，代码已提交。 使用最新的固件，用@python/t4c_rpy_step_resp
+     onse_check.py这个脚本测试是正确的。@python/t4b_pitch_response_check.py
+     目前测试看：手动调整支架使飞机头抬起的时候m1m4变大，m2m3变小（应该是m1m4变小，注：m1在飞机右上
+     m2在右下 m3在左下，m4在左上），跟预期相反。另外还有一个 "警告：pid_rate.pitch_outP=-15467 超过 15000，
+     疑似姿态角环积分饱和(windup)——机身没放平或被夹具固定住转不动，自动停止并归零！请把机身调平后再测。"
+
+● Agent "Find motor mixing and pitch PID sign conventions" finished · 4m 14s
+
+  Thought for 2m 39s (ctrl+o to expand)
+
+● Bash(grep -n "PITCH_DISTRIBUTION_INVERTED" sdkconfig; echo ---; git log --all --oneline -- sdkconfig
+      main/Kconfig.projbuild | head -20; echo ---; git log -p --all -S…)
+  ⎿  449:CONFIG_PITCH_DISTRIBUTION_INVERTED=y
+     ---
+     2ae2034 feat: sdkconfig
+     … +120 lines (ctrl+o to expand)
+
+  Thought for 3m 11s (ctrl+o to expand)
+
+● This is a significant finding that needs a careful, direct flag before I touch anything: the sub-agent's
+  research surfaced that this repo's own prior debugging notes explicitly warn against setting 
+  CONFIG_PITCH_DISTRIBUTION_INVERTED=y, yet it's currently set to y and was just committed. Let me verify
+  that directly from the source records rather than trust the summary.
+
+  Thought for 24s, searched for 1 pattern (ctrl+o to expand)
+
+● I need to flag something important before touching the script — I think the recent commit setting
+  CONFIG_PITCH_DISTRIBUTION_INVERTED=y may itself be the bug, and it directly contradicts a conclusion
+  already recorded in this repo.
+
+  What I found in records/ccprompt/0816.txt:1482-1488 (previous investigation, done carefully,
+  cross-checked two independent ways — pure code sign-tracing, and a static IMU-tilt test with motors off):
+
+  ▎ 电机物理映射(T3): 不需要改 pin, 原样正确
+  ▎ IMU 轴映射: 代码 + 实测都干净, 没有串轴, 不需要改传感器轴映射
+  ▎ CONFIG_PITCH_DISTRIBUTION_INVERTED: 保持默认关闭即可, 不要打开——打开反而会变成正反馈(桨一动就翻), 跟
+  ▎ Kconfig 里那段警告说的完全一致。
+
+  And again at 0816.txt:1620: "按之前的推导结论走：CONFIG_PITCH_DISTRIBUTION_INVERTED 保持默认关闭。"
+
+  But sdkconfig right now has CONFIG_PITCH_DISTRIBUTION_INVERTED=y (commit d955cda, Aug 25). That's the
+  opposite of the documented conclusion.
+
+  I re-derived the sign chain myself (seesaw physics + attitude_pid_controller.c +
+  power_distribution_stock.c): to correct an already-nose-up disturbance, the front motors (m1,m4) need to
+  decrease and rear (m2,m3) increase. With the mixer currently inverted (y), the corrective command instead
+  makes m1,m4 increase — i.e. it amplifies the disturbance instead of correcting it. That's exactly the
+  positive-feedback failure mode the old record and the Kconfig help both warn about, and it independently
+  explains both of your t4b symptoms at once: the reversed direction (front increases when nose lifts,
+  should decrease) and the fast windup (an unstable positive-feedback loop saturates almost immediately,
+  clamped or not — much faster than the ordinary "can't rotate, so integral just drifts" scenario).
+
+  So my read: t4b isn't broken, and it just caught a r     heck.py这个脚本测试是正确的。@python/t4b_pitch_re
+     sponse_check.py                                       目前测试看：手动调整支架使飞机头抬起的时候m1m4变
+     大，m2m3变小（应该是m1m4变小，注：m1在飞机右上        m2在右下
+     m3在左下，m4在左上），跟预期相反。另外还有一个        "警告：pid_rate.pitch_outP=-15467 超过 15000，疑
+     似姿态角环积分饱和(windup)——机身没放平或被夹具固      定住转不动，自动停止并归零！请把机身调平后再测。"
+
+● Agent "Find motor mixing and pitch PID sign
+conventions" finished · 4m 14s
+                                                        Thought for 2m 39s (ctrl+o to expand)
+
+● Bash(grep -n "PITCH_DISTRIBUTION_INVERTED"
+      sdkconfig; echo ---; git log --all --oneline --
+      sdkconfig main/Kconfig.projbuild | head -20;
+      echo ---; git log -p --all -S…)
+  ⎿  449:CONFIG_PITCH_DISTRIBUTION_INVERTED=y
+     ---
+     2ae2034 feat: sdkconfig
+     … +120 lines (ctrl+o to expand)
+
+  Thought for 3m 11s (ctrl+o to expand)
+
+● This is a significant finding that needs a careful,
+  direct flag before I touch anything: the sub-agent's
+  research surfaced that this repo's own prior
+  debugging notes explicitly warn against setting
+  CONFIG_PITCH_DISTRIBUTION_INVERTED=y, yet it's
+  currently set to y and was just committed. Let me
+  verify that directly from the source records rather
+  than trust the summary.
+
+  Thought for 24s, searched for 1 pattern (ctrl+o to
+  expand)
+
+● I need to flag something important before touching
+  the script — I think the recent commit setting
+  CONFIG_PITCH_DISTRIBUTION_INVERTED=y may itself be
+  the bug, and it directly contradicts a conclusion
+  already recorded in this repo.
+
+  What I found in records/ccprompt/0816.txt:1482-1488
+  (previous investigation, done carefully,
+  cross-checked two independent ways — pure code
+  sign-tracing, and a static IMU-tilt test with motors
+  off):
+
+  ▎ 电机物理映射(T3): 不需要改 pin, 原样正确
+  ▎ IMU 轴映射: 代码 + 实测都干净, 没有串轴,
+  ▎ 不需要改传感器轴映射
+  ▎ CONFIG_PITCH_DISTRIBUTION_INVERTED:
+  ▎ 保持默认关闭即可,
+  ▎ 不要打开——打开反而会变成正反馈(桨一动就翻), 跟
+  ▎ Kconfig 里那段警告说的完全一致。
+
+  And again at 0816.txt:1620: "按之前的推导结论走：CON
+  FIG_PITCH_DISTRIBUTION_INVERTED 保持默认关闭。"
+
+  But sdkconfig right now has
+  CONFIG_PITCH_DISTRIBUTION_INVERTED=y (commit
+  d955cda, Aug 25). That's the opposite of the
+  documented conclusion.
+
+  I re-derived the sign chain myself (seesaw physics +
+  attitude_pid_controller.c +
+  power_distribution_stock.c): to correct an
+  already-nose-up disturbance, the front motors
+  (m1,m4) need to decrease and rear (m2,m3) increase.
+  With the mixer currently inverted (y), the
+  corrective command instead makes m1,m4 increase —
+  i.e. it amplifies the disturbance instead of
+  correcting it. That's exactly the positive-feedback
+  failure mode the old record and the Kconfig help
+  both warn about, and it independently explains both
+  of your t4b symptoms at once: the reversed direction
+  (front increases when nose lifts, should decrease)
+  and the fast windup (an unstable positive-feedback
+  loop saturates almost immediately, clamped or not —
+  much faster than the ordinary "can't rotate, so
+  integral just drifts" scenario).
+
+  So my read: t4b isn't broken, and it just caught a
+  real regression. Before I change anything in the
+  script, I want to confirm you want to revert
+  CONFIG_PITCH_DISTRIBUTION_INVERTED back to off
+
+  I re-derived the sign chain myself (seesaw physics + attitude_pid_controller.c +
+  power_distribution_stock.c): to correct an already-nose-up disturbance, the front motors (m1,m4) need to
+  decrease and rear (m2,m3) increase. With the mixer currently inverted (y), the corrective command instead
+  makes m1,m4 increase — i.e. it amplifies the disturbance instead of correcting it. That's exactly the
+  positive-feedback failure mode the old record and the Kconfig help both warn about, and it independently
+  explains both of your t4b symptoms at once: the reversed direction (front increases when nose lifts,
+  should decrease) and the fast windup (an unstable positive-feedback loop saturates almost immediately,
+  clamped or not — much faster than the ordinary "can't rotate, so integral just drifts" scenario).
+
+  So my read: t4b isn't broken, and it just caught a real regression. Before I change anything in the
+  script, I want to confirm you want to revert CONFIG_PITCH_DISTRIBUTION_INVERTED back to off (sdkconfig +
+  rebuild/reflash), given the strong three-way agreement (prior code analysis, prior static IMU test, and
+  this new bench result) — and given the real risk described if this is flown with props on while inverted.
+  Do you want me to revert it, or is there something from your t4c run that specifically contradicts this?
+  
+  
+t4b不是文案问题。t4c是固定飞机，然后模拟row pitch yaw的角度，测试数据一致。t4b是固定飞机，然后手动把飞机 
+  抬头，理论上m1m4应该减小，但实际是增加，应该是固件算法或硬件匹配问题。1.请制订分析测试方案？2.t4c的PITCH 
+  +5deg  保持 0.3s  期望 m1,m4 变大；m2,m3 变小，PITCH +5deg具体是指什么，相当于抬头还是低头？             
+  
+  Thought for 3m 12s, searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● 收到，你说得对，不该轻易定性为"文案问题"——我之前的判断过急了，认真按你说的重新捋一遍逻辑，先回答第2个问题
+  ，因为这是理解后面分析的关键前提。
+
+  2. "PITCH +5deg" 具体指什么
+
+  代码路径：crtp_commander_rpyt.c:240（原始/角度模式下，t4b/t4c 都通过 ensure_raw_commander_mode
+  强制走这条分支）：
+  setpoint->attitude.pitch = values->pitch;   // 直接透传，无符号翻转
+  即 Python 里 cf.commander.send_setpoint(roll, pitch, yawrate, thrust) 的 pitch 参数，原样赋给
+  eulerPitchDesired（姿态角目标）。
+
+  而 eulerPitchDesired 与 stateEstimate.pitch 用的是同一套符号约定——之前静态倾斜测试已实测确认"抬头→pitch
+  为正，低头→pitch 为负"（records/ccprompt/0816.txt:1382-1383），position_controller_pid.c:229-230 里
+  attitude.pitch = -rollRaw（要向前加速/机头向下时输出负值）也交叉印证了这一点。
+
+  结论：PITCH +5deg = 让 PID 主动把机头往"抬头"方向驱动（目标是让 pitch
+  变得更正），不是"模拟被人为压低头后的纠正动作"。
+
+  这带来一个关键推论：t4b 手动抬头（setpoint 恒为 0，actual 变正，误差 = 0 − actual < 0）在符号上等价的是
+  t4c 的 PITCH -5deg 那一步（setpoint = −5，actual ≈ 0，误差 = −5 − 0 < 0），而不是 PITCH +5deg。
+  两者误差符号相同，理论上应该给出同一组电机变化方向。
+
+  所以真正该对照的问题是：t4c 里 PITCH -5deg 那一步，实测是不是 "m1,m4 变小；m2,m3 变大"？ 如果是，且跟 t4b
+  抬头的实测（m1,m4 变大）刚好相反，那就是一个真实、可复现的不一致，值得深挖；如果你之前只对照了 PITCH
+  +5deg，那可能对错了行，需要重新看 PITCH -5deg 那一行数据。
+
+  1. 分析测试方案
+
+  在你确认上面那个"对照行"选对了之后，按下面顺序排除法：
+
+  第一步：排除积分饱和污染方向判断
+  t4b 目前是"连续手动抬头保持住"，thrust 从头到尾没打过 0，controller_pid.c 只在 thrust==0
+  时清积分——也就是说角度环积分从上电斜坡开始就没清过。你贴的 pid_rate.pitch_outP=-15467
+  已经逼近保护线，说明这个积分很可能在你开始抬头之前就已经在跑，抬头动作只是让它更快撞线，你观察到的"m1m4变
+  大"可能是积分饱和后的饱和值方向，不是抬头这个动作本身的干净方向响应。
+  → 建议把 t4b 改成跟 t4c 一样的模式：每次动作前先把 thrust 打到 0
+  一瞬间触发固件清积分，再斜坡回基线，然后快速点一下"抬头"（0.3s 量级），只看动作后最初 1~2 个 log tick 的
+  Δm1~Δm4，而不是保持住看稳态值。这样能把"方向"和"饱和"两个变量分开。
+
+  第二步：排查 D 项污染
+  t4b 自己的注释已经点到了这个可能性（|rateD| vs
+  |rateP|）。你手动抬头的动作本身是一个真实的角速度扰动，陀螺会直接测到，ATTITUDE_RATE_LPF_ENABLE=false
+  意味着这个角速度环 D 项没滤波。如果"m1m4变大"发生在你手快速抬起的那一瞬间，且当时 |rateD| 明显大于
+  |rateP|，说明看到的是 D 项对"你手的动作速度"的瞬时反应，不代表 P 项（真正的角度纠偏方向）反了。
+  → 需要你回看当时打印的 rateP/rateD 具体数值（不只是最后触发保护的那一行），确认"变大"发生的那一刻，是 P
+  主导还是 D 主导。
+
+  第三步：排查 roll 耦合
+  手动搬支架很难做到纯 pitch，如果同一时刻 stateEstimate.roll 也有明显漂移，roll 项会叠加进 m1~m4
+  的公式，打乱单纯看 m1m4/m2m3 分组的结论。
+
+  第四步：如果以上都排除了，仍然跟 t4c 等效阶跃方向相反
+  那就是真正的代码路径分叉问题，需要去看 pid.c 的 pidUpdate() 实现——重点检查它的 D
+  项是"对误差求导"还是"对测量值求导"（derivative-on-measurement 是常见设计，专门用来避免 setpoint
+  突变时的微分冲击）。如果是后者，t4c（setpoint 跳变，actual 几乎不动）和 t4b（setpoint 不动，actual
+  真的在动）在 D 项上会有本质不同的激励方式，哪怕 P 项符号链条完全一致，两边的瞬态响应也可能不对称——这跟"混
+  控公式或硬件对不对"是两个不同层面的问题，不能merge到一起讨论。
+
+  你要不要先把 t4b 改成"快速点动 + 每次动作前清积分"这个版本，跑一次拿到干净数据，再回头看第一步/第二步能不
+  能自然解释？还是你手上已经有当时的完整日志（不只是触发保护那一行），可以先贴出来我帮你对一下
+  rateP/rateD？
+  
+1.t4c中PITCH -5deg实测m1,m4 变小；m2,m3 变大
+>>> [第1轮] PITCH -5deg  保持 0.3s  期望 m1,m4 变小；m2,m3 变大
+t=   28068  m1= 10645  m2= 17261  m3= 19307  m4= 12787  |  rateP(r,p,y)=(    940,   -442,      9)  |  est(r,p,y)=( -0.49,  0.23, -0.04)
+t=   28118  m1= 10269  m2= 17557  m3= 19739  m4= 12435  |  rateP(r,p,y)=(    966,   6954,     24)  |  est(r,p,y)=( -0.49,  0.23, -0.04)
+t=   28168  m1=  9792  m2= 17936  m3= 20166  m4= 12106  |  rateP(r,p,y)=(    975,   7109,    -10)  |  est(r,p,y)=( -0.49,  0.23, -0.04)
+t=   28218  m1=  9401  m2= 18277  m3= 20595  m4= 11727  |  rateP(r,p,y)=(   1007,   7254,     21)  |  est(r,p,y)=( -0.49,  0.23, -0.04)
+t=   28268  m1=  8891  m2= 18629  m3= 21085  m4= 11395  |  rateP(r,p,y)=(    994,   7411,      7)  |  est(r,p,y)=( -0.49,  0.23, -0.04)
+t=   28318  m1=  8438  m2= 18966  m3= 21558  m4= 11038  |  rateP(r,p,y)=(   1024,   7555,     12)  |  est(r,p,y)=( -0.49,  0.23, -0.04)
+
+这组数据非常关键，把它跟 t4b 放在一起看，我觉得已经能给出一个站得住脚的解释了——而且结论是：t4c 
+  "测试正确"这件事，本身并不能证明 pitch 混控方向对实际飞行是安全的，因为 t4c 
+  这个测试方法在设计上就测不出这类问题。t4b 抬头出现的"反向"，更可能是抓到了一个真实的、危险的正反馈。
+
+  关键区别：t4c 测的是"角度环需求方向"，t4b 测的是"角速度环对真实转动的响应"
+
+  t4c 里飞机被夹具真正卡死转不动，看你贴的数据：est(r,p,y) 全程 (-0.49, 0.23, -0.04)
+  纹丝不动。也就是说，整个 0.3s 期间，实际角速度（陀螺测到的）始终 ≈
+  0——夹具让它根本没转起来。这种情况下，rateP 从 940 涨到 7555，纯粹是外环（角度环）积分因为"目标 -5°、实际
+  0.23°、误差一直在，飞机又转不动"而持续爬升，反映到内环变成越来越大的 P
+  项——这是位置误差的积分爬升，跟"角速度环对一个真实转动信号的响应方向对不对"完全是两件事，t4c
+  从头到尾没有让角速度环见过一个真实的非零转速。
+
+  t4b 不一样：你是真的用手把机头转起来，陀螺会测到一个真实、非零的抬头角速度。角速度环算的是 error =
+  期望角速度 − 实际角速度。这时候：
+  - 期望角速度：由外环给出，因为设定点恒为
+    0、实际角度已经偏正，外环会要求一个（较小的）负向角速度去纠正——跟 t4c 里 PITCH -5°
+    那一步的外环需求方向应该是一致的（同号）。
+  - 实际角速度：在 t4c 里 ≈ 0；在 t4b
+    里是你手施加的一个真实的正值（而且手速通常远比外环那个小小的纠偏需求量级大）。
+
+  所以 t4b 里角速度环的误差 = (较小的负数) − (较大的正的手速) = 一个很大的负数——这正好解释了你看到的
+  pid_rate.pitch_outP=-15467（很负）。这不是外环积分饱和的锅，是内环在真实对抗一个真实的角速度信号，只是数
+  值刚好也很大。
+
+  关键问题：这个"很负"的
+  outP，经过当前混控（INVERTED=y）算出来的电机方向，到底是在"纠正"还是在"助推"你的抬头动作？
+
+  用杠杆/力矩直觉判断（这个不依赖任何坐标系约定，纯物理）：前电机推力相对后电机变大 →
+  机头必然上升（抬头），这个方向是确定无疑的。
+
+  那么，一个"正确设计"的角速度环，面对你手正在施加的抬头角速度，应该产生一个反抗这个转动的力矩，也就是要让
+  前电机减小（或后电机增大）——这才是"阻尼/纠偏"该有的方向。
+
+  但按你实测：outP 很负 → 代入当前生效的混控公式（CONFIG_PITCH_DISTRIBUTION_INVERTED=y：m1=T-r-p+y，m4=T+r-
+  p-y，p=control.pitch/2，outP 很负会让 p 很负）→ -p 变成很大正数 → m1、m4
+  增大，与你实测完全吻合。但"m1、m4 增大"恰恰是会加速抬头、而不是压回去的方向——也就是说，面对一个真实的抬头
+  转动，当前混控让角速度环去"帮着"转得更快，而不是去阻止它。这正是 main/Kconfig.projbuild:156-157 和
+  records/ccprompt/0816.txt:1487 反复警告的那句话："打开 INVERTED 会变成正反馈，桨一转就翻"——现在 t4b
+  这次实测，很可能就是第一次真正把这个正反馈现象测出来了，因为它是唯一一个真的让飞机转起来（哪思是被夹具限
+  制、也有真实瞬时角速度）的测试。
+
+  而 t4c 因为夹具把飞机卡得死死的、角速度全程为 0，它测的其实只是"外环想让角度往哪个方向变"，根本没机会暴露
+  "角速度环对真实转动的响应方向是纠正还是助推"这个更致命的问题——所以 t4c
+  "数据自洽/符合预期"和"这套混控对实际飞行是安全的"是两件不能互相证明的事。
+
+  建议的下一步验证（不需要猜，可以直接测）
+
+  现有 t4b 日志里没有直接记录陀螺角速度，只有角度估计和 outP/outD，所以现在还是"强假设 +
+  间接证据"，不是铁证。建议加一路日志字段直接验证这个机制：
+
+  - 给 t4b（或专门做一个变体）加上 gyro.y（原始角速度，或者如果没暴露就用 stateEstimate 里连续两帧 pitch
+    的差分近似角速度）一起打印。
+  - 重复"缓慢抬头"动作，同时观察：当 gyro.y（或 pitch 的变化率）为正、且数值明显不为 0 时，outP
+    的符号是不是稳定跟着变负、且 |outP| 大致随手速变大而变大——如果是，就证实了"outP
+    主要是在响应你的手速，而不是位置误差"，也就直接证实了角速度环在当前混控下是反向（助推）而不是纠偏。
+
+  如果你认可这个机制、不想再加日志验证，我建议直接把 CONFIG_PITCH_DISTRIBUTION_INVERTED
+  改回关闭（跟历史记录里 T3/T4 阶段的结论一致），因为现在有了一个新的、独立的实测证据支持同一个结论，风险上
+  不建议带着这个配置去真的给桨上电试飞。你想先加日志验证，还是直接改回去？
+
+✻ Brewed for 3m 7s · done 12:37
+
+已经加好日志验证埋点，改动如下（python/t4b_pitch_response_check.py）：
+
+  - 新增一路 rate_diag log block：gyro.y（原始陀螺）+
+    controller.pitchRate（=rateDesired.pitch，外环给内环的期望角速度），单独一路避免超 CRTP payload。
+  - 打印行新增两列：rateDesired（外环期望角速度，抬头为正）和
+    rateActual(-gyro.y)（陀螺换算成"抬头为正"后的实际角速度，换算方式跟 controller_pid.c 里
+    attitudeControllerCorrectRatePID 传入实际角速度时的 -sensors->gyro.y
+    保持一致，两列可以直接同符号对比）。
+  - 顶部说明文字加了一句提示：重点看抬头那一下，rateActual 是否出现一个远大于 rateDesired
+    的正值——如果是，就说明 rateP 变负主要是角速度环在对抗你手的转动速度本身，不是角度误差积分。
+
+  期望 那两行文案先没动，等这次验证结果出来再定。
+
+  跑的时候麻烦保留完整日志（尤其是"缓慢抬头"那几秒的连续几行），重点看：抬头瞬间 rateActual
+  是不是明显变成一个较大的正值、且比 rateDesired 大得多。跑完把日志贴给我。
+  
+  解释一下这样做的原理？                                                                                   
+
+  Thought for 24s (ctrl+o to expand)
+
+● 这次改动要验证的核心问题是：你抬头时看到的 m1m4 变大，到底是"角度误差累积出来的（无害的台架限制）"，还是"
+  角速度环真的在帮你的抬头动作加速（有害的正反馈）"——这两种原因在只看 outP/motor
+  数值时是分不开的，因为它们都会让 outP 变得很大很负。加的这两个日志字段就是把这两种可能性拆开看。
+
+  原理：
+
+  角速度环（内环）的输出本质上只做一件事：outP = kp × (期望角速度 −
+  实际角速度)。这两个日志字段就是分别把等式右边的两项单独打出来：
+
+  - controller.pitchRate（rateDesired.pitch）=
+    外环（角度环）算出来的"期望角速度"。这个量只在位置误差持续存在、外环积分爬升时才会缓慢变大——t4c 里 0.3s
+    内从几百爬到几千看到的就是这个过程。
+  - gyro.y = 陀螺原始读数，也就是机身这一瞬间真实转动的角速度。取负号（-gyro.y）只是为了跟 stateEstimate.pi
+    tch"抬头为正"的符号统一，不影响物理含义。这个量只在手真的在动的时候才会出现明显数值，手停下来它就趋近于
+    0，跟积分爬升完全无关、反应也快得多（陀螺是即时读数，不像积分需要时间累积）。
+
+  区别在于时间特征和触发条件完全不同：
+
+  - 如果 outP 变负是"角度误差积分饱和"造成的（t4b 脚本原来注释假设的机制），那应该看到：rateDesired
+    缓慢爬升到一个较大值，rateActual(-gyro.y) 基本很小（因为夹具卡住、飞机没真的转），outP 的负值主要是
+    rateDesired 自己变负、变大导致的。
+  - 如果 outP
+    变负主要是"角速度环在对抗你手的转动速度"（我怀疑的机制），那应该看到：手抬头那一下，rateActual(-gyro.y)
+    瞬间跳出一个明显的正值（因为你真的让它转起来了），而 rateDesired 这时候还很小、甚至还是负的——outP
+    的负值主要来自这两者之间的巨大差值，不是 rateDesired 自己变大。
+
+  为什么这个区分很重要：第一种情况纯粹是台架测试的副作用（飞机装了桨也不会有这个问题，因为真实飞行中角度误
+  差会被实际转动实时消掉，不会无限累积），无害；第二种情况说明只要飞机真的转起来，角速度环就会朝着加速这个
+  转动的方向出力，这在真实飞行（有桨、能自由转动）时就是失控——桨一转，一点点扰动就会被越纠越偏，跟历史记录
+  里"打开 INVERTED 会正反馈、桨一转就翻"的描述完全对应。
+
+  所以这两列数据能直接把"测试假象"和"真实的控制律方向错误"这两种可能从数值上分开，不用再靠猜。
+
+✻ Sautéed for 24s · done 12:44
+
+
+t=   27879  m1= 32491  m2=  6099  m3=     0  m4= 23815  |  rateP= -9122.2  rateD=     3.6  roll=   0.3  pitch=   1.9  |  rateDesired=   -35.8  rateActual(-gyro.y)=     0.6
+t=   27929  m1= 32681  m2=  5939  m3=     0  m4= 24013  |  rateP= -9529.0  rateD=  -247.1  roll=   0.3  pitch=   1.9  |  rateDesired=   -36.3  rateActual(-gyro.y)=     1.8
+t=   27979  m1= 32703  m2=  6017  m3=     0  m4= 24403  |  rateP=-10020.7  rateD=    48.4  roll=   0.3  pitch=   2.0  |  rateDesired=   -37.3  rateActual(-gyro.y)=     2.8
+t=   28029  m1= 32645  m2=  6047  m3=     0  m4= 25513  |  rateP=-10187.9  rateD=  -246.7  roll=   0.3  pitch=   2.1  |  rateDesired=   -38.0  rateActual(-gyro.y)=     2.8
+t=   28079  m1= 32933  m2=  5893  m3=     0  m4= 25151  |  rateP=-11319.2  rateD=   -10.7  roll=   0.3  pitch=   2.3  |  rateDesired=   -39.5  rateActual(-gyro.y)=     5.8
+t=   28129  m1= 32784  m2=  6086  m3=     0  m4= 26004  |  rateP=-11347.8  rateD=  -361.3  roll=   0.3  pitch=   2.5  |  rateDesired=   -41.1  rateActual(-gyro.y)=     4.5
+t=   28179  m1= 33083  m2=  6125  m3=     0  m4= 24593  |  rateP=-12053.0  rateD=   117.0  roll=   0.3  pitch=   2.8  |  rateDesired=   -42.9  rateActual(-gyro.y)=     5.4
+t=   28229  m1= 33204  m2=  6022  m3=     0  m4= 24616  |  rateP=-11100.9  rateD=   126.5  roll=   0.2  pitch=   2.9  |  rateDesired=   -43.8  rateActual(-gyro.y)=     0.5
+t=   28279  m1= 33391  m2=  6001  m3=     0  m4= 24595  |  rateP=-11139.9  rateD=   -42.7  roll=   0.3  pitch=   2.9  |  rateDesired=   -44.3  rateActual(-gyro.y)=     0.3
+t=   28329  m1= 33683  m2=  5837  m3=     0  m4= 24693  |  rateP=-11305.8  rateD=   -28.4  roll=   0.3  pitch=   2.9  |  rateDesired=   -44.8  rateActual(-gyro.y)=     0.4
+t=   28379  m1= 33878  m2=  5458  m3=     0  m4= 25284  |  rateP=-11617.8  rateD=   -85.7  roll=   0.3  pitch=   3.0  |  rateDesired=   -45.4  rateActual(-gyro.y)=     1.2
+t=   28429  m1= 33922  m2=  5438  m3=     0  m4= 25610  |  rateP=-12245.2  rateD=  -226.0  roll=   0.3  pitch=   3.0  |  rateDesired=   -46.2  rateActual(-gyro.y)=     2.9
+t=   28479  m1= 34266  m2=  4838  m3=     0  m4= 26348  |  rateP=-12761.0  rateD=   -48.3  roll=   0.2  pitch=   3.2  |  rateDesired=   -47.5  rateActual(-gyro.y)=     3.5
+t=   28529  m1= 34275  m2=  5005  m3=     0  m4= 26283  |  rateP=-13664.7  rateD=  -148.4  roll=   0.2  pitch=   3.4  |  rateDesired=   -49.2  rateActual(-gyro.y)=     5.7
+t=   28579  m1= 34652  m2=  4484  m3=     0  m4= 26786  |  rateP=-13804.9  rateD=    59.2  roll=   0.1  pitch=   3.6  |  rateDesired=   -51.0  rateActual(-gyro.y)=     4.3
+t=   28629  m1= 34553  m2=  4853  m3=     0  m4= 26211  |  rateP=-14519.6  rateD=   -79.9  roll=   0.0  pitch=   3.8  |  rateDesired=   -52.7  rateActual(-gyro.y)=     5.5
+t=   28679  m1= 34723  m2=  4655  m3=     0  m4= 26429  |  rateP=-14302.5  rateD=    25.2  roll=  -0.0  pitch=   4.0  |  rateDesired=   -54.4  rateActual(-gyro.y)=     2.9
+t=   28729  m1= 34641  m2=  4919  m3=     0  m4= 26101  |  rateP=-14377.8  rateD=   -95.0  roll=  -0.0  pitch=   4.1  |  rateDesired=   -55.4  rateActual(-gyro.y)=     2.1
+t=   28779  m1= 34868  m2=  4678  m3=     0  m4= 26340  |  rateP=-14222.0  rateD=    76.0  roll=  -0.1  pitch=   4.2  |  rateDesired=   -56.5  rateActual(-gyro.y)=     0.4
+t=   28829  m1= 34977  m2=  4669  m3=     0  m4= 26339  |  rateP=-14462.5  rateD=   -78.8  roll=  -0.1  pitch=   4.3  |  rateDesired=   -57.2  rateActual(-gyro.y)=     0.8
+t=   28879  m1= 35154  m2=  4354  m3=     0  m4= 26726  |  rateP=-14650.4  rateD=    34.1  roll=  -0.1  pitch=   4.3  |  rateDesired=   -58.0  rateActual(-gyro.y)=     0.6
+t=   28929  m1= 35259  m2=  4311  m3=     0  m4= 26837  |  rateP=-15139.5  rateD=   -77.2  roll=  -0.1  pitch=   4.4  |  rateDesired=   -58.9  rateActual(-gyro.y)=     1.7
+
+警告：pid_rate.pitch_outP=-15140 超过 15000，疑似姿态角环积分饱和(windup)——机身没放平或被夹具固定住转不动，自动停止并归零！请把机身调平后再测。
+t=   28979  m1= 35387  m2=  4209  m3=     0  m4= 26953  |  rateP=-15318.2  rateD=  -137.5  roll=  -0.1  pitch=   4.4  |  rateDesired=   -59.9  rateActual(-gyro.y)=     1.4
+t=   29029  m1= 35571  m2=  3953  m3=     0  m4= 27195  |  rateP=-15702.9  rateD=   -35.2  roll=  -0.1  pitch=   4.5  |  rateDesired=   -61.0  rateActual(-gyro.y)=     1.8
+
+正在停止并归零...
+t=   29079  m1= 35428  m2=  3904  m3=     0  m4= 27338  |  rateP=-16271.7  rateD=  -118.1  roll=  -0.2  pitch=   4.7  |  rateDesired=   -62.2  rateActual(-gyro.y)=     2.8
+t=   29129  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP=-16899.1  rateD=  -211.2  roll=  -0.2  pitch=   4.8  |  rateDesired=   -63.7  rateActual(-gyro.y)=     4.0
+t=   29179  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP= -7921.6  rateD=-39608.1  roll=  -0.3  pitch=   4.9  |  rateDesired=   -29.2  rateActual(-gyro.y)=     2.5
+t=   29229  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP= -7927.9  rateD=-39639.4  roll=  -0.3  pitch=   5.1  |  rateDesired=   -29.9  rateActual(-gyro.y)=     1.7
+t=   29279  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP= -7728.7  rateD=-38643.5  roll=  -0.3  pitch=   5.1  |  rateDesired=   -30.2  rateActual(-gyro.y)=     0.7
+t=   29329  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP= -7414.4  rateD=-37072.0  roll=  -0.3  pitch=   5.1  |  rateDesired=   -30.3  rateActual(-gyro.y)=    -0.7
+t=   29379  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP= -7516.2  rateD=-37581.1  roll=  -0.3  pitch=   5.1  |  rateDesired=   -30.3  rateActual(-gyro.y)=    -0.3
+测试结束。
+这是抬头操作的日志，看到28000之后抬的头
+
+组数据很干净，把我之前"手速主导"的猜测直接否定了，但顺带给出了一个更硬、更直接的证据。先说结论，再拆数
+  据。
+
+  先说被否定的部分： rateActual(-gyro.y) 全程只有 0~6 deg/s 量级，没有出现远大于 rateDesired
+  的尖峰。你这次是真的"缓慢"抬头（跟打印提示写的一致），所以陀螺角速度一直很小，我之前"手速把 outP
+  打歪"的假设不成立，这个机制排除了。
+
+  但数据暴露了一个更干净的现象：
+
+  看 pitch 这一列：从 1.9 一路单调涨到 5.1（这是真实的、正在发生的抬头动作，不是噪声）。跟着看
+  rateDesired：从 -35.8 一路单调变得更负，到
+  -63.7。这两列是完全同步、成比例往前走的——也就是说：外环（角度环）在正确地干活：它准确识别到 pitch
+  在持续变大（偏离设定点 0），并按比例给出一个越来越强的"负角速度需求"，也就是"我要让机头往下转"，这个方向
+  是对的，符合"纠正抬头"该有的语义。
+
+  rateP 紧跟 rateDesired − rateActual 走（比如
+  t=28929：rateDesired=-58.9，rateActual=1.7，误差≈-60.6，跟同一行 rateP=-15139.5 的比例基本吻合前几行的比
+  例关系），说明内环（角速度环）也在正确地执行外环的这个"负值"指令——到这一步为止，整条 PID
+  链路（外环→内环）的符号都是对的，正确地算出了一个"要往下压机头"的负控制量。
+
+  问题出在最后一步、混控公式这里：这个正确的负控制量喂进当前生效的 CONFIG_PITCH_DISTRIBUTION_INVERTED=y
+  混控公式后，产出的是 m1、m4 一路增大（32491→35571，23815→27338）、m2、m3 一路减小（6099→3953，m3
+  更是直接被 limitThrust 顶到 0 地板）。按杠杆物理，前电机（m1,m4）相对变大只会让机头继续往上抬，不会往下压
+  ——也就是说，外环+内环算对了方向，但混控这一步把它翻了个面，变成了"越纠正、越往错误方向推"。
+
+  这跟 roll 无关（roll 全程 0.3→-0.3，几乎不动，排除耦合），跟 D 项无关（rateD
+  数值不小但没有主导性的持续偏置，且我们已经确认 P
+  项走向本身就是自洽的），跟陀螺/手速无关（已排除）。定位精确到：混控公式的符号（p = -p 那一步）跟这套 PID
+  的输出符号不匹配。
+
+  （末尾 t=29179 起 rateD 突然跳到 -39608 是因为 thrust=0 触发了 attitudeControllerResetAllPID()，PID
+  状态被清零/重新初始化产生的瞬时突变，跟主现象无关，是收尾动作的正常副作用。）
+
+  这组数据比我之前设想的"手速验证"更干净：它直接展示了"PID
+  前半段完全正确，只在混控这一步符号错了"，跟历史记录 0816.txt:1487 的结论、以及 Kconfig
+  里的警告完全对上了。要不要现在把 CONFIG_PITCH_DISTRIBUTION_INVERTED 改回关闭？
+  
+  
+  
+之前已经测试过CONFIG_PITCH_DISTRIBUTION_INVERTED未设置的情况，此时用t4c得出的结论如下：
+● 测试结论
+
+  这次 t4c 阶跃测试顺利跑完全程（没有触发 MOTOR_ABORT_THRESHOLD/RATE_OUTP_ABORT_THRESHOLD
+  任一保护），但方向核对的结果是：roll、yaw 都对，pitch 反了。
+
+  ROLL —— 方向正确
+
+  - ROLL +5°（t=27972→28022）：m1 12949→9129↓，m2 14039→10251↓，m3 17093→20901↑，m4 15919→19719↑ →
+    与期望「m1,m2 变小；m3,m4 变大」一致
+  - ROLL -5°：同理反向，也一致
+
+  YAW —— 方向正确
+
+  - YAW +25°/s：m1,m3 明显↑，m2,m4 明显↓ → 与期望一致
+  - YAW -25°/s：反向也一致
+
+  PITCH —— 方向反了（两次都反）
+
+  - PITCH +5°（t=30472→30522）：m1 13669→9712（↓），m4 15577→11716（↓），m2 14419→18274（↑），m3
+    16335→20298（↑）
+    期望是「m1,m4 变大；m2,m3 变小」，实测正好相反。
+  - PITCH -5°（t=31672→31722）：m1、m4 反而变大，m2、m3 反而变小，同样和期望相反。
+
+  佐证：PITCH+5 期间 rateP.pitch 冲到 -7789~-8454（本该是正的，跟 mixer 里 +pitch/2 的方向对不上），而
+  ROLL+5 期间 rateP.roll 是同量级的正值（+8334~+9027）——说明不是速率环不稳定/积分暴走导致的偶然现象，是稳定
+  、可重复的符号反了，且只发生在 pitch 轴。
+  
+目前代码中的姿态估计和control控制，依赖的mpu6050什么方位在飞机上？另外算法中哪些是用飞机得出的roll yaw pitch，哪些mpu6050得出的roll yaw pitch
+
+
+这个问题查下来有一个假设被我推翻了，也有一个更实质的线索留下来了，一起说。
+
+  姿态估计和 control 全部依赖 MPU6050，没有别的来源
+
+  先回答你问题的框架本身：没有"飞机得出的" roll/pitch/yaw 和"MPU6050 得出的" roll/pitch/yaw 
+  两套独立数据——飞控只有一个 IMU（MPU6050），stateEstimate.roll/pitch/yaw（也就是 state->attitude.*，PID
+  用的那个）100% 是从 MPU6050 的原始读数经过"轴映射 +
+  姿态融合"两步算出来的，没有第二个传感器源。两步的分界线就是：
+
+  - 原始/芯片坐标系：sensors_mpu6050_hm5883L_ms5611.c 里的 gyroRaw.*、accelRaw.*（直接对应 MPU6050
+    寄存器里的 X/Y/Z，是芯片物理引脚定义的坐标系，跟装在飞机上哪个方向完全无关）。
+  - 飞机机体坐标系：sensorData.gyro.*、sensorData.acc.*（经过 processAccGyroMeasurements()
+    里的换轴+可能取负之后，理论上应该对齐到"机头=+X、右翼=+Y、朝下=+Z"或类似约定）。
+  - 再往后 sensfusion6.c（complementary）或 kalman_core.c（kalman）把 sensorData.gyro/acc 融合成
+    state->attitude.roll/pitch/yaw，这一步只做滤波融合，不做额外换轴。
+
+  也就是说，"轴映射对不对"这件事，只可能出在 processAccGyroMeasurements() 
+  这一个函数里，往后的代码都是在信任这个函数已经把坐标系摆正了。
+
+  当前生效的映射表（已确认板子是 CONFIG_TARGET_PYDRONE_S3，走的是非 ESPLANE_V1 分支）
+
+  ┌─────────────────────────────┬────────────────────┬──────────┐
+  │         飞机机体量          │ 来自芯片哪个寄存器 │ 是否取负 │
+  ├─────────────────────────────┼────────────────────┼──────────┤
+  │ gyro.x（roll 角速度）       │ 芯片 GyroY 寄存器  │ 取负     │
+  ├─────────────────────────────┼────────────────────┼──────────┤
+  │ gyro.y（pitch 角速度）      │ 芯片 GyroX 寄存器  │ 不取负   │
+  ├─────────────────────────────┼────────────────────┼──────────┤
+  │ acc.y（roll 用的重力分量）  │ 芯片 AccelX 寄存器 │ 不取负   │
+  ├─────────────────────────────┼────────────────────┼──────────┤
+  │ acc.x（pitch 用的重力分量） │ 芯片 AccelY 寄存器 │ 取负     │
+  └─────────────────────────────┴────────────────────┴──────────┘
+
+  （源码：sensors_mpu6050_hm5883L_ms5611.c:438-444 做 X/Y 寄存器互换，注释写的是"correct the rotated 90º
+  IMU coordinate system"；463/474 分别是 roll-gyro 和 pitch-accel 的取负，466/477 是 pitch-gyro 和
+  roll-accel 不取负。）
+
+  这个表本身不一定是错的——gyro（角速度）是伪矢量，accel（加速度）是普通矢量，如果芯片是"翻转"（而不是单纯旋
+  转 90°）贴装在板子上，本来就应该出现"同一根轴，gyro 和 accel
+  取负规则不一样"这种情况，不能单看"不对称"就断定是 bug。
+
+  一个被我排除掉的假设，如实汇报
+
+  我之前怀疑 complementary（sensfusion6.c:273 的 asinf(gx)，注释写"Pitch seems to be inverted"但没取负）和
+  kalman（kalman_core.c:1051/1058 看起来取负了两次）对 pitch
+  符号的处理不一致——算了一遍发现这是假警报：kalman 那两次取负数学上正好抵消（asinf(-2(q1q3-q0q2)) 再取负 =
+  asinf(2(q1q3-q0q2))，跟 complementary 的 asinf(gx)，gx=2(qxqz-qwqy) 是同一个式子），roll
+  的公式也完全对得上。两个估计器对 roll/pitch 符号约定是一致的，这条路排除。
+
+  现在最实的线索还是回到上面那张表
+
+  roll 正确、pitch 反了、且换哪个 estimator 都一样——排除估计器不一致之后，最直接的候选就是表里 pitch
+  那一行（gyro.y 不取负 / acc.x 取负）跟这块板子上 MPU6050 真实贴装方向不匹配，而不是 roll
+  那一行。要坐实这个，比查代码更直接的办法是：桨拆掉、飞机静止，手动只做纯 pitch 方向的小角度倾斜（不要动
+  roll），同时把 gyroRaw.x/gyroRaw.y（换轴前的原始值，需要临时加个日志）和换轴后的 gyro.x/gyro.y 
+  一起打出来，直接读"抬头时哪个原始寄存器在动、动的是正还是负"，用实测数据反过来对照这张表，而不是继续在代
+  码里猜芯片贴装角度。
+
+  要不要我把这个"原始 vs 换轴后"对照日志加到一个新的台架测试脚本里？
+  
+  新脚本 python/t4d_imu_raw_axis_check.py 已建好，特点：
+
+  - 零风险：跟 t4_imu_axis_check.py 一样完全不碰 motorPowerSet、不发 commander，电机不转。
+  - gyro.xRaw/gyro.yRaw 不需要改固件——这两个是 sensors_mpu6050_hm5883L_ms5611.c:1201-1202
+    里已经导出的原始寄存器值（换轴之后、取负和换算之前），现成可用。
+  - 一次性打出四层数据：gyro.xRaw/yRaw（最原始）→ gyro.x/y（取负+换算后的角速度）→
+    acc.x/y（加速度计取负后的读数）→
+    stabilizer.roll/pitch（最终融合姿态角），方便一行行对照每一步是不是"该翻的地方翻了、不该翻的地方没翻"。
+
+  有个限制先说清楚：accelRaw（加速度计换轴前的原始寄存器值）目前固件里没有导出到任何
+  LOG_ADD，所以这次只能看到 gyro 这条链路的"原始→最终"全过程，accel 那条链路只能看到取负之后的
+  acc.x/y，看不到取负之前的原始值。如果这次 gyro 测试还不够定位问题，需要看 accel 原始值的话，得再加一行
+  LOG_ADD 并重新编译刷机——先看这次够不够，不够我再加。
+
+  跑的时候按脚本提示做纯 pitch、再做纯 roll，把完整打印贴给我。
+
+✻ Brewed for 2m 34s · done 13:53
+
+❯ x,y,z三个轴的acc和gyro都打印下吧？                                                                       
+
+  Thought for 56s, read 1 file (ctrl+o to expand)
+
+● Write(t4d_imu_raw_axis_check.py)
+  ⎿  Added 75 lines, removed 51 lines
+       7  # 两个估计器的 pitch 符号数学上等价（不是估计器不一致）。剩下最直接的候选就是芯片贴装方向
+          跟
+       8  # 代码假设的换轴/取负表不匹配，而这只能靠"手动倾斜 + 对照原始寄存器读数"来坐实，不能再靠代
+          码推导。
+       9  #
+      10 -# 打印的四层数据，从"最原始"到"最终"：                                                    
+      11 -#   gyro.xRaw / gyro.yRaw  —— 芯片寄存器换轴之后、取负和换算之前的原始整数（int16 counts）
+      12 -#   gyro.x / gyro.y        —— 上面那两个再经过换算（取负+乘 SENSORS_DEG_PER_LSB_CFG）之后 
+         -的角速度(deg/s)                                                                           
+      13 -#   acc.x / acc.y          —— 加速度计换轴+取负之后的读数（g），姿态融合用它来修正倾角    
+      14 -#   stabilizer.roll/pitch  —— 最终融合出的姿态角(deg)，PID 真正用的就是这两个             
+      10 +# 打印的四层数据，x/y/z 三个轴都打，从"最原始"到"最终"：                                  
+      11 +#   gyro.xRaw/yRaw/zRaw    —— 芯片寄存器换轴之后、取负和换算之前的原始整数（int16 counts）
+      12 +#   gyro.x/y/z             —— 上面三个再经过换算（取负+乘 SENSORS_DEG_PER_LSB_CFG）之后的 
+         +角速度(deg/s)                                                                             
+      13 +#   acc.x/y/z              —— 加速度计换轴+取负之后的读数（g），姿态融合用它来修正倾角    
+      14 +#   stabilizer.roll/pitch/yaw —— 最终融合出的姿态角(deg)，PID 真正用的就是这三个          
+      15  #
+      16 -# 只做纯 pitch（抬头/低头）或纯 roll（左右倾斜）动作，观察：                              
+      17 -#   1. 做纯 pitch 时，roll 相关的所有列（gyro.xRaw/gyro.x/stabilizer.roll）应该基本不动； 
+      18 -#      如果它们也跟着明显变化，说明有串轴，问题在换轴表本身（哪个寄存器映射到哪个轴映射错 
+         -了）。                                                                                    
+      19 -#   2. 做纯 pitch 时，只看 gyro.yRaw 这一列（还没有被代码取负/取正处理过）本身随手的抬头/ 
+         -低头                                                                                      
+      20 -#      动作是什么符号；再看 gyro.y 和 stabilizer.pitch 是不是跟 gyro.yRaw "该有的换算关系"
+         -一致。                                                                                    
+      16 +# 分成三路 log block（gyro 6 个变量、acc 3 个、姿态 3 个），避免单个 block 超出 CRTP paylo
+         +ad 限制。                                                                                 
+      17 +#                                                                                         
+      18 +# 依次做纯 pitch（抬头/低头）、纯 roll（左右倾斜）、纯 yaw（原地扭转机头）动作，观察：    
+      19 +#   1. 做纯 pitch 时，roll/yaw 相关的列（gyro.xRaw/zRaw、gyro.x/z、stabilizer.roll/yaw）应
+         +该                                                                                        
+      20 +#      基本不动；如果也跟着明显变化，说明有串轴，问题在换轴表本身（哪个寄存器映射到哪个轴 
+         +错了）。                                                                                  
+      21 +#   2. 做纯 pitch 时，只看 gyro.yRaw 这一列（还没被代码取负/取正处理过）随手的抬头/低头动 
+         +作是                                                                                      
+      22 +#      什么符号；再看 gyro.y 和 stabilizer.pitch 是不是跟 gyro.yRaw "该有的换算关系"一致。
+      23  #      如果 gyro.yRaw 的原始符号跟你直觉预期的物理方向对不上，说明贴装方向跟换轴表假设的不
+          一致，
+      22 -#      该改的是 processAccGyroMeasurements() 里 pitch 那一行的取负，不是动力分配。        
+      24 +#      该改的是 processAccGyroMeasurements() 里对应那一行的取负，不是动力分配。           
+      25 +#   3. roll、yaw 同理，分别看 gyro.xRaw/stabilizer.roll、gyro.zRaw/stabilizer.yaw。       
+      26  
+      27  import threading
+      28  import time
+     ...
+       83          state = {
+       84              "gyro.xRaw": None,
+       85              "gyro.yRaw": None,
+       86 +            "gyro.zRaw": None,                                                           
+       87              "gyro.x": None,
+       88              "gyro.y": None,
+       89 +            "gyro.z": None,                                                              
+       90              "acc.x": None,
+       91              "acc.y": None,
+       92 +            "acc.z": None,                                                               
+       93          }
+       94  
+       89 -        lg_raw = LogConfig(name="raw_axis", period_in_ms=50)                             
+       90 -        lg_raw.add_variable("gyro.xRaw", "int16_t")                                      
+       91 -        lg_raw.add_variable("gyro.yRaw", "int16_t")                                      
+       92 -        lg_raw.add_variable("gyro.x", "float")                                           
+       93 -        lg_raw.add_variable("gyro.y", "float")                                           
+       94 -        cf.log.add_config(lg_raw)                                                        
+       95 +        # 三路拆开，避免单个 CRTP log block 超出 payload 限制                            
+       96 +        lg_gyro = LogConfig(name="gyro_axis", period_in_ms=50)                           
+       97 +        lg_gyro.add_variable("gyro.xRaw", "int16_t")                                     
+       98 +        lg_gyro.add_variable("gyro.yRaw", "int16_t")                                     
+       99 +        lg_gyro.add_variable("gyro.zRaw", "int16_t")                                     
+      100 +        lg_gyro.add_variable("gyro.x", "float")                                          
+      101 +        lg_gyro.add_variable("gyro.y", "float")                                          
+      102 +        lg_gyro.add_variable("gyro.z", "float")                                          
+      103 +        cf.log.add_config(lg_gyro)                                                       
+      104  
+       96 -        lg_fused = LogConfig(name="fused_axis", period_in_ms=100)                        
+       97 -        lg_fused.add_variable("acc.x", "float")                                          
+       98 -        lg_fused.add_variable("acc.y", "float")                                          
+       99 -        lg_fused.add_variable("stabilizer.roll", "float")                                
+      100 -        lg_fused.add_variable("stabilizer.pitch", "float")                               
+      101 -        cf.log.add_config(lg_fused)                                                      
+      105 +        lg_acc = LogConfig(name="acc_axis", period_in_ms=100)                            
+      106 +        lg_acc.add_variable("acc.x", "float")                                            
+      107 +        lg_acc.add_variable("acc.y", "float")                                            
+      108 +        lg_acc.add_variable("acc.z", "float")                                            
+      109 +        cf.log.add_config(lg_acc)                                                        
+      110  
+      103 -        def log_raw_cb(timestamp, data, logconf):                                        
+      111 +        lg_att = LogConfig(name="att_axis", period_in_ms=100)                            
+      112 +        lg_att.add_variable("stabilizer.roll", "float")                                  
+      113 +        lg_att.add_variable("stabilizer.pitch", "float")                                 
+      114 +        lg_att.add_variable("stabilizer.yaw", "float")                                   
+      115 +        cf.log.add_config(lg_att)                                                        
+      116 +                                                                                         
+      117 +        def log_gyro_cb(timestamp, data, logconf):                                       
+      118              state["gyro.xRaw"] = data["gyro.xRaw"]
+      119              state["gyro.yRaw"] = data["gyro.yRaw"]
+      120 +            state["gyro.zRaw"] = data["gyro.zRaw"]                                       
+      121              state["gyro.x"] = data["gyro.x"]
+      122              state["gyro.y"] = data["gyro.y"]
+      123 +            state["gyro.z"] = data["gyro.z"]                                             
+      124  
+      109 -        def log_fused_cb(timestamp, data, logconf):                                      
+      125 +        def log_acc_cb(timestamp, data, logconf):                                        
+      126              state["acc.x"] = data["acc.x"]
+      127              state["acc.y"] = data["acc.y"]
+      128 +            state["acc.z"] = data["acc.z"]                                               
+      129 +                                                                                         
+      130 +        def log_att_cb(timestamp, data, logconf):                                        
+      131              roll = data["stabilizer.roll"]
+      132              pitch = data["stabilizer.pitch"]
+      114 -            gx_raw = state["gyro.xRaw"]                                                  
+      115 -            gy_raw = state["gyro.yRaw"]                                                  
+      116 -            gx = state["gyro.x"]                                                         
+      117 -            gy = state["gyro.y"]                                                         
+      118 -            ax = state["acc.x"]                                                          
+      119 -            ay = state["acc.y"]                                                          
+      120 -            gx_raw_s = f"{gx_raw:6d}" if gx_raw is not None else "   n/a"                
+      121 -            gy_raw_s = f"{gy_raw:6d}" if gy_raw is not None else "   n/a"                
+      122 -            gx_s = f"{gx:7.1f}" if gx is not None else "    n/a"                         
+      123 -            gy_s = f"{gy:7.1f}" if gy is not None else "    n/a"                         
+      124 -            ax_s = f"{ax:6.3f}" if ax is not None else "   n/a"                          
+      125 -            ay_s = f"{ay:6.3f}" if ay is not None else "   n/a"                          
+      133 +            yaw = data["stabilizer.yaw"]                                                 
+      134 +                                                                                         
+      135 +            def fmt_i(v, width=6):                                                       
+      136 +                return f"{v:{width}d}" if v is not None else "n/a".rjust(width)          
+      137 +                                                                                         
+      138 +            def fmt_f(v, width=7, prec=1):                                               
+      139 +                return f"{v:{width}.{prec}f}" if v is not None else "n/a".rjust(width)   
+      140 +                                                                                         
+      141              print(
+      142                  f"t={timestamp:>8}  "
+      128 -                f"gyro.xRaw={gx_raw_s} gyro.yRaw={gy_raw_s}  |  "                        
+      129 -                f"gyro.x={gx_s} gyro.y={gy_s}  |  "                                      
+      130 -                f"acc.x={ax_s} acc.y={ay_s}  |  "                                        
+      131 -                f"roll={roll:6.2f} pitch={pitch:6.2f}",                                  
+      143 +                f"gyroRaw(x,y,z)=({fmt_i(state['gyro.xRaw'])},{fmt_i(state['gyro.yRaw'])}
+          +,"                                                                                       
+      144 +                f"{fmt_i(state['gyro.zRaw'])})  |  "                                     
+      145 +                f"gyro(x,y,z)=({fmt_f(state['gyro.x'])},{fmt_f(state['gyro.y'])},"       
+      146 +                f"{fmt_f(state['gyro.z'])})  |  "                                        
+      147 +                f"acc(x,y,z)=({fmt_f(state['acc.x'], 6, 3)},{fmt_f(state['acc.y'], 6, 3)}
+          +,"                                                                                       
+      148 +                f"{fmt_f(state['acc.z'], 6, 3)})  |  "                                   
+      149 +                f"roll={roll:6.2f} pitch={pitch:6.2f} yaw={yaw:6.2f}",                   
+      150                  flush=True,
+      151              )
+      152  
+      135 -        lg_raw.data_received_cb.add_callback(log_raw_cb)                                 
+      136 -        lg_fused.data_received_cb.add_callback(log_fused_cb)                             
+      137 -        lg_raw.start()                                                                   
+      138 -        lg_fused.start()                                                                 
+      153 +        lg_gyro.data_received_cb.add_callback(log_gyro_cb)                               
+      154 +        lg_acc.data_received_cb.add_callback(log_acc_cb)                                 
+      155 +        lg_att.data_received_cb.add_callback(log_att_cb)                                 
+      156 +        lg_gyro.start()                                                                  
+      157 +        lg_acc.start()                                                                   
+      158 +        lg_att.start()                                                                   
+      159  
+      160          print("\n开始打印，电机完全不转、零风险。按 Ctrl+C 结束。建议依次做：")
+      141 -        print("  1. 水平静置几秒，记录基线（gyro.*Raw 应接近 0，roll/pitch 应接近 0）")  
+      161 +        print("  1. 水平静置几秒，记录基线（gyro*Raw 应接近 0，roll/pitch/yaw 应接近 0）"
+          +)                                                                                        
+      162          print("  2. 只做抬头/低头（绕 pitch 轴），观察 gyro.yRaw 抬头时是正是负，")
+      143 -        print("     同时确认 gyro.xRaw / roll 这一路基本不动（没有串轴）")               
+      163 +        print("     同时确认 gyro.xRaw/zRaw、roll/yaw 这两路基本不动（没有串轴）")       
+      164          print("  3. 回正后只做左右倾斜（绕 roll 轴），观察 gyro.xRaw 右倾时是正是负，")
+      145 -        print("     同时确认 gyro.yRaw / pitch 这一路基本不动")                          
+      146 -        print("  4. 记录：抬头对应 gyro.yRaw 的符号、右倾对应 gyro.xRaw 的符号\n")       
+      165 +        print("     同时确认 gyro.yRaw/zRaw、pitch/yaw 基本不动")                        
+      166 +        print("  4. 回正后只做原地扭转机头（绕 yaw 轴），观察 gyro.zRaw 符号，")         
+      167 +        print("     同时确认 gyro.xRaw/yRaw、roll/pitch 基本不动")                       
+      168 +        print("  5. 记录：抬头对应 gyro.yRaw 的符号、右倾对应 gyro.xRaw 的符号、")       
+      169 +        print("     机头右转对应 gyro.zRaw 的符号\n")                                    
+      170  
+      171          try:
+      172              while True:
+     ...
+      174          except KeyboardInterrupt:
+      175              pass
+      176          finally:
+      154 -            lg_raw.stop()                                                                
+      155 -            lg_fused.stop()                                                              
+      177 +            lg_gyro.stop()                                                               
+      178 +            lg_acc.stop()                                                                
+      179 +            lg_att.stop()                                                                
+      180              print("\n测试结束。", flush=True)
+      181  
+      182  
+
+  Thought for 6s (ctrl+o to expand)
+
+● Bash(python3 -c "import ast; ast.parse(open('t4d_imu_raw_axis_check.py').read())" && echo OK)
+  ⎿  OK
+
+  Thought for 8s (ctrl+o to expand)
+
+● Bash(python3 -c "
+      def fmt_i(v, width=6):…)
+  ⎿     n/a      5
+         n/a     1.2    n/a  0.987
+
+● Formatting works correctly with None fallbacks.
+
+  已按你要求补全 x/y/z 三轴（python/t4d_imu_raw_axis_check.py），改动要点：
+
+  - gyro 一路：gyro.xRaw/yRaw/zRaw（原始寄存器整数）+ gyro.x/y/z（取负换算后角速度），单独一个 log block（6
+    个变量，18 字节）。
+  - acc 一路：acc.x/y/z（取负后读数），单独一个 block。
+  - 姿态一路：stabilizer.roll/pitch/yaw（最终融合角），单独一个 block。
+  - 三路拆开是为了不让单个 CRTP log block 超 payload 限制。
+  - 顶部说明和操作步骤加了第 4 步"纯 yaw 扭转"，跟 roll/pitch 一起三轴都能对照。
+
+  依然是零风险（电机完全不转）。麻烦跑一遍纯 pitch / 纯 roll / 纯 yaw 三个动作，把完整打印发我。
+
+✻ Cooked for 1m 21s · done 13:56
+
+❯ 哪些对应原始的gyro和acc，哪些对应转换后的飞机的？                                                        
+
+  Thought for 30s (ctrl+o to expand)
+
+● 三层，按"处理程度"从浅到深说清楚：
+
+  打印字段: gyro.xRaw gyro.yRaw gyro.zRaw
+  对应代码里的变量: gyroRaw.x/y/z（sensors_mpu6050_hm5883L_ms5611.c:434-444）
+  处理到了哪一步: 最原始：MPU6050 寄存器读出来的 int16
+  计数值，只经过了"哪个寄存器读到哪个变量"这一步换轴（buffer[8:9]/buffer[10:11]
+  互换），还没做取负、也没做减 bias、没换算成 deg/s
+  ────────────────────────────────────────
+  打印字段: gyro.x gyro.y gyro.z
+  对应代码里的变量: sensorData.gyro.x/y/z（同文件 461-469）
+  处理到了哪一步: 飞机最终用的：在上面那三个基础上，减了 bias、（x 轴这块板子会取负）、乘了
+  SENSORS_DEG_PER_LSB_CFG 换算成 deg/s、再做了低通滤波。这个就是 attitude_pid_controller.c
+  角速度环直接用的量
+  ────────────────────────────────────────
+  打印字段: acc.x acc.y acc.z
+  对应代码里的变量: sensorData.acc.x/y/z（同文件 472-482）
+  处理到了哪一步: 飞机最终用的：加速度计原始值取负（x 轴）、换算成 g、sensorsAccAlignToGravity
+  校正、低通滤波之后的结果。姿态融合（sensfusion6/kalman）拿这个去修正倾角
+  ────────────────────────────────────────
+  打印字段: roll pitch yaw
+  对应代码里的变量: stabilizer.roll/pitch/yaw（= state->attitude.*）
+  处理到了哪一步: 最终结果：拿上面 gyro.x/y/z + acc.x/y/z 融合算出来的姿态角(deg)，PID
+  外环真正用的就是这三个数
+
+  所以对照关系是：gyro.*Raw 是"原始"，gyro.x/y/z、acc.x/y/z、roll/pitch/yaw
+  三个都算"转换后/飞机坐标系"，只是转换的程度依次加深（角速度→加了取负换算；姿态角→再经过跟加速度计融合）。
+
+  有一点要提前说清楚：gyro.xRaw/yRaw/zRaw 严格说不是芯片最原始的
+  X/Y/Z——芯片寄存器的换轴（哪个寄存器对应哪个轴）在赋值给 gyroRaw.x/y/z 这一步就已经做完了，*Raw
+  只是"换过轴，但还没取负、没换算单位"。真正芯片寄存器层面的原始值（buffer[]
+  数组本身）目前没有任何日志能看到——如果这次测完，怀疑问题出在"换轴这一步选错了寄存器"（而不是"取负这一步的
+  符号错了"），那还得再加日志才能看到 buffer[] 本身，现在这版看不到。
+
+  acc 这边同理，目前只能看到取负之后的最终值，看不到取负之前的（上次也提过这个限制）。
+
+✻ Cogitated for 30s · done 13:59
+
+❯ gyro.xRaw gyro.yRaw gyro.zRaw---这只有mpu6050的gyro没有acc？                                             
+
+  Thought for 23s, searched for 1 pattern (ctrl+o to expand)
+
+● 对，确认了——固件里目前只给 gyroRaw.x/y/z 加了 LOG_ADD（sensors_mpu6050_hm5883L_ms5611.c:1201-1203，对应
+  gyro.xRaw/yRaw/zRaw），accelRaw.x/y/z（加速度计取负之前的原始寄存器值，同文件 215 行声明）没有任何地方加
+  LOG_ADD 导出，所以现在这版脚本里 acc 只能看到取负之后的 acc.x/y/z，看不到取负之前的原始值。
+
+  如果你想要 acc 也能看到"原始 vs 转换后"的对照，需要在固件里补一段，跟 gyro 那三行完全对称：
+
+  LOG_GROUP_START(acc)
+  LOG_ADD(LOG_INT16, xRaw, &accelRaw.x)
+  LOG_ADD(LOG_INT16, yRaw, &accelRaw.y)
+  LOG_ADD(LOG_INT16, zRaw, &accelRaw.z)
+  LOG_GROUP_STOP(acc)
+
+  这需要改固件、重新编译、刷机才能生效，比现在纯 Python 脚本改动重一些。要不要我现在就加上（连带 t4d
+  脚本里也把 acc.xRaw/yRaw/zRaw 加进去打印），还是先跑当前这版（只有 gyro
+  有原始值）看看够不够定位问题，不够再加？
+  
+  改完了，有个重要的坑顺带发现并修了：gyro.xRaw/yRaw/zRaw 
+  之前实际上没有编译进固件——sensors_mpu6050_hm5883L_ms5611.c:77 那行 #define 
+  GYRO_ADD_RAW_AND_VARIANCE_LOG_VALUES
+  本身是被注释掉的，之前那版脚本如果直接拿去跑，会连不上这几个变量报错。这次一起处理了：
+
+  固件改动（sensors_mpu6050_hm5883L_ms5611.c）：
+  1. 打开了 GYRO_ADD_RAW_AND_VARIANCE_LOG_VALUES（原来被注释掉）。
+  2. 新增了跟 gyro.xRaw/yRaw/zRaw 对称的 accRaw.xRaw/yRaw/zRaw（同一个宏一起开关）。
+
+  脚本改动（t4d_imu_raw_axis_check.py）：
+  - 加了第四路 log block 读 accRaw.xRaw/yRaw/zRaw，打印行现在是 gyroRaw / gyro / accRaw / acc /
+    roll,pitch,yaw 五段对照。
+
+  这次需要重新编译刷机才能生效——我这边没有 ESP-IDF 工具链，没法本地编译验证，麻烦你 idf.py build
+  一下，如果报错发我看看（大概率不会，改动是照抄已有的 gyro 那段格式）。刷完之后再跑脚本，纯 pitch/roll/yaw
+  三个动作的完整打印发我。
+  mpu还有其他原始数据没有打印吗？                                                                          
+
+  Thought for 49s, searched for 1 pattern (ctrl+o to expand)
+
+● 看了一遍 processAccGyroMeasurements() 整个读取过程，MPU6050 这次通信一次性读回 14 字节（accel 6B + temp
+  2B + gyro 6B），现在能打印的都覆盖了（accel x/y/z、gyro
+  x/y/z，原始和转换后各一份）。剩下没解析、没打印的只有一项：
+
+  - 芯片自带的温度寄存器（这 14 字节里的 buffer[6:7]）：I2C 读回来了，但代码里完全没解析、没赋值给任何变量
+    ，直接被跳过丢弃了。跟这次查的符号问题无关（它只是没被用，不参与任何 roll/pitch/yaw
+    计算），但如果你想要，我可以顺手也加一个 LOG_ADD 把它导出来，纯粹图完整。
+
+  另外两个不是"寄存器原始值"、但确实是"最终值之前的中间状态"、目前也看不到：
+
+  - gyroBias.x/y/z：静止时估的陀螺零偏，从 gyroRaw 减掉这个才得到 gyro.x/y/z。已经打开的
+    xVariance/yVariance/zVariance（在 gyro 组里）只能看到偏差方差，看不到偏差本身的值。
+  - accScale：静止时估的加速度计整体缩放系数，acc.x/y/z 除的就是这个。
+
+  这两个是校准量、通常只影响幅值不影响符号，跟这次排查"pitch
+  符号反了"关系不大，我倾向于先不加，除非你怀疑幅值/零偏也有问题。
+
+  要不要把温度那项也顺手加上，还是现在这版（accel+gyro 原始/转换后 6 个量）先够用？
+  
+  
+t=   21391  gyroRaw(x,y,z)=(    16,    -3,    16)  |  gyro(x,y,z)=(    0.0,    0.0,    0.0)  |  accRaw(x,y,z)=(   -65,    32,  1811)  |  acc(x,y,z)=( 0.036, 0.017, 1.001)  |  roll=  0.81 pitch=  1.76 yaw=  0.09
+t=   21493  gyroRaw(x,y,z)=(    17,    -3,    15)  |  gyro(x,y,z)=(   -0.0,   -0.0,    0.1)  |  accRaw(x,y,z)=(   -60,    29,  1808)  |  acc(x,y,z)=( 0.034, 0.017, 0.997)  |  roll=  0.82 pitch=  1.76 yaw=  0.09
+t=   21591  gyroRaw(x,y,z)=(    17,    -4,    18)  |  gyro(x,y,z)=(    0.0,    0.0,    0.1)  |  accRaw(x,y,z)=(   -58,    32,  1805)  |  acc(x,y,z)=( 0.036, 0.016, 0.997)  |  roll=  0.82 pitch=  1.77 yaw=  0.09
+t=   21691  gyroRaw(x,y,z)=(    16,    -5,    14)  |  gyro(x,y,z)=(    0.0,    0.0,    0.1)  |  accRaw(x,y,z)=(   -57,    36,  1812)  |  acc(x,y,z)=( 0.035, 0.017, 0.998)  |  roll=  0.82 pitch=  1.78 yaw=  0.10
+
+这是@python/t4d_imu_raw_axis_check.py 飞机平着放的测试数据，请分析是否符合预期？以及进一步的测试
+
+论：这段水平静置数据基本符合预期，可以往下走纯 pitch/roll/yaw 测试了。
+
+  逐项对照代码验证：
+
+  1. gyroRaw 非零(~16,-4,16) 但 gyro.x/y/z≈0 —— 正常
+  代码里 gyro.x/y/z 是在 gyroRaw 之后才减掉零偏的：
+  sensorData.gyro.x = -(gyroRaw.x - gyroBias.x) * SENSORS_DEG_PER_LSB_CFG;  // x 取负
+  sensorData.gyro.y =  (gyroRaw.y - gyroBias.y) * SENSORS_DEG_PER_LSB_CFG;  // y/z 不取负
+  sensorData.gyro.z =  (gyroRaw.z - gyroBias.z) * SENSORS_DEG_PER_LSB_CFG;
+  gyroRaw（日志里的 Raw 列）是换轴之后、减 bias 之前的原始寄存器值，本来就该非零；gyroBias 是开机静止时
+  processGyroBias 收敛出来的均值，减完之后归零，说明零偏校准工作正常，不是 bug。
+
+  2. accRaw z 独大(~1808)、x/y 很小(-60,32) —— 正常
+  平放时重力全部投影在 Z 轴，符合预期。acc.z≈0.997~1.001g，说明
+  accScale（整体灵敏度校准，SENSORS_G_PER_LSB_CFG / accScale）也收敛准确。
+
+  3. roll≈0.82°、pitch≈1.77°、yaw≈0.09° —— 非零但可接受，且确认不是 calib 补偿引入的
+  sensorsAccAlignToGravity() 里有个 PITCH_CALIB/ROLL_CALIB 的固定角度补偿旋转，但查了 sdkconfig：
+  CONFIG_PITCH_CALIB=0
+  CONFIG_ROLL_CALIB=0
+  两个都是 0，说明这一步目前是恒等变换，没有引入这 1~2°。也就是这个小夹角是 acc.x=0.035g / acc.y=0.017g
+  的真实读数——注意 acc 这条链路只有一个整体 scale 校准，没有像 gyro 那样的逐轴加法 bias
+  校准，所以来源可能是桌面没完全水平，或加速度计本身有个没校掉的小 offset。1~2°
+  量级对"随手放平"来说正常，不必现在处理，如果想彻底排查可以拿水平仪核对，或原地绕 yaw 转 180°
+  再测一次——如果这个小夹角跟着转说明是真倾斜，符号/大小不变则是传感器固定 offset。
+
+  4. 4 条数据 300ms 内 roll/pitch 只漂了 0.01~0.02° —— 好现象
+  说明 complementary filter 已经收敛稳定，没有持续漂移或震荡。
+
+  ---
+
+  下一步：脚本自己打印的步骤 2/3/4（纯 pitch → 纯 roll → 纯
+  yaw）就是对的路，建议直接做。结合代码补充两点自检要点：
+
+  - 当前非 ESPLANE_V1 分支的取负表是：gyro.x 取负、gyro.y/gyro.z 不取负；acc.x 取负、acc.y/acc.z 不取负。纯
+    pitch 动作时真正要看的就是 gyroRaw.y（对应 gyro.y，不取负）和 accRaw.x（对应
+    acc.x，取负）这两列，重点是它俩换算后的符号跟你手上实际动作方向、以及彼此之间（角速度积分方向 vs
+    静态倾角）是否自洽。
+  - 别被 sensfusion6.c:273 这行注释带偏：
+  *pitch = asinf(gx) * 180 / M_PI_F; //Pitch seems to be inverted
+    这是 Bitcraze 原厂代码自带的注释，是他们自己也标注过的"看起来反了"，但下游
+    PID/混控是按这个既定符号配好的，不是本次 bug 的根源，别顺手去改这行，容易改出新的不一致。已经加的
+    CONFIG_PITCH_DISTRIBUTION_INVERTED 是 power_distribution_stock.c
+    混控侧的开关，跟这里是两件事，之前排查已经证明两态都不对，所以这次要抓的仍然是
+    processAccGyroMeasurements() 里的换轴/取负表本身。
+	
+本固件是CONFIG_TARGET_PYDRONE_S3=y 如何固定几个方向，使用@python/t4d_imu_raw_axis_check.py               
+  测定原始的acc和飞机的acc来比较融合的算法和控制算法的方向是否正确？                                       
+  
+  Thought for 58s (ctrl+o to expand)
+
+● Bash(sed -n '1,140p' /data/project/source/peakxie/esp-drone/components/core/crazyflie/modules/src/power_d
+      istribution_stock.c)
+  ⎿  /**
+      *    ||          ____  _ __
+      * +------+      / __ )(_) /_______________ _____  ___
+     … +137 lines (ctrl+o to expand)
+
+  Thought for 2m 43s, searched for 3 patterns, read 1 file (ctrl+o to expand)
+
+● 这个问题其实是接着之前 T4/T3 的思路往下做,现在有具体的落地方案:
+
+  一、先找两个物理基准(拍照记录,作为"真值")
+
+  - 机头方向:按项目笔记 records/espdrone.md:190 里参照的 pyDrone_Resource_1.png,机头指向已经有既定方向;找机
+    身上能目视识别的不对称特征(USB口、电池仓开口、丝印箭头等)标记出"前"。
+  - 芯片原生轴:笔记 records/espdrone.md:371 提到 pyDrone PCB 上 MPU6050 芯片旁有 X/Y/Z
+    丝印箭头——这是换轴之前的真值参照,一并拍照记录。
+
+  二、固定姿态(不需要精密夹具,电机不转、零风险)
+
+  用书本/桌角/斜面靠住即可,重点看符号而不是精确角度;想量化的话拿手机水平仪 App 顶着机身读真实角度做对照:
+
+  ┌─────────────────────┬──────────────────────────────────────────────┐
+  │        姿态         │                   操作方式                   │
+  ├─────────────────────┼──────────────────────────────────────────────┤
+  │ 0. 水平静置         │ 已做过,作为基线                              │
+  ├─────────────────────┼──────────────────────────────────────────────┤
+  │ 1. 机头上仰 90°     │ 机身立起,机头朝上                            │
+  ├─────────────────────┼──────────────────────────────────────────────┤
+  │ 2. 机头下俯 90°     │ 机身立起,机头朝下(应与1反号)                 │
+  ├─────────────────────┼──────────────────────────────────────────────┤
+  │ 3. 右侧机臂朝下 90° │ 向右倒放                                     │
+  ├─────────────────────┼──────────────────────────────────────────────┤
+  │ 4. 左侧机臂朝下 90° │ 向左倒放(应与3反号)                          │
+  ├─────────────────────┼──────────────────────────────────────────────┤
+  │ 5.(可选)倒扣 180°   │ 机腹朝上,验证 Z 轴反号 & 排除额外90°贴装旋转 │
+  └─────────────────────┴──────────────────────────────────────────────┘
+
+  三、判读逻辑(这才是要回答的核心问题)
+
+  当前 PITCH_CALIB=ROLL_CALIB=0(已确认于 sdkconfig),sensorsAccAlignToGravity() 是恒等变换,所以 acc.x/y/z
+  就等于代码里的:
+  accScaled.x = -(accelRaw.x)*K/scale   // x 取负
+  accScaled.y =  (accelRaw.y)*K/scale   // y 不取负
+  accScaled.z =  (accelRaw.z)*K/scale   // z 不取负
+  拿这份表去对照实测,依次确认:
+
+  1. 先定轴:机头上仰时,acc.x 和 acc.y 哪个大幅摆向 ±1g、哪个基本不动(接近基线)?动的那个才是"pitch
+     对应的轴"——不要凭代码假设,必须这次实测说话。
+  2. 验证反号:上仰 vs 下俯,该轴应该严格反号、幅值都接近 ±1g(0.9~1.0 都算合理);右倒 vs 左倒同理。
+  3. 验证融合层符号:上仰时 stabilizer.pitch 是正是负?如果"机头上仰→pitch变负",这跟 sensfusion6.c:273
+     那行原厂自带注释 //Pitch seems to be inverted 直接对上——说明这是固件既定定义,不是这次要修的地方。
+  4. 验证串轴:上仰时"另一路水平轴"(基本不动的那个)是否真的没动、roll/yaw 是否基本不动;倒扣 180° 后水平两轴
+     是否仍接近基线——如果不是,说明还有一次没被代码处理的额外贴装旋转(对应笔记第6节悬而未决的问题1)。
+
+  四、这次测试能回答什么、不能回答什么
+
+  - 能回答:融合层(fusion, stabilizer.roll/pitch)的方向定义,和 IMU 贴装/换轴表是否需要修。这是 t4d
+    电机不转就能验证的部分。
+  - 不能回答:"控制算法方向"里电机响应那一段——power_distribution_stock.c 的混控(当前
+    CONFIG_PITCH_DISTRIBUTION_INVERTED=y 已经打开)和 crtp_commander_rpyt.c 里遥杆→pitch setpoint
+    的符号是否跟这次确认的融合层方向配套一致,只能靠读代码交叉核对,或者做危险性更高一档的
+    T3(拆桨、自稳模式下手扶倾斜,观察 motorPowerSet.m1..m4 是否是预期该加速的电机在加速)。t4d
+    本身不涉及电机,不能替代 T3。
+
+  建议先做完上面的 IMU 固定姿态测试把融合层方向坐实,再决定要不要动 power_distribution
+  或换轴表——两处只能改一处,改错了会正反馈翻机。
+  
+  claude --resume 09e71a7d-a69d-41d5-aa20-09590fa2ae36
+  
+  
+  分析传感器mpu6050取出原始数据acc gyro，跟小四轴的坐标系对应关系？小四轴自稳用的坐标系是什么？
+  
+  分析传感器mpu6050取出原始数据acc gyro，跟小四轴的坐标系对应关系？小四轴自稳用的坐标系是什么？            
+
+  Thought for 19s (ctrl+o to expand)
+
+● 让我先看一下 MPU6050 驱动相关代码，了解原始数据的读取和坐标转换逻辑。
+
+● Agent(查找MPU6050驱动及坐标系转换代码)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 我已经派出一个后台代理去分析 MPU6050 驱动代码和坐标系转换逻辑，正在等待结果，完成后会汇报。
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "查找MPU6050驱动及坐标系转换代码" finished · 3m 42s
+
+  Thought for 26s (ctrl+o to expand)
+
+● MPU6050 原始数据 → 机体坐标系的映射关系
+
+  1. 芯片寄存器读取（原始顺序,无映射)
+
+  components/drivers/i2c_devices/mpu6050/mpu6050.c:2147 的 mpu6050GetMotion6()
+  按数据手册寄存器顺序（0x3B~0x48）依次读出
+  ACCEL_X/Y/Z、GYRO_X/Y/Z,这一步没有任何符号或轴交换,是芯片自身坐标系的原始值。
+
+  2. 真正的芯片→机体坐标转换
+
+  在 components/core/crazyflie/hal/src/sensors_mpu6050_hm5883L_ms5611.c:423 的 processAccGyroMeasurements()
+  里,根据板型分两支:
+
+  - CONFIG_TARGET_ESPLANE_V1(老板型):MPU6050 安装方向与机体一致 → 直通,body.{x,y,z} = chip.{x,y,z},acc/gyro
+    都不变号。
+  - 其余目标板(当前 ESP32-S2/S3 机型默认走这支):MPU6050 在 PCB 上相对机体旋转了
+    90°,代码用交换+取反来补偿(注释写的是 "correct the rotated 90º IMU coordinate system"):
+
+  body.acc.x  = -chip.accel_Y
+  body.acc.y  =  chip.accel_X
+  body.acc.z  =  chip.accel_Z
+
+  body.gyro.x = -chip.gyro_Y
+  body.gyro.y =  chip.gyro_X
+  body.gyro.z =  chip.gyro_Z
+
+  这正好是绕芯片 Z 轴转 +90° 的坐标变换,acc 和 gyro 用同一套变换(刚体一致,右手系不破坏)。变换之后还有一个
+  sensorsAccAlignToGravity()(1138行),只是用标定得到的微小倾角(roll/pitch trim)做二次修正,不是再做轴映射。
+
+  ⚠️  仓库自己的记录里这条轴表还没有最终验证通过：records/espdrone.md 第369-372行明确写着,T4
+  系列台架测试发现"roll 正确、pitch
+  反,且与窗口/积分方式无关",已经排除了混控/积分器的问题,怀疑范围收窄到就是这张轴映射表,或者
+  power_distribution_stock.c 里的电机混控符号——两者哪个是根因还没有定论,仓库里专门写了
+  python/t4_imu_axis_check.py / t4d_imu_raw_axis_check.py
+  两个上电台架脚本在排查这个问题。所以如果你现在正在查 pitch 反向的 bug,这张表本身就是最大嫌疑对象。
+
+  小四轴自稳用的坐标系
+
+  不是 NED,而是Crazyflie 遗留的 CF2 机体坐标系——这一点在 stabilizer_types.h:154 的注释里写得很明确:"legacy
+  CF2 body coordinate system, where pitch is inverted"。特点:
+
+  - Z 轴朝上(不是 NED/FRD 的朝下):sensfusion6.c:62 静止时加速度计基准值 baseZacc =
+    1.0(+1g),estimatedGravityDirection() 静止时 gz≈+1,说明 body Z 轴指向"上"。
+  - pitch 符号是反的:sensfusion6.c:273 直接写了注释 // Pitch seems to be inverted,这是 Bitcraze/Crazyflie
+    上游代码遗留下来的"非标准"约定,不是标准航空 FRD 定义。
+  - 姿态融合用的是标准 Mahony/Madgwick 四元数互补滤波(sensfusion6.c),滤波器本身不规定坐标系,坐标系是由
+    processAccGyroMeasurements() 喂进去的机体轴 + 重力符号决定的。
+
+  唯一出现 NED 的地方是可选的 position_controller_indi.c(94-186行),它在内部显式做了一次"body(legacy
+  CF2)→NED"再转回来的变换(Y/Z 轴和 yaw 都取反,注释写着 "to account for wrong coordinate frame in the
+  implementation of the inner
+  loop")。这恰恰反证了:除了这个控制器内部,整个工程(传感器层、sensfusion6.c、stabilizer.c、PID
+  控制器、power_distribution_stock.c)都是跑在Z朝上、pitch反号的非NED机体坐标系下的。
+
+  records/espdrone.md 第348行给出的验收标准是"绕各轴转动 gyro 符号符合右手系",第190行还提到 pyDrone 与
+  ESP-Drone 板电机编号/机头朝向不同导致 pitch 整体反号——这也是仓库里目前对 pitch
+  反向问题的两个可能根因之一。
+  
+  所以CONFIG_TARGET_PYDRONE_S3=y自稳用的坐标系是怎样的？具体一点:比如x、y、z的方向？                       
+
+  Thought for 30s (ctrl+o to expand)
+
+● fork(深挖PYDRONE_S3坐标系具体朝向)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 正在深入排查 CONFIG_TARGET_PYDRONE_S3 具体走哪条分支、MPU6050 物理安装朝向,以及结合电机布局反推 x/y/z
+  轴的真实物理指向,完成后告诉你结论。
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "深挖PYDRONE_S3坐标系具体朝向" finished · 1m 25s
+
+  Thought for 22s (ctrl+o to expand)
+
+● 结论:这个问题在仓库当前状态下没有确定答案,是正在台架排查、尚未定论的开放问题,不是我藏着不说,是代码本身还
+  没验证清楚。具体依据:
+
+  1. PYDRONE_S3 走哪条分支——这个是确定的
+
+  sensors_mpu6050_hm5883L_ms5611.c:429 的 processAccGyroMeasurements() 只单独区分了
+  CONFIG_TARGET_ESPLANE_V1,其余所有板型(包括 CONFIG_TARGET_PYDRONE_S3)统一走 #else 分支(437-444行):
+
+  accelRaw.y = chip.ACCEL_XOUT;  accelRaw.x = chip.ACCEL_YOUT;  accelRaw.z = chip.ACCEL_ZOUT;
+  gyroRaw.y  = chip.GYRO_XOUT;   gyroRaw.x  = chip.GYRO_YOUT;   gyroRaw.z  = chip.GYRO_ZOUT;
+  ...
+  sensorData.gyro.x = -(gyroRaw.x - bias.x) * ...;   // 新x取负
+  accScaled.x       = -(accelRaw.x) * ... / accScale; // 新x取负
+
+  即:芯片 X/Y 互换,新 X 取负,Z 不变。PYDRONE_S3 没有自己独立的代码分支,和其它非-ESPLANE_V1 板型共用这一套。
+
+  2. 这套变换对应到 pyDrone 实机是"前后左右上下"——这个没有确定答案
+
+  records/espdrone.md 第369-374行("待确认事项")自己写得很清楚,这不是能靠看代码推出来的,需要台架实测:
+
+  ▎ 1. IMU 贴装方向:pyDrone 和 esp-drone 的换轴/取负表完全相同,但 pyDrone 把 sensorsAccAlignToGravity() 用
+  ▎ #if 0 关掉了。pyDrone PCB 丝印有 X/Y/Z 标记,需按 T4 实测确认是否需要额外旋转。
+  ▎ 2. pitch 反号的真实来源:是电机编号差异(power_distribution_stock.c 的
+  ▎ CONFIG_PITCH_DISTRIBUTION_INVERTED)还是 IMU 朝向差异(这张换轴表),要台架实测才能定论,决定该改哪个文件。
+
+  文档第190行提到的"机头指向图示左方,M1左上/M2右上/M3右下/M4左下"是电机布局朝向,跟 MPU6050 芯片丝印 X/Y
+  相对机头的关系是两件独立的事,仓库自己也没有把它们对上。
+
+  3. 现在的排查进度
+
+  - 21f6254/de67069/94b4d37("t4b"/"t4c")只改了 Python 台架脚本,没动固件代码;实测结果是"roll 对、pitch
+    反,且与积分窗口无关"——排除了混控符号和积分饱和,把嫌疑收窄到"换轴表 vs 电机混控"这两者之一。
+  - 当前 HEAD 43f9a0e("feat: mpu")只是给 sensors_mpu6050_hm5883L_ms5611.c 加了原始 acc 的 LOG
+    输出(配合新脚本 python/t4d_imu_raw_axis_check.py),换轴/取负表本身一行没改。
+  - t4d_imu_raw_axis_check.py 就是为了解决你现在问的这个问题而写的:手动倾斜机身,对照
+    gyro.xRaw/yRaw/zRaw(换轴后原始整数)、gyro.x/y/z(换算后)、acc.x/y/z、stabilizer.roll/pitch/yaw
+    五层数据,判断某个符号是否符合物理直觉——这个脚本目前还没跑出结论。
+
+  如果你需要确定答案:唯一办法是刷 43f9a0e 这版固件,跑
+  t4d_imu_raw_axis_check.py,手动绕机身三个轴分别转动,对照原始寄存器符号(右手系是否成立)和
+  stabilizer.roll/pitch/yaw 的响应方向,才能实测出 PYDRONE_S3 上 x/y/z
+  到底对应哪个物理方向。我可以帮你看这个脚本怎么跑、或者一起分析你台架实测出来的数据。
+
+✻ Crunched for 2m 18s · done 16:12
+
+※ recap: We're figuring out the MPU6050-to-body-frame axis mapping for PYDRONE_S3, which is still 
+  unresolved in the repo. Next step: run t4d_imu_raw_axis_check.py on hardware to determine the actual 
+  x/y/z directions. (disable recaps in /config)
+
+❯ 传感器坐标系及姿态融合这一块CONFIG_TARGET_PYDRONE_S3的逻辑跟CONFIG_TARGET_ESP32_S2_DRONE_V1_2一样吗？    
+
+  Thought for 31s (ctrl+o to expand)
+
+● fork(对比PYDRONE_S3与ESP32_S2_DRONE_V1_2传感器坐标系逻辑)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 正在逐行比对这两个 target 在传感器坐标映射和姿态融合代码路径上的所有条件编译分支,完成后汇报差异结论。
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "对比PYDRONE_S3与ESP32_S2_DRONE_V1_2传感器坐标系逻辑" finished · 1m 26s
+
+● 结论:传感器坐标系映射 + 姿态融合这两块,完全一样
+
+  逐项核对结果:
+
+  1. 轴映射表(processAccGyroMeasurements,sensors_mpu6050_hm5883L_ms5611.c:423-483)
+  只区分 CONFIG_TARGET_ESPLANE_V1 vs #else。PYDRONE_S3 和 ESP32_S2_DRONE_V1_2 都落在同一个 #else
+  分支——芯片X/Y互换、新X取负、Z不变,acc/gyro 都一样,没有为 PYDRONE_S3 单独写过判断。
+
+  2. sensorsAccAlignToGravity()
+  两个 target 都无条件调用(481行),没有 #if 0 关掉。顺带澄清一下上次的说法:records/espdrone.md 里"pyDrone
+  把它 #if 0 关掉了"那句,指的是被参考的外部上游 pyDrone 代码库,不是本仓库的 CONFIG_TARGET_PYDRONE_S3
+  分支——本仓库这两个 target 在这一点上完全一致,是我上次转述时没帮你分清楚,这里更正。
+
+  3. DLPF/满量程配置
+  537行、1177行都写的是 #if defined(CONFIG_TARGET_ESP32_S2_DRONE_V1_2) ||
+  defined(CONFIG_TARGET_PYDRONE_S3),两者共用同一分支(同样的DLPF截止频率、同样的量程配置)。
+
+  4. sensfusion6.c(姿态融合算法本身)
+  全文搜索这两个宏零匹配——两者走完全同一套 Mahony
+  互补滤波代码,没有任何条件分叉。而且该文件根本不消费磁力计数据,所以两个 target
+  磁力计芯片不同也不影响融合结果。
+
+  但下游("自稳"整体行为)确实有差异,值得注意
+
+  - main/Kconfig.projbuild:142 PITCH_DISTRIBUTION_INVERTED:default y if TARGET_PYDRONE_S3,其余 default
+    n。这是电机混控层(power_distribution_stock.c)对 pitch
+    项取反的开关,不属于坐标系/融合,但直接对应你之前问的"pitch反号"问题。Kconfig 帮助文本原话说明维护者自己
+    也不确定这差异是电机编号还是IMU朝向导致,必须台架验证(T3),目前是"没验证过的假设配置",不是确认结论。
+  - 磁力计(QMC5883L vs HMC5883L)、气压计默认启用状态不同,但不进入 roll/pitch/yaw 融合。
+  - PID增益、引脚号等属于调参和硬件走线差异,跟坐标系/融合无关。
+
+  一句话:坐标系映射和姿态融合算法,PYDRONE_S3 跟 ESP32_S2_DRONE_V1_2
+  逐行相同;真正体现两者差异、且直接影响自稳表现的是那一处电机混控 pitch
+  符号开关,而这个开关本身还没经过台架验证。
+
+✻ Baked for 2m 16s · done 16:20
+
+❯ ESP32_S2_DRONE_V1_2 的轴映射表可以推断出飞机的坐标系是什么样的吗？具体一点:比如x、y、z的方向？
+fork(推断ESP32_S2_DRONE_V1_2机体坐标系物理方向)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 正在从电机混控公式、原理图/文档线索和上游 Crazyflie 约定,反推 ESP32_S2_DRONE_V1_2 机体坐标系 x/y/z
+  的具体物理指向,完成后汇报。
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "推断ESP32_S2_DRONE_V1_2机体坐标系物理方向" finished · 2m 18s
+
+  Thought for 16s (ctrl+o to expand)
+
+● 结论:能推断出来,而且这次找到了硬证据
+
+  之前 PYDRONE_S3 之所以推不出来,是因为没有机头方向图。ESP32_S2_DRONE_V1_2
+  是官方板,仓库里确实藏着一张机头方向图:docs/_static/espdrone_s2_v1_2_diretion.png(被
+  docs/zh_CN/rst/gettingstarted.rst 引用),标注了电机物理位置:
+
+          机头 front
+      M4(前左)     M1(前右)
+           \         /
+            \       /
+            /       \
+           /         \
+      M3(后左)     M2(后右)
+
+  用混控公式验证方向
+
+  power_distribution_stock.c:89-101 的 QUAD_FORMATION_X 混控(全局宏,ESP32_S2_DRONE_V1_2 不带 pitch
+  反号开关,走的是"原味"公式):
+
+  m1 = thrust - r + p + yaw   // 前右
+  m2 = thrust - r - p - yaw   // 后右
+  m3 = thrust + r - p + yaw   // 后左
+  m4 = thrust + r + p - yaw   // 前左
+
+  - roll(r)正时:右侧两个电机(M1、M2)同为 -r,左侧两个(M3、M4)同为 +r——roll
+    区分左右两侧,即绕前后方向的轴转动。
+  - pitch(p)正时:前侧两个电机(M1、M4)同为 +p,后侧两个(M2、M3)同为 -p——pitch
+    区分前后两侧,即绕左右方向的轴转动。
+
+  结果
+
+  结合已确认的"Z轴朝上"(sensfusion6.c:62 静止 acc.z≈+1g)和标准右手系(x×y=z),唯一自洽的一组指向是:
+
+  ┌─────┬─────────────────┐
+  │ 轴  │    物理方向     │
+  ├─────┼─────────────────┤
+  │ X   │ 机头前方(front) │
+  ├─────┼─────────────────┤
+  │ Y   │ 机身左侧(left)  │
+  ├─────┼─────────────────┤
+  │ Z   │ 竖直向上(up)    │
+  └─────┴─────────────────┘
+
+  这跟 roll 绕 X 轴、pitch 绕 Y 轴、区分左右/前后的混控对称性完全吻合。
+
+  一个重要例外:别用 pitch 来反向验证
+
+  按严格右手定则,绕 +Y(左)轴正转该是"机头下俯",但混控公式里 pitch 为正时前电机是 +p(加速抬头),对应"机头上仰
+  "——符号是反的。但这不是推理出错,是仓库自己承认的历史遗留问题:stabilizer_types.h:155 写着 "legacy CF2 body
+  coordinate system, where pitch is inverted",sensfusion6.c:273 也有 "Pitch seems to be inverted"
+  的代码注释。这是 Crazyflie CF2 上游一直带着的历史包袱,X=前、Y=左、Z=上 这个轴指向结论不受影响,只是 pitch
+  这一个控制量单独反着定义。roll 通道没有这个问题,如果你想实测验证,用 roll(左右倾斜)比用
+  pitch(前后倾斜)更可靠。
+
+✻ Crunched for 3m 24s · done 16:32
+
+※ recap: We're mapping the drone's IMU axes to its body coordinate system. Just confirmed 
+  ESP32_S2_DRONE_V1_2's x/y/z point front/left/up using motor mixing math; next is checking whether 
+  PYDRONE_S3's pitch-inversion setting still needs bench verification. (disable recaps in /config)
+
+❯ 姿态估计里面的旋转，用的坐标系是什么？跟推测的一致吗？                                                   
+
+  Thought for 28s (ctrl+o to expand)
+
+● fork(分析姿态估计四元数/欧拉角的旋转坐标系约定)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 正在细读 sensfusion6.c 的四元数/欧拉角提取公式,核对姿态估计的旋转坐标系跟之前推断的
+  X前Y左Z上是否自洽,完成后汇报。
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "分析姿态估计四元数/欧拉角的旋转坐标系约定" finished · 1m 7s
+
+  Thought for 16s (ctrl+o to expand)
+
+● 结论:一致自洽,而且能给出更精确的定位
+
+  sensfusion6.c 用的是标准 Mahony 互补滤波 + ZYX(yaw-pitch-roll)欧拉角提取,坐标系约定跟之前推断的完全对得上
+  ,但顺带把"pitch反号"问题的具体代码位置也钉死了。
+
+  旋转顺规与轴对应关系
+
+  sensfusion6GetEulerRPY()(263-275行)提取公式:
+
+  yaw   = atan2f(2*(qw*qz + qx*qy), qw*qw + qx*qx - qy*qy - qz*qz)
+  pitch = asinf(gx)              // gx = 2*(qx*qz - qw*qy)
+  roll  = atan2f(gy, gz)         // gy = 2*(qw*qx+qy*qz), gz = qw²-qx²-qy²+qz²
+
+  跟标准 ZYX 欧拉角公式逐项比对:
+
+  ┌───────┬──────┬─────────────────────────────────────────────────────────────────┐
+  │ 角度  │ 绕轴 │                         跟标准公式对比                          │
+  ├───────┼──────┼─────────────────────────────────────────────────────────────────┤
+  │ yaw   │ Z    │ 完全一致                                                        │
+  ├───────┼──────┼─────────────────────────────────────────────────────────────────┤
+  │ roll  │ X    │ 完全一致                                                        │
+  ├───────┼──────┼─────────────────────────────────────────────────────────────────┤
+  │ pitch │ Y    │ 符号相反(标准应是 asin(2(qwqy-qxqz)),这里是 asin(2(qxqz-qwqy))) │
+  └───────┴──────┴─────────────────────────────────────────────────────────────────┘
+
+  roll绕X轴、pitch绕Y轴、yaw绕Z轴——跟之前从电机混控+机头图推出的"X前Y左Z上"完全吻合,没有新矛盾。
+
+  世界参考系
+
+  - 世界 Z 轴与重力反向对齐、朝上,静止水平时跟机体 Z 重合(estimatedGravityDirection()
+    310-314行,水平静止时返回(0,0,1),跟 baseZacc=1.0 一致)。
+  - 世界 X/Y 没有绝对参考:整个融合只吃 gyro+acc(88-97行),不接收磁力计输入,所以 yaw 就是纯陀螺仪积分(只有
+    roll/pitch 靠加速度计的重力方向做比例-积分纠正),会随时间漂移,没有绝对朝向锚点。这跟之前确认的"磁力计不
+    进入姿态融合"一致。
+
+  关键发现:pitch反号问题的具体落点找到了
+
+  第273行的 pitch 提取公式本身就自带一个负号(代码注释自己写着 //Pitch seems to be inverted)——这跟换轴表(pro
+  cessAccGyroMeasurements)、电机混控开关(PITCH_DISTRIBUTION_INVERTED)是三个各自独立的地方,理论上每处都可能
+  贡献一部分符号反转。目前这三处到底哪个是"多余的反号"、哪个是"必要的反号",仍然没有定论,需要仓库自己说的台
+  架实测(T3/T4)才能拆清楚——但至少现在知道排查时要看的是这三个具体位置,不再是泛泛的"某处反了"。
+
+✻ Churned for 1m 52s · done 16:39
+
+kalman滤波的情况坐标系，跟推测的自洽吗？                                                                 
+
+  Thought for 23s (ctrl+o to expand)
+
+● fork(分析卡尔曼滤波估计器坐标系约定)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 正在确认仓库里是否存在并启用了卡尔曼滤波估计器,以及其坐标系约定是否跟之前确认的机体坐标系自洽,完成后汇报
+  。
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "分析卡尔曼滤波估计器坐标系约定" finished · 2m 0s
+
+● 结论:一致自洽,而且不是仓库里的"死代码"
+
+  仓库确实集成了 Crazyflie 上游的卡尔曼滤波估计器(estimator_kalman.c/kalman_core.c,位于
+  components/core/crazyflie/modules/src/),编译产物里能确认已被实际编译进固件,不是排除在外的残留文件。
+
+  启用状态:estimator.c:9 默认 DEFAULT_ESTIMATOR = complementaryEstimator(即 sensfusion6.c
+  那套互补滤波),卡尔曼不是默认走的,但可以在运行时切换启用:
+  - crtp_commander_rpyt.c:104,110——POSHOLD_MODE/POSSET_MODE 定点/定位模式下会自动
+    registerRequiredEstimator(kalmanEstimator)。
+  - stabilizer.c:283-285,561——stabilizer.estimator 是可写的 CRTP 参数,主循环检测到变化就调用
+    stateEstimatorSwitchTo() 切换。
+
+  坐标系约定——跟互补滤波、跟之前推断的机体坐标系完全一致:
+
+  1. 世界Z轴朝上、重力反向对齐:kalman_core.c:806-808 速度更新式里 zacc≈+1g 抵消
+     GRAVITY_MAGNITUDE*R[2][2](R[2][2]≈1),跟 sensfusion6.c 的 baseZacc=1.0 是同一个约定,不是NED(Z朝下)。
+  2. 高度状态直接印证Z朝上:kalman_core.c:544 测距高度模型 predictedDistance = S[KC_STATE_Z] /
+     R[2][2]——离地距离为正值,说明状态里的 Z 就是"离地高度、朝上为正"。
+  3. 输入不做额外坐标转换:kalman_core.c:805,828-830 body-frame 速度更新直接吃
+     acc->x/y/z、gyro->x/y/z,这就是 processAccGyroMeasurements() 换轴后输出的同一份
+     sensorData,跟互补滤波共用同一路输入,没有像 position_controller_indi.c 
+     那样再做一次"body→NED"的显式转换。
+  4. 旋转矩阵 R[2][*](机体Z轴在世界坐标系下的投影)跟 sensfusion6.c 的 estimatedGravityDirection()
+     是同一套四元数定义。
+
+  一句话:卡尔曼估计器和互补滤波器共享同一个坐标系约定(世界Z朝上、机体输入不转换),跟之前反推出的
+  X前/Y左/Z上机体坐标系没有任何冲突,不需要额外担心引入NED或其它约定的混用问题。目前发现的唯一符号问题依然只
+  集中在那三处(换轴表、sensfusion6.c:273 pitch提取公式、PITCH_DISTRIBUTION_INVERTED
+  混控开关),不涉及卡尔曼这条路径。
+
+✻ Sautéed for 2m 39s · done 16:46
+
+关键发现:pitch反号问题的具体落点找到了                                                                   
+                                                                                                           
+    第273行的 pitch 提取公式本身就自带一个负号(代码注释自己写着 //Pitch seems to be                        
+  inverted)——这跟换轴表(pro                                                                                
+                                                                                                           
+  cessAccGyroMeasurements)、电机混控开关(PITCH_DISTRIBUTION_INVERTED)是三个各自独立的地方,理论上每处都可能 
+                                                                                                           
+  贡献一部分符号反转。目前这三处到底哪个是"多余的反号"、哪个是"必要的反号",仍然没有定论,需要仓库自己说的台 
+    架实测(T3/T4)才能拆清楚——但至少现在知道排查时要看的是这三个具体位置,不再是泛泛的"某处反了"。------请具 
+  体给出测试方案？确定这三处哪些需要调整，同时考虑kalman的姿态估算的旋转方向                               
+
+  Thought for 42s (ctrl+o to expand)
+
+● fork(收集卡尔曼姿态提取代码与现有T3T4测试方法细节)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 正在收集 Kalman 姿态提取代码、混控开关具体实现,以及现有 T3/T4 台架脚本的测试方法和已有结论,拿到这些事实后
+  我会基于此给你设计一套能独立拆分定位这几处符号反转的具体测试方案。
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "收集卡尔曼姿态提取代码与现有T3T4测试方法细节" finished · 1m 47s
+
+  Thought for 2m 11s (ctrl+o to expand)
+
+● 先把已经排除的和还剩的说清楚
+
+  已经排除(不用再测):
+  - 混控开关 PITCH_DISTRIBUTION_INVERTED——t4c_rpy_step_response_check.py
+    已经测过开/关两种情况,pitch反的现象不随开关变化,说明混控不是根因。
+  - estimator公式不一致——Kalman(kalman_core.c:1049-1060)和互补滤波(sensfusion6.c:273)的pitch公式展开后数学
+    上等价(都是"标准公式外面套一个负号"),t4d 脚本注释里也确认过这一点,不是"两个估计器打架"。
+
+  真正悬而未决、只剩一个的候选:processAccGyroMeasurements()
+  换轴表(sensors_mpu6050_hm5883L_ms5611.c:437-444)里,取负加在了哪一路。
+
+  核心假设(基于代码结构,需要台架验证,不是我瞎猜)
+
+  代码现在是:body.x = -chip.gyro_Y(取负),body.y =
+  chip.gyro_X(不取负)。这个"取负放在X那一路"的选择,本质是在假设 IMU
+  是往某一个特定方向转了90°安装的。如果实际贴装是往反方向转的90°,那该取负的应该是 Y 那一路,不是 X
+  那一路——这样一改,roll(用到取负那一路)和pitch(用到不取负那一路)就会刚好一个对一个反,跟现在观测到的"roll对
+  、pitch反"完全吻合。这是目前结构上最简洁、能解释现象的假设,下面的测试就是用来证实或否证它。
+
+  具体测试方案(复用现有脚本,不用重新写代码)
+
+  第0步 环境准备
+  - 刷入当前HEAD(43f9a0e,已带 accRaw log group)的固件
+  - 拆桨,机身固定在能读出精确倾斜角的支架/水平仪上(哪怕手持,也要找个直角参照物,比如桌角)
+  - 用 t4_imu_axis_check.py/t4d_imu_raw_axis_check.py 里现成的 ensure_complementary_estimator()
+    强制切到互补滤波,避免测试期间 Kalman 的协方差滞后干扰判断
+
+  第1步 用已验证正确的 roll 建立"标准答案"
+  用 t4d_imu_raw_axis_check.py 的4个log block(gyroRaw.xRaw/yRaw/zRaw、accRaw.xRaw/yRaw/zRaw、gyro.x/y/z、ac
+  c.x/y/z、stabilizer.roll/pitch/yaw),做一个方向已知、幅度已知的纯roll动作(比如:机头不动,右侧机臂压低约30°,
+  即标准正roll)。记录:raw阶段哪个变量(xRaw还是yRaw)变化、符号;converted阶段(取负后)符号;最终stabilizer.roll
+  符号。因为roll全链路已被t4c证明闭环正确,这组记录就是"正确的符号传播模式"模板。
+
+  第2步 对pitch做完全对称的动作,比对传播模式
+  做方向已知的纯pitch动作(机头下压约30°,机臂保持水平),记录同一组变量。
+
+  比对第1步和第2步:
+  - 如果 raw→converted 阶段的"取负/不取负"结构在roll和pitch两条路径上是对称一致的(跟已知90°假设吻合),但最终
+    stabilizer.pitch依然反——说明问题不在换轴表,前面"estimator等价"的排除有漏洞,需要回头复查。
+  - 如果 raw→converted 阶段在pitch路径上跟roll路径的模式不对称(该取负的那一路没取负,或反过来)——直接实锤换轴
+    表的负号加错了位置,前面的假设成立。
+
+  第3步 定位具体改哪一行并验证
+  如果第2步确认是换轴表问题,具体改法是把 sensors_mpu6050_hm5883L_ms5611.c:437-444
+  的取负从"body.x"那一路挪到"body.y"那一路(acc/gyro同步改),本质是把90°旋转方向反过来。改完后重跑 t4c_rpy_st
+  ep_response_check.py,预期roll和pitch同时表现为正确响应方向。如果这时roll反倒变错了,说明实际贴装角不是简单
+  的±90°(可能是180°或者别的角度),需要回到第1、2步的原始数据重新反推实际旋转角,而不是简单挪个负号位置。
+
+  第4步 Kalman路径的回归确认(不是新的定位测试)
+  第3步验证通过后,把 stabilizer.estimator 切到kalman(CRTP参数,stabilizer.c:561),重跑一次t4c或做一次POSHOLD
+  模式下的手动扰动测试。因为Kalman的body-frame速度更新(kalman_core.c:805)直接吃同一份sensorData.acc/gyro,换
+  轴表修好后,理论上Kalman的水平速度方向也会同步修正——这一步是确认没有遗漏,不是重新定位。
+
+✻ Crunched for 4m 40s · done 16:54
+
+※ recap: We've been mapping the ESP-Drone's sensor/attitude coordinate system and pinpointing a pitch-sign 
+  bug. Next step is a bench test: perform known roll and pitch motions while logging raw/converted/fused 
+  values to confirm which axis-swap sign needs fixing.
+  
+  
+  机头不动,右侧机臂压低约30°
+t=   59169  gyroRaw(x,y,z)=(    55,   -18,   -23)  |  gyro(x,y,z)=(   -2.4,   -0.8,   -2.3)  |  accRaw(x,y,z)=(  -113,   591,  1744)  |  acc(x,y,z)=( 0.066, 0.330, 0.965)  |  roll= 17.26 pitch=  3.38 yaw= -0.37
+机头下压约30°,机臂保持水平
+t=   42352  gyroRaw(x,y,z)=(    20,    12,    12)  |  gyro(x,y,z)=(   -0.4,    0.8,   -0.3)  |  accRaw(x,y,z)=(   634,   143,  1684)  |  acc(x,y,z)=(-0.349, 0.075, 0.932)  |  roll=  4.62 pitch=-18.43 yaw=  0.38
+这是测得两组数据，请继续分析
+
+两组数据非常干净(都是静态悬停读数,gyro残留量接近零说明是稳定姿态下的读数,正好可以用来单独检验加速度计→
+  角度这条链路,不受陀螺仪动态影响)。逐项算一下:
+
+  Roll 测试(右臂压低)—— 完全自洽,验证通过
+
+  acc=(0.066, 0.330, 0.965),roll=+17.26°
+
+  物理动作:右侧(−Y方向,因为假设Y=左)压低,左侧(+Y)抬高。按重力方向随机体转动的几何关系推导:哪一侧被抬高,加速
+  度计在那一轴上的读数就应该是正的。测得 acc.y=+0.330(正),跟"左侧(+Y)抬高"完全吻合;报出的 roll=+17.26°
+  也符合"右压低=正roll"的常规约定。这条链路(raw→换轴→融合)从头到尾自洽,没有异常,跟 t4c
+  之前测出的"roll对"完全一致。
+
+  Pitch 测试(机头下压)—— 关键发现:传感器映射是对的,问题不在换轴表
+
+  acc=(-0.349, 0.075, 0.932),pitch=-18.43°
+
+  按同样的几何推导(把roll的推导方式原样套到X轴上):机头(+X方向)下压,意味着+X方向被压低、-X方向(机尾)被抬高。
+  同样的"哪侧抬高、那一轴读数为正"规律,预测这时acc.x应该是负的——测得 acc.x=-0.349(负),跟预测完全一致!
+
+  也就是说,X轴表现得跟"前方"这个假设完全自洽,跟Y轴表现出的"左方"是同一个结构模式,没有任何不对称或反常。这说
+  明我上一条回复里那个"换轴表选错了取负的轴"的假设,被这组数据否掉了——换轴表本身很可能是对的。
+
+  那pitch=-18.43°这个负号从哪来的?算一下:如果用跟roll同款、不带任何额外反转的"通用"pitch公式,这次机头下压这
+  个动作对应的应该是正的角度(跟acc.x=-0.349的几何关系反推出来的),但代码里 sensfusion6.c:273 的公式是
+  pitch=asinf(gx),而几何上"跟roll同款不反转"的公式应该是
+  pitch=-asinf(gx)——两者正好差一个负号,而这个负号恰恰就是文档里明确写的"legacy CF2 pitch
+  inverted"那个已知、蓄意的历史遗留约定,不是意外bug。换句话说:这次测得的-18.43°,是这个"故意反着定义"的公式
+  该给出的、符合内部逻辑的正确值,不是传感器映射错了。
+
+  结论:诊断方向要改
+
+  之前"换轴表选错负号方向"的假设,现在看不成立——两轴表现出完全对称、自洽的模式。真正需要重新聚焦的地方是:估
+  计器给出的 state.attitude.pitch
+  本来就是"反着定义"的(这是已知、历史遗留的约定),t4c测出的闭环pitch响应方向反,很可能是下游的姿态控制器/setp
+  oint比较环节,没有像处理roll一样正确地把这个"反定义"的pitch值考虑进去——而不是传感器或换轴表的问题。
+
+  下一步我建议去查具体的姿态PID控制器代码(controller_pid.c/attitude_pid_controller.c)和指令生成路径(crtp_co
+  mmander_rpyt.c),看pitch的误差计算/setpoint映射相对roll是否少了(或多了)一个补偿性负号。要我现在去查这部分
+  代码吗?
+  Agent(检查姿态PID控制器pitch符号处理是否对称)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 正在查姿态PID控制器的pitch误差计算和setpoint生成路径,看是否在这一层缺了/多了负号,完成后汇报。
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "检查姿态PID控制器pitch符号处理是否对称" finished · 7m 55s
+
+  Thought for 26s (ctrl+o to expand)
+
+● 这次结果推翻了"PID/setpoint路径不对称"这个假设——PID误差计算和setpoint生成两处都跟roll逐字对称,而且跟Bitcr
+  aze上游代码一致,不是ESP-Drone引入的差异。
+
+  关键的精细化认知
+
+  之前那组静态实测数据(机头下压→acc.x负,右臂压低→acc.y正)证明的是:X轴和Y轴彼此之间几何自洽(两条轴的换轴表用
+  的是同一套90°旋转逻辑,内部不矛盾)。但这不等于证明了acc.x的绝对极性,恰好等于sensfusion6.c:273 那个
+  pitch=asinf(gx) 公式所需要的那个特定极性。
+
+  原因是:
+  - roll = atan2f(gy,gz) 是纯几何公式,没有任何内建反转——所以只要acc.y几何自洽,roll闭环就自动正确。
+  - pitch = asinf(gx) 这个公式本身天生带一个负号(小角度展开可得
+    gravX≈-θ,而不是+θ)——这是Bitcraze原版CF2硬件专门为了配合它自己那颗IMU的acc.x极性调出来的,注释"Pitch
+    seems to be inverted"说的就是这件事。
+
+  只有当这块板子的acc.x绝对极性,恰好跟Bitcraze原版CF2硬件的acc.x极性一致时,这个"公式自带反转"才能被正确抵消
+  。roll因为公式本身没有反转,不需要这层额外匹配,所以roll能自然work;pitch因为公式有反转,极性配错了就会正好表
+  现出"pitch反、roll对"——跟台架实测症状完全吻合。这跟PID/setpoint层没关系,是姿态融合公式跟传感器极性之间的
+  配合问题。
+
+  下一步验证(比较简单,不用改代码)
+
+  1. 直接记录融合后的 state.attitude.pitch(不是acc.x本身)在机头下压30°时的符号,state.attitude.roll
+     在右臂压低30°时的符号。
+  2. 核对摇杆/CRTP协议里"前推杆"对应的 values->pitch 符号约定,跟"右压杆"对应 values->roll
+     的符号约定,是否用同一套"物理动作→数值符号"语言。
+  3. 把第1步的符号和第2步的符号直接对比:如果"机头下压"这个物理动作,融合出来的pitch符号跟摇杆前推该产生的set
+     point符号是反的(而roll这边是对的),就实锤问题出在 sensfusion6.c 的 asinf(gx) 跟 acc.x 极性配合上。
+
+  候选修复点(二选一,不要同时改)
+
+  - sensfusion6.c:273 把 asinf(gx) 改成 asinf(-gx)
+  - 或者在 sensors_mpu6050_hm5883L_ms5611.c 里把 accScaled.x 连同对应的 gyroRaw.x/gyro.y
+    一起翻号(必须acc和gyro同步翻,不能只改一半,否则破坏刚体一致性)
+
+  改完后务必同步检查 kalman_core.c:1051-1058——Kalman是用四元数直接算pitch再对结果整体取负,如果切换过去用Kal
+  man估计器,需要确认它用的也是同一份acc.x极性,否则可能只修好了complementary
+  filter这一路,Kalman那一路还是错的。
+
+  要不要我现在去实际记录一下 state.attitude.pitch 和摇杆setpoint符号对比,把第3步坐实?
+  
+  好的,我先看能不能纯靠读代码解决——实际上第1步(记录 state.attitude.pitch/roll
+  的符号)你上次那组台架数据已经给过了(roll=+17.26对应右臂压低,pitch=-18.43对应机头下压),不用重新测。真正缺
+  的是第2步:摇杆/CRTP指令那边"前推杆"到底该产生什么符号的
+  values->pitch。这个我可以直接查代码,不需要连硬件。
+
+● Agent(查摇杆/CRTP指令pitch符号约定与state对比)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 正在核对 CRTP 指令/测试脚本里"前推杆"该发的 pitch 符号约定,跟已实测的
+  state.attitude.pitch=-18.43°(机头下压)直接对比,判断是否吻合,完成后汇报结论。
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "查摇杆/CRTP指令pitch符号约定与state对比" finished · 5m 14s
+
+  Thought for 45s (ctrl+o to expand)
+
+● 这次挖到了一个很关键的、之前被忽略的具体矛盾点。
+
+  核心发现:混控开关是编译期宏,当前固件里它是"开"的,但测试脚本按"关"来算期望值
+
+  sdkconfig:449 显示 CONFIG_PITCH_DISTRIBUTION_INVERTED=y(在 2ae2034 feat: sdkconfig
+  这次commit里从"未设置"改成了=y,而且 main/Kconfig.projbuild 里这个宏本身的默认规则就是 default y if
+  TARGET_PYDRONE_S3——也就是说,一旦选了PYDRONE_S3板型,这个反转就被Kconfig自动带上了,并不是经过台架验证后才确
+  认的值)。
+
+  但 python/t4c_rpy_step_response_check.py:73-99 脚本注释里写的"期望电机响应方向",明确按
+  CONFIG_PITCH_DISTRIBUTION_INVERTED未设置的公式算出来的:
+
+  # 期望方向来自 power_distribution_stock.c 的 QUAD_FORMATION_X 混控公式(pitch未取反):
+  #   m1 = thrust - roll/2 + pitch/2 + yaw  ...
+  {"label": "PITCH +5deg", "expect": "期望 m1,m4 变大；m2,m3 变小"}
+
+  而当前实际生效的固件里,power_distribution_stock.c:92-97 的 p = -p 是执行了的——脚本打印的"期望"和固件实际
+  会做的事,方向刚好差一次取反。这完全可以单独解释"roll对、pitch反"的现象,不需要传感器/融合公式有任何问题。
+
+  这跟之前"开关测试过,结果不变"的记录冲突,需要你确认一件事
+
+  之前记录(records/espdrone.md)里提到"pitch反的现象在CONFIG_PITCH_DISTRIBUTION_INVERTED开/关两种情况下都一
+  样"。但这个宏是编译期 #ifdef,不是运行时参数——要真正测试"开"和"关"两种情况,必须改sdkconfig后重新完整编译+
+  刷机,不能只是重启或发个CRTP参数。
+
+  所以我需要跟你确认:之前得出"开关不影响结果"这个结论的时候,是真的分别改了
+  CONFIG_PITCH_DISTRIBUTION_INVERTED
+  的值、重新build+刷机测了两次,还是只是理论分析/没有实际重新编译?如果是后者,那个结论就不可靠,现在这个"当前s
+  dkconfig=y、但脚本按=n算期望"的具体矛盾,就是目前证据最实、最该优先验证的候选根因。
+
+  建议的下一步(最简单、最直接,不用碰传感器/融合代码)
+
+  1. 先确认当前固件(sdkconfig:449 是 =y)下,t4c_rpy_step_response_check.py 实测的电机响应方向,是不是刚好跟脚
+     本打印的"期望"相反——如果是,基本可以确认混控开关的当前取值(=y)跟这块板子实际需要的方向不一致。
+  2. 如果确认相反,有两个对称的修法(选一个,不要同时做):
+     - 把 sdkconfig 里 CONFIG_PITCH_DISTRIBUTION_INVERTED
+       改回不设置,重新build+刷机再测一次,看是否roll和pitch都变成正确方向;
+     - 或者反过来,承认=y是对的,只是t4c脚本注释算错了期望值,把脚本的expect字符串按"已取反"重新算一遍(这种情
+       况下电机响应本身就是对的,只是之前拿错的期望值去比对,误判成"反了")。
+
+  这个测试比之前设想的换轴表/融合公式排查要便宜得多——不用拆桨重新摆姿态,只需要重新编译两版固件对比一下电机
+  响应方向就能定论。要不要我先去核实一下之前"开关测试"的记录到底是不是基于真实重新编译刷机做的,还是我可以先
+  帮你确认脚本里expect字符串在=y状态下重新推导应该是什么?
+
+✻ Crunched for 6m 51s · done 17:37
+
+※ recap: We're tracing why the drone's pitch responds backward while roll works fine. Next: confirm whether
+  the motor-mixing inversion flag was actually rebuilt and reflash-tested before, since sdkconfig 
+  currently has it enabled but the test script assumes it's off.
+
+❯ CONFIG_PITCH_DISTRIBUTION_INVERTED=n的时候，pitch的测试及结果跟期望相反。CONFIG_PITCH_DISTRIBUTION_INVER 
+  TED=y的时候，pitch的测试结果跟期望相同（即PITCH                                                          
+  -5deg的时候，相当于期望飞机低头（或手动抬起机头），此时希望m2，m3变大）                                  
+  
+  Thought for 59s (ctrl+o to expand)
+
+● 这组结果把整条排查链闭环了,而且是个好消息——根因就是混控开关,而且当前 sdkconfig 
+  里已经是正确的配置,不需要改任何代码。
+
+  结果解读
+
+  用物理常识反推一下"正确方向"应该是什么:命令 PITCH=-5°(按已实测确认的约定,负pitch=机头下压)要求飞机低头,低
+  头需要前面两个电机(M1、M4)减速、后面两个电机(M2、M3)加速才能把机头压下去。这跟你说的"PITCH -5deg 时希望
+  m2,m3 变大"完全对得上——这是物理上唯一正确的方向,不依赖任何宏。
+
+  而你的实测结果:
+
+  ┌──────────────────────────────────────┬───────────────────────────────────────┐
+  │                 配置                 │       实际响应 vs 物理正确期望        │
+  ├──────────────────────────────────────┼───────────────────────────────────────┤
+  │ CONFIG_PITCH_DISTRIBUTION_INVERTED=n │ 相反——这正是之前观察到的"pitch反"症状 │
+  ├──────────────────────────────────────┼───────────────────────────────────────┤
+  │ CONFIG_PITCH_DISTRIBUTION_INVERTED=y │ 一致——正确                            │
+  └──────────────────────────────────────┴───────────────────────────────────────┘
+
+  结论
+
+  这直接实锤了:power_distribution_stock.c:92-97 那个 p=-p 的混控取反,对这块 PYDRONE_S3
+  板子来说是必需的、正确的,而当前 sdkconfig:449 已经是 CONFIG_PITCH_DISTRIBUTION_INVERTED=y——也就是说,这个
+  问题在当前固件配置下其实已经是修好的状态,不需要再改代码。
+
+  结合之前排查过的其它层:
+  - 传感器换轴表(processAccGyroMeasurements)——自洽,不用改
+  - 融合公式(sensfusion6.c:273 的pitch内建负号)——历史遗留、蓄意设计,不用改
+  - PID误差计算、setpoint赋值路径——对称,不用改
+  - 混控开关——这才是真正的根因,且当前值已经是对的
+
+  之前 records/espdrone.md 里"开关开/关都一样、pitch都反"那条记录看来是过时或者当时没有真的重新编译刷机测试
+  导致的误判,建议更新一下那份笔记,把这个结论标记为已解决,避免以后又被这条旧记录带偏方向。需要我帮你去改一下
+  records/espdrone.md 里那段"待确认事项"、把这个结论写进去吗?
+
+✻ Churned for 59s · done 17:44
+
+现在的情况不对，CONFIG_PITCH_DISTRIBUTION_INVERTED=y 时，@python/t4c_rpy_step_response_check.py 测试PITCH -5deg的时候m2m3是变大的。但@python/t4b_pitch_response_check.py 测试，在固定架上实际抬起机头，理论上m2m3也应该变大，但实际测试m2m3是变小了
 
