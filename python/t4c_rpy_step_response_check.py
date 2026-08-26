@@ -46,15 +46,18 @@ RAMP_TIME_S = 1.0       # 从 0 斜坡爬升到 BASE_THRUST 的时长，避免 4
 SETTLE_TIME_S = 1.0     # 爬升完到开始第一个阶跃之间的停留，确认基线稳定
 SEND_PERIOD = 0.05      # 20Hz 发送 setpoint，避免 commander watchdog 超时进入 fallback
 
-STEP_HOLD_S = 0.6       # 每个阶跃保持的时长：短脉冲，避免支架限位下的积分饱和
+STEP_HOLD_S = 0.3       # 每个阶跃保持的时长：短脉冲，避免支架限位下的积分饱和
+                        # （实测 8°/0.6s 单次阶跃内、纯外环积分爬升就能在 ~0.5s 撞到
+                        #  RATE_OUTP_ABORT_THRESHOLD，跟跨阶跃污染无关，方向在前 1~2
+                        #  个 tick 就已经看得很清楚，不需要保持这么久）
 RESET_PULSE_S = 0.15    # 回中时把 thrust 打到 0 的时长，触发固件清零姿态/角速度环积分
 RESET_RAMP_S = 0.3      # 从 0 斜坡爬回 BASE_THRUST 的时长，避免复位后再次阶跃电流冲击
 STEP_REST_S = 0.5       # 爬回基线后再停留确认稳定的时长（此时积分已清零，不需要很长）
 REPEAT_COUNT = 1        # 整套阶跃序列重复几遍，想多看几次响应可以调大
 
-ROLL_STEP_DEG = 8.0     # roll 阶跃角度（角度模式）
-PITCH_STEP_DEG = 8.0    # pitch 阶跃角度（角度模式）
-YAW_STEP_DEGPS = 40.0   # yaw 阶跃角速度（速度模式）
+ROLL_STEP_DEG = 5.0     # roll 阶跃角度（角度模式）
+PITCH_STEP_DEG = 5.0    # pitch 阶跃角度（角度模式）
+YAW_STEP_DEGPS = 25.0   # yaw 阶跃角速度（速度模式）
 
 LOG_WAIT_TIMEOUT_S = 2.0    # 等待第一帧 motor 日志的超时：等不到就说明遥测没通，绝不能盲发推力
 LOG_STALE_TIMEOUT_S = 0.3   # 运行中超过这么久没收到新日志帧，视为链路/主控可能已经异常
