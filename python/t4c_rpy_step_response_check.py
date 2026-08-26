@@ -296,13 +296,19 @@ def main():
             rp = diag_state["pid_rate.roll_outP"]
             pp = diag_state["pid_rate.pitch_outP"]
             yp = diag_state["pid_rate.yaw_outP"]
+            er = diag_state["stateEstimate.roll"]
+            ep = diag_state["stateEstimate.pitch"]
+            ey = diag_state["stateEstimate.yaw"]
             rp_s = f"{rp:7.0f}" if rp is not None else "    n/a"
             pp_s = f"{pp:7.0f}" if pp is not None else "    n/a"
             yp_s = f"{yp:7.0f}" if yp is not None else "    n/a"
+            er_s = f"{er:6.2f}" if er is not None else "   n/a"
+            ep_s = f"{ep:6.2f}" if ep is not None else "   n/a"
+            ey_s = f"{ey:6.2f}" if ey is not None else "   n/a"
             print(
                 f"t={timestamp:>8}  m1={data['motor.m1']:6d}  m2={data['motor.m2']:6d}  "
                 f"m3={data['motor.m3']:6d}  m4={data['motor.m4']:6d}  |  "
-                f"rateP(r,p,y)=({rp_s},{pp_s},{yp_s})",
+                f"rateP(r,p,y)=({rp_s},{pp_s},{yp_s})  |  est(r,p,y)=({er_s},{ep_s},{ey_s})",
                 flush=True,
             )
             check_auto_abort(data["motor.m1"], data["motor.m2"], data["motor.m3"], data["motor.m4"])
@@ -429,6 +435,8 @@ def main():
         print("每个阶跃结束后会真的把 thrust 打到 0 一瞬间再爬回基线，触发固件清零积分，")
         print("避免上一个阶跃的残留污染下一个阶跃的读数（这个过程中电机会短暂停一下，是预期行为）。")
         print("rateP(r,p,y) 是三个轴角速度环的 P 分量，用来判断是不是积分饱和触发了自动保护。")
+        print("est(r,p,y) 是姿态估计的实际角度：机身固定在支架上应该基本不动（接近阶跃前的基线），")
+        print("如果阶跃时 est 也跟着明显偏离，说明支架不是刚性固定、有间隙/形变，会影响结论。")
         print("按 Ctrl+C 可随时提前结束测试。\n")
 
         sp_thread.start()
