@@ -175,6 +175,8 @@ def main():
             "pid_rate.pitch_outD": None,
             "stateEstimate.roll": None,
             "stateEstimate.pitch": None,
+            "gyro.y": None,
+            "controller.pitchRate": None,
         }
 
         lg = LogConfig(name="motor", period_in_ms=50)
@@ -190,6 +192,17 @@ def main():
         lg_diag.add_variable("stateEstimate.roll", "float")
         lg_diag.add_variable("stateEstimate.pitch", "float")
         cf.log.add_config(lg_diag)
+
+        # 单独一路，验证"outP 变大是不是因为你手速带来的真实角速度、而不是位置误差积分"：
+        # gyro.y 是原始陀螺读数，controller.pitchRate（=rateDesired.pitch，attitudeControllerCorrectRatePID
+        # 的期望角速度输入）是外环给内环的"期望角速度"。attitudeControllerCorrectRatePID 调用时传入的实际角速度
+        # 是 -gyro.y（controller_pid.c 里 -sensors->gyro.y），是为了跟 stateEstimate.pitch 统一"抬头为正"的符号，
+        # 所以这里打印时也换算成 -gyro.y，直接跟 pitchRate（期望角速度）同符号可比：如果抬头时 -gyro.y
+        # 是一个远大于 pitchRate 的正数，说明 outP 主要是在对抗你手的转动速度，不是角度误差积分。
+        lg_rate = LogConfig(name="rate_diag", period_in_ms=50)
+        lg_rate.add_variable("gyro.y", "float")
+        lg_rate.add_variable("controller.pitchRate", "float")
+        cf.log.add_config(lg_rate)
 
         def check_auto_abort(m1, m2, m3, m4):
             """硬保护线 + windup 早期预警。任何一条触发就置位 stop_event，交给已有的收尾逻辑归零。"""
@@ -220,14 +233,19 @@ def main():
             outd = diag_state["pid_rate.pitch_outD"]
             roll = diag_state["stateEstimate.roll"]
             pitch = diag_state["stateEstimate.pitch"]
+            gyro_y = diag_state["gyro.y"]
+            rate_desired = diag_state["controller.pitchRate"]
             outp_s = f"{outp:8.1f}" if outp is not None else "    n/a"
             outd_s = f"{outd:8.1f}" if outd is not None else "    n/a"
             roll_s = f"{roll:6.1f}" if roll is not None else "   n/a"
             pitch_s = f"{pitch:6.1f}" if pitch is not None else "   n/a"
+            rate_actual_s = f"{-gyro_y:8.1f}" if gyro_y is not None else "     n/a"
+            rate_desired_s = f"{rate_desired:8.1f}" if rate_desired is not None else "     n/a"
             print(
                 f"t={timestamp:>8}  m1={data['motor.m1']:6d}  m2={data['motor.m2']:6d}  "
                 f"m3={data['motor.m3']:6d}  m4={data['motor.m4']:6d}  |  "
-                f"rateP={outp_s}  rateD={outd_s}  roll={roll_s}  pitch={pitch_s}",
+                f"rateP={outp_s}  rateD={outd_s}  roll={roll_s}  pitch={pitch_s}  |  "
+                f"rateDesired={rate_desired_s}  rateActual(-gyro.y)={rate_actual_s}",
                 flush=True,
             )
             check_auto_abort(data["motor.m1"], data["motor.m2"], data["motor.m3"], data["motor.m4"])
@@ -238,10 +256,16 @@ def main():
             diag_state["stateEstimate.roll"] = data["stateEstimate.roll"]
             diag_state["stateEstimate.pitch"] = data["stateEstimate.pitch"]
 
+        def log_rate_cb(timestamp, data, logconf):
+            diag_state["gyro.y"] = data["gyro.y"]
+            diag_state["controller.pitchRate"] = data["controller.pitchRate"]
+
         lg.data_received_cb.add_callback(log_cb)
         lg_diag.data_received_cb.add_callback(log_diag_cb)
+        lg_rate.data_received_cb.add_callback(log_rate_cb)
         lg.start()
         lg_diag.start()
+        lg_rate.start()
 
         # 先确认遥测通路活着，再考虑给电机上电，绝不盲发推力
         print("等待第一帧 motor 日志，确认遥测通路正常...", flush=True)
@@ -257,6 +281,7 @@ def main():
             )
             lg.stop()
             lg_diag.stop()
+            lg_rate.stop()
             return
 
         print("日志已确认在收，即将开始发送推力基线（斜坡爬升，避免电流冲击）。", flush=True)
@@ -309,6 +334,9 @@ def main():
         print("新增的 rateP/rateD 是角速度环 pitch 通道的 P/D 分量，roll/pitch 是实际估计姿态角：")
         print("  如果电机尖峰时 |rateD| 远大于 |rateP|，说明是未滤波的 D 项被陀螺噪声/震动打出来的尖峰")
         print("  如果你在掰 pitch 时 roll 也明显跟着变，说明手动动作带了耦合，m1m4/m2m3 规律会被 roll 项打乱")
+        print("rateDesired 是外环给的期望角速度，rateActual(-gyro.y) 是换算成'抬头为正'后的实际角速度：")
+        print("  重点看抬头这一下：如果 rateActual 出现一个远大于 rateDesired 的正值，说明 rateP 变负")
+        print("  主要是角速度环在对抗你手的转动速度本身，不是角度误差积分——这是要验证的关键现象")
         print("按 Ctrl+C 结束测试。\n")
 
         sp_thread.start()
@@ -333,6 +361,7 @@ def main():
                 send_zero_burst(cf)
             lg.stop()
             lg_diag.stop()
+            lg_rate.stop()
             print("测试结束。", flush=True)
 
 
