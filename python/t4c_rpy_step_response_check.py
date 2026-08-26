@@ -16,6 +16,15 @@
 # 一直存在。误差持续存在会让角速度环积分一路 windup，跟 t4b 文件头注释里那次
 # "夹具固定住转不动"的经历是同一个问题。
 #
+# 陷阱（实测踩过）：cflib 的 cf.commander.send_setpoint(roll, pitch, yawrate, thrust)
+# 内部会把 pitch 取负再打包发出（历史遗留，用来配平 sensfusion6.c 里 pitch 姿态解算
+# 自带的符号翻转），roll/yawrate 不受影响。也就是说如果直接把本文件 STEPS 里的
+# "pitch" 字段传给 send_setpoint，飞控收到的 setpoint.attitude.pitch 会是反号的，
+# 跟 STEPS 里 "expect" 那行按 setpoint.attitude.pitch 直接推导出的期望方向对不上——
+# 曾经因为这个把"测试脚本符号错位"误判成"固件/传感器融合方向反了"。下面 send_for()
+# 里已经把这次取负加回去抵消，本文件里所有 "pitch" 字段（STEPS 以及函数参数）都统一
+# 按"飞控实际收到的 setpoint.attitude.pitch"来理解，不需要调用方再操心 cflib 这一层。
+#
 # 光靠"短脉冲+回中停留"并不够：固件只有在 control->thrust 精确等于 0 时才会调用
 # attitudeControllerResetAllPID()（见 controller_pid.c），只要回中时 thrust 还保持
 # 在 BASE_THRUST（非零），积分项就完全不会清零，上一个阶跃的残留会一直带进下一个
@@ -352,7 +361,11 @@ def main():
 
         def send_for(roll, pitch, yawrate, thrust, duration_s):
             """按 SEND_PERIOD 周期发送同一个 setpoint，直到 duration_s 用完或需要中止。
-            返回 False 表示需要中止（stop/link_lost/日志过期），调用方应立即停止。"""
+            返回 False 表示需要中止（stop/link_lost/日志过期），调用方应立即停止。
+
+            这里的 pitch 参数是"飞控实际应该收到的 setpoint.attitude.pitch"，不是
+            cflib send_setpoint() 的原始参数——cflib 内部会把 pitch 取负再发出去，
+            所以要传 -pitch 给它抵消掉，才能让飞控收到调用方原本想要的那个值。"""
             deadline = time.monotonic() + duration_s
             while time.monotonic() < deadline:
                 if stop_event.is_set() or link_lost.is_set():
@@ -365,7 +378,7 @@ def main():
                     )
                     stop_event.set()
                     return False
-                cf.commander.send_setpoint(roll, pitch, yawrate, thrust)
+                cf.commander.send_setpoint(roll, -pitch, yawrate, thrust)
                 time.sleep(SEND_PERIOD)
             return True
 
