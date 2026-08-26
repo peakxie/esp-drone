@@ -883,3 +883,349 @@ t=  328605  roll=  -0.25  pitch=  21.82  yaw=   0.09
   sdkconfig 也提交上去。
 
 ✻ Baked for 11m 48s
+已经提交最新的sdkconfig。pydrone我已经扩展了pmw和vl51模块，你现在的说法不对，请继续分析或验证            
+
+  Thought for 48s (ctrl+o to expand)
+
+● Explore(Verify PMW3901/VL53 flow and ToF sensor integration with Kalman estimator)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 好，你说得对，我之前"pyDrone没有Flow/ToF"这个前提是错的。已经派任务去核实：PMW3901/VL53 是否真的接进了
+  Kalman 估计器、是否受 quadIsFlying 门控（这决定了它们在 t4_imu_axis_check.py
+  这种不发油门指令的静态测试里到底会不会起作用）、以及光流/测距本身能不能纠正俯仰角本身（而不只是纠正XY/Z速
+  度位置）。结果出来我再重新给结论。
+
+✻ Waiting for 1 background agent to finish
+
+● Agent "Verify PMW3901/VL53 flow and ToF sensor integration with Kalman estimator" finished · 4m 21s
+
+  Thought for 38s (ctrl+o to expand)
+
+● 收到，你指出的这点确实纠正了我一个判断错误，帮你说清楚新旧结论的差异：
+
+  我之前的错误
+
+  "pyDrone 没有 Flow/ToF，所以 Kalman 估计器缺绝对参考"——这个前提错了。核实结果：
+  - PMW3901（光流）+ VL53L1X（ToF）都已经接进固件，且 CONFIG_SENSORS_ENABLE_DECK=y 在你新提交的 sdkconfig
+    里是打开的（sensors_mpu6050_hm5883L_ms5611.c:92-96）。
+  - 而且这两个传感器的更新不像气压计那样受 quadIsFlying 门控——只要传感器数据有效（光流帧有效标志、ToF 测距
+    < 5m 且姿态没转到接近90°），无论飞机是不是在"飞行状态"，它们都会持续往 Kalman
+    滤波器里喂数据（kalman_core.c:538, flowdeck_v1v2.c:159,
+    estimator_kalman.c:513-584）。所以"传感器在静止时被关掉/不工作"这个说法也不对。
+
+  修正后仍然成立的部分
+
+  但即便光流和 ToF 一直在工作，它们在 EKF 里修正的目标不是姿态角，而是速度/高度：
+  - kalmanCoreUpdateWithFlow() 的测量模型只对 KC_STATE_Z / PX /
+    PY（速度）有非零雅可比项（kalman_core.c:510-524）。
+  - kalmanCoreUpdateWithTof() 只对 KC_STATE_Z（高度）有非零项（kalman_core.c:550），而且它算距离时还要用当
+    前姿态估计去投影（this->S[KC_STATE_Z] / this->R[2][2]）——是姿态去修正它，不是它修正姿态。
+  - 两者都没有直接接触姿态误差状态 D0/D1/D2（对应姿态四元数的修正量）。
+
+  也就是说：光流和ToF能防止飞机在空中悬停时位置/高度乱飘，但没法防止姿态角本身靠纯陀螺仪积分无限漂移——这需
+  要像互补滤波器那种用加速度计的重力方向持续修正倾角（Mahony反馈）的机制，而 Kalman
+  这套实现里没有这一步。所以：
+
+  t4_imu_axis_check.py 里 quadIsFlying 确实全程是 false（这个脚本本身就完全不发
+  commander/setpoint，commander.c:104-116 里查证过，没发指令就会一直是零油门的
+  fallback），但这跟传感器有没有关系不大——根本原因更准确的说法是：Kalman
+  估计器的姿态四元数在任何情况下都只靠陀螺仪积分推进，没有加速度计做倾角修正这一步；光流/ToF
+  修正的是速度和高度，管不到姿态角本身，所以静止倾斜时 pitch
+  会一直漂到速度状态越界（±10m/s，kalman_supervisor.c:32-48），触发整体复位归零，周期性重复。
+
+  结论没变，但依据更准了
+
+  建议还是一样：切回 complementaryEstimator（components/core/crazyflie/modules/src/estimator.c:8）重跑
+  t4_imu_axis_check.py 验证锯齿是否消失——如果消失，就实锤是"Kalman 缺姿态角的加速度计修正"，跟光流/ToF
+  有没有装、装得对不对没关系,是估计器算法本身的结构性问题,不是传感器配置错误。
+  
+  改为complementaryEstimator后，没有周期回0的问题了。但我需要pmw和vl53，不用kalman好像complementary不能融  
+  合光流的数据，怎么办呢? 具体分析下为什么kalman会周期回0？                                                
+  
+  Thought for 1m 19s (ctrl+o to expand)
+
+● 为什么 Kalman 会周期性归零——精确到公式
+
+  kalman_core.c 里飞机"未起飞"（quadIsFlying==false）时的预测模型是这样算速度的（约化写法）：
+
+  S[PX] += dt * (acc.x - GRAVITY_MAGNITUDE * R[2][0])
+
+  这一步的意图是：假设飞机静止，加速度计读数应该只剩重力分量，用当前姿态估计 R
+  算出"理论上应该测到多少重力分量"，减掉之后剩下的残差当作真实运动加速度积分成速度。
+
+  问题就在这里：姿态四元数在"未起飞"这条路径下完全靠陀螺仪积分推进，没有任何环节用加速度计去反过来修正它。
+  你把机身固定倾斜 θ 角不动，R 一直停在（或缓慢漂离）水平附近，但加速度计測到的其实是真实的 g·sin(θ)
+  这部分重力分量——这部分不是运动，但因为 R
+  没跟着倾斜更新，程序把它当成"残差"整个积分进了速度状态，速度会以近似 g·sin(θ) 的恒定加速度线性增长。
+
+  代入数字对一下：θ≈30° 时，g·sin(30°) ≈ 4.9 m/s²，速度到 kalman_supervisor.c 里 maxVelocity=10 m/s
+  的边界要花：
+  t = 10 / 4.9 ≈ 2.04 秒
+  跟你实测的周期（325805→327805，正好2.000秒）几乎完全吻合。这不是巧合，是这条"未起飞时直接把加速度计残差积
+  分进速度、且没有姿态修正"的预测模型在数学上必然产生的结果。一旦速度越界，kalman_supervisor.c
+  判定状态越界，整个估计器 resetEstimation，姿态四元数被强制拉回水平（对应你看到的 pitch
+  瞬间归零），然后重新开始漂，循环往复。
+
+  这套设计是照搬 Bitcraze Crazyflie 的思路：假设起飞前机身基本水平、起飞后很快进入"飞行中"分支（这条分支的
+  物理模型不同，而且实际飞行时姿态误差通常很小、时间尺度短，不会攒到这么大的速度误差）。它本质上没考虑"长时
+  间静止但大角度倾斜"这种台架测试场景——正常飞行中不太会出现这个问题，除非真的炸机躺在地上倾斜很久。
+
+  怎么兼顾光流+ToF 又不掉进这个坑
+
+  互补滤波器确实不做位置/速度融合，用不了 PMW3901/VL53 的数据——所以不能一刀切全用
+  complementary。比较合理的做法是按场景切换估计器，而不是二选一定死：
+
+  - 台架/地面诊断测试（t4_imu_axis_check.py、t4b_pitch_response_check.py
+    这类：飞机固定不动、不真正起飞、也用不上光流/ToF数据）→ 用
+    complementary，就是现在这个改法，不会有周期归零问题。
+  - 真实飞行/悬停测试（会起飞、需要 POSHOLD_MODE 靠光流+ToF定点）→ 让固件按原设计自动切
+    Kalman（也就是别在这些飞行测试脚本里调 ensure_complementary_estimator）。正常飞行时 PID
+    会把姿态维持在小角度附近，不会出现"倾斜30°+静止2秒不动"这种持续误差累积的极端情况，Kalman
+    的这个边界情况基本不会被触发。
+
+  所以我建议：保留刚才在 t4_imu_axis_check.py/以后的地面台架脚本里做的估计器强制切换，但不要在真正试飞/定点
+  悬停用的代码或脚本里做这个切换——光流+ToF该用的时候还是让 Kalman
+  正常工作,只是别在"夹住不让转"的台架测试场景下用它。
+
+  如果你确实需要 Kalman 在被夹住静止倾斜的情况下也不发生这个问题（比如做长时间地面调试还想看 Kalman
+  融合效果），那就得动固件本身：给"未起飞"这条预测路径加一个基于加速度计的姿态修正（本质上是给 Kalman
+  补一个 AHRS 式的重力方向修正步骤），这是对 kalman_core.c
+  算法层面的改动，不是小补丁，需要谨慎设计和验证——如果你想做这个，我可以帮你详细设计，但这个工作量和风险比"
+  按场景切估计器"高不少，建议先按场景切换够用了再考虑。
+
+✻ Cooked for 1m 19s
+
+也就说当前固件开启光流时，默认就用了kalman对吧？所以t4b_pitch_response_check.py也应该在complementary上测 
+  试？                                                                                                     
+  
+  Thought for 1m 12s (ctrl+o to expand)
+
+● 对，确认一下逻辑链：只要固件检测到 PMW3901 光流模块在线（flowdeck2Test()成功），就会自动
+  setCommandermode(POSHOLD_MODE) → registerRequiredEstimator(kalmanEstimator)，从开机那一刻就把估计器锁死成
+  Kalman，跟 DEFAULT_ESTIMATOR 宏无关——只要你装着光流模块，不管跑哪个测试脚本，默认都是 Kalman。
+
+  t4b_pitch_response_check.py 也应该切 complementary，理由跟 t4_imu_axis_check.py 一样、甚至更充分：
+  - t4b 本质上也是台架测试（桨叶拆了/机身固定，只是给了个低油门），不是真实飞行——虽然它给了
+    BASE_THRUST=15000，可能会让 quadIsFlying 标志被判定为真，但飞机实际上根本没离地飞行，光流/ToF
+    在这种状态下测到的也是无效数据。
+  - Kalman 不管是"飞行中"还是"未飞行"分支，姿态四元数都只靠陀螺仪积分，没有任何加速度计做的重力方向修正——区
+    别只在于哪条分支更容易触发速度越界归零。这意味着即便这次没有观察到周期性归零（因为可能进入了不同的预测
+    分支），姿态估计本身依然可能不可信，只是失效模式不一样（比如你最早看到的：roll/pitch
+    长时间死不动、rateP 单调爬升到饱和）。
+  - 复杂原因排查干净之前，用 complementary 测 PID 方向/响应更靠谷，因为它是直接用加速度计+陀螺仪融合出的倾
+    角，不依赖"是否在飞行"这套分支逻辑，能更真实地反映你手动施加的倾斜角度。
+
+  我把同样的估计器强制切换逻辑加到 t4b_pitch_response_check.py 里，跟 t4_imu_axis_check.py 保持一致。
+
+  Thought for 11s, read 1 file (ctrl+o to expand)
+  
+  ● 已经把 t4b_pitch_response_check.py 也加上了跟 t4_imu_axis_check.py
+  一样的估计器检测/强制切换逻辑（连接后自动读 stabilizer.estimator，是 kalman 就切成
+  complementary）。另外我发现 t4b 里读的日志变量是 stateEstimate.roll/pitch，跟 t4_imu_axis_check.py 用的
+  stabilizer.roll/pitch 不是同一个日志组名——正在确认这两个是不是共用同一份姿态数据、切估计器后
+  stateEstimate.* 是否也会跟着变，避免切了估计器但读的日志变量其实没跟着切。结果马上出来。
+  
+  Waiting for 1 background agent to finish
+
+● Agent "Verify stateEstimate log group source vs active estimator" finished · 1m 4s
+
+● 确认没问题：stateEstimate.roll/pitch 和 stabilizer.roll/pitch 底层是同一个 state.attitude
+  结构体，t4b_pitch_response_check.py 里读的 stateEstimate.* 会随着 stabilizer.estimator
+  参数切换实时反映当前生效的估计器输出（complementary 或 kalman），不存在"切了估计器但日志没跟着切"的问题。
+
+  两个脚本现在都已经加好了自动检测+强制切 complementary 的逻辑，可以直接用了：
+  - t4_imu_axis_check.py：验证锯齿归零是否消失
+  - t4b_pitch_response_check.py：重新做一次 pitch 响应/windup 测试，看之前的积分饱和报警是否也随之消失
+
+✻ Sautéed for 3m 32s
+claude --resume 8b157243-969f-4a21-9ce3-2329a8ba6ef6
+
+
+t=   34896  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP=  -670.7  rateD= -3353.5  roll=   0.9  pitch=   0.5
+t=   34946  m1= 37522  m2= 65535  m3= 65535  m4= 65535  |  rateP=  -713.2  rateD= -3566.2  roll=   1.0  pitch=   0.5
+
+警告：m2=65535 已逼近满量程（硬保护线 55000），自动停止并归零！
+t=   34996  m1=     0  m2= 20005  m3= 52761  m4= 20005  |  rateP=-29388.6  rateD=  -154.1  roll=   1.0  pitch=   0.5
+t=   35047  m1= 26412  m2= 59166  m3= 65535  m4= 59166  |  rateP=-30083.0  rateD=  -128.0  roll=   1.1  pitch=   0.5
+t=   35096  m1= 14872  m2= 47630  m3= 65535  m4= 47630  |  rateP=-30825.9  rateD=  -191.8  roll=   1.1  pitch=   0.6
+
+正在停止并归零...
+t=   35146  m1=  6722  m2= 39492  m3= 65535  m4= 39492  |  rateP=-31521.0  rateD=  -148.6  roll=   1.2  pitch=   0.6
+t=   35196  m1=   110  m2= 32894  m3= 65535  m4= 32894  |  rateP=-32249.0  rateD=  -222.0  roll=   1.2  pitch=   0.6
+t=   35246  m1=     0  m2= 27006  m3= 59772  m4= 27006  |  rateP=-32967.0  rateD=  -126.8  roll=   1.3  pitch=   0.6
+t=   35296  m1=     0  m2= 22798  m3= 55552  m4= 22798  |  rateP=-33664.0  rateD=  -139.7  roll=   1.3  pitch=   0.7
+t=   35346  m1=     0  m2= 21536  m3= 54308  m4= 21536  |  rateP=-34408.6  rateD=  -185.2  roll=   1.4  pitch=   0.7
+t=   35396  m1=     0  m2= 20000  m3= 52766  m4= 20000  |  rateP=-35063.0  rateD=  -158.0  roll=   1.4  pitch=   0.7
+测试结束。
+-------------小四轴第一次启动，跑t4b_pitch_response_check.py的日志
+
+
+按 Ctrl+C 结束测试。
+
+t=   34896  m1=     0  m2=     0  m3=     0  m4=     0  |  rateP=  -670.7  rateD= -3353.5  roll=   0.9  pitch=   0.5
+t=   34946  m1= 37522  m2= 65535  m3= 65535  m4= 65535  |  rateP=  -713.2  rateD= -3566.2  roll=   1.0  pitch=   0.5
+
+警告：m2=65535 已逼近满量程（硬保护线 55000），自动停止并归零！
+t=   34996  m1=     0  m2= 20005  m3= 52761  m4= 20005  |  rateP=-29388.6  rateD=  -154.1  roll=   1.0  pitch=   0.5
+t=   35047  m1= 26412  m2= 59166  m3= 65535  m4= 59166  |  rateP=-30083.0  rateD=  -128.0  roll=   1.1  pitch=   0.5
+t=   35096  m1= 14872  m2= 47630  m3= 65535  m4= 47630  |  rateP=-30825.9  rateD=  -191.8  roll=   1.1  pitch=   0.6
+
+正在停止并归零...
+t=   35146  m1=  6722  m2= 39492  m3= 65535  m4= 39492  |  rateP=-31521.0  rateD=  -148.6  roll=   1.2  pitch=   0.6
+t=   35196  m1=   110  m2= 32894  m3= 65535  m4= 32894  |  rateP=-32249.0  rateD=  -222.0  roll=   1.2  pitch=   0.6
+t=   35246  m1=     0  m2= 27006  m3= 59772  m4= 27006  |  rateP=-32967.0  rateD=  -126.8  roll=   1.3  pitch=   0.6
+t=   35296  m1=     0  m2= 22798  m3= 55552  m4= 22798  |  rateP=-33664.0  rateD=  -139.7  roll=   1.3  pitch=   0.7
+t=   35346  m1=     0  m2= 21536  m3= 54308  m4= 21536  |  rateP=-34408.6  rateD=  -185.2  roll=   1.4  pitch=   0.7
+t=   35396  m1=     0  m2= 20000  m3= 52766  m4= 20000  |  rateP=-35063.0  rateD=  -158.0  roll=   1.4  pitch=   0.7
+测试结束。  -----小四轴不重启，再跑一次t4b_pitch_response_check.py的日志
+
+
+请分析
+这组数据比之前的更危险——不是慢慢积分饱和，而是刚开始给一点点推力（还在斜坡爬升阶段，才过 
+  50ms）电机就直接顶到 65535 满量程，而且这次是 D 项先炸（rateD=-3566 明显比 rateP=-670
+  大），跟之前的"P项单调爬升"windup 特征不一样，说明可能是完全不同的新问题。另外我发现两段贴的数据从时间戳
+  到每一位小数完全一致，看起来像是不小心贴重复了同一份日志——如果第二次确实是独立跑出来的，麻烦确认一下,不然
+  "不重启也复现"这个结论目前还没有真实的第二组数据支撑。
+
+  我怀疑一个新的点：光流模块在开机时不仅把估计器锁定成了 Kalman，还调用了
+  setCommandermode(POSHOLD_MODE)。我们之前只把估计器切回了 complementary，但没动 commander 的模式——如果
+  POSHOLD_MODE 下固件把 t4b 脚本发的 (roll=0,pitch=0,yaw=0,thrust)
+  这种原始量重新解释成了定点模式下的速度/位置指令（而不是直接的姿态角+推力指令），在没有真实位置反馈的台架
+  测试下，位置控制器算出来的实际推力/姿态指令就可能完全跑偏，直接把电机打满——这能解释"刚给一点点推力就瞬间
+  满转"这种更剧烈、更即时的异常。我现在去确认 POSHOLD_MODE 到底改变了 setpoint 的解释方式,以及怎么把
+  commander 模式也切回正常模式。
+
+● Explore(Investigate POSHOLD_MODE setpoint interpretation and reset)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● 结果出来我再跟你确认根因和下一步。
+
+找到真正的根因了，而且比之前想的更严重——不是估计器的问题，是 commander 的飞行模式没切回来。
+
+  根因
+
+  setCommandermode(POSHOLD_MODE) 除了强制锁定 Kalman 估计器，还同时打开了两个开关：altHoldMode=true 和
+  posHoldMode=true（crtp_commander_rpyt.c:100-104）。之前我们只把估计器切回了
+  complementary，没动这两个开关，它们是独立的模块静态变量，跟估计器无关。
+
+  altHoldMode=true 时，RPYT 解码器（crtp_commander_rpyt.c:182-189）会直接丢弃脚本发的原始 thrust
+  值，把它重新解释成一个 Z 轴速度目标，交给定高/速度 PID 处理，这个 PID 有一个固定的前馈量 thrustBase=36000
+  （满量程65535的一大半），P项还没有上限（position_controller_pid.c:216-244）——前馈+P项加起来在一个 10ms
+  的位置控制周期内就能冲到
+  68767，早就超过65535了。这比脚本"1秒斜坡爬升"快了100倍，完全解释了为什么只过50ms电机就直接顶满。
+
+  posHoldMode=true 还会把 roll/pitch 也交给速度PID（pidVX/pidVY）而不是脚本发的
+  0/0——飞机静止时估计出的微小速度噪声就会被当成"需要纠正的速度"，直接转成 roll/pitch
+  姿态指令，这解释了为什么是"3个电机打满、1个电机没动"这种不对称模式，而不是4个一起打满。
+
+  修复
+
+  固件把这两个开关也做成了可写参数（flightmode.althold、flightmode.poshold），不用重新编译，跟切估计器一样
+  的套路。我把它加到 t4b_pitch_response_check.py 里。
+
+  Thought for 10s, read 1 file (ctrl+o to expand)
+
+● Update(python/t4b_pitch_response_check.py)
+  ⎿  Added 44 lines
+       86          read_current_estimator(cf)
+       87  
+       88  
+       89 +def read_flightmode_flags(cf, timeout_s=2.0):                                            
+       90 +    """读取 flightmode.althold / flightmode.poshold，返回 {"althold": 0/1, "poshold": 0/1
+          +}。"""                                                                                   
+       91 +    result = {}                                                                          
+       92 +    got_values = threading.Event()                                                       
+       93 +                                                                                         
+       94 +    def make_cb(key):                                                                    
+       95 +        def cb(_name, value):                                                            
+       96 +            try:                                                                         
+       97 +                result[key] = int(value)                                                 
+       98 +            except (TypeError, ValueError):                                              
+       99 +                result[key] = None                                                       
+      100 +            if "althold" in result and "poshold" in result:                              
+      101 +                got_values.set()                                                         
+      102 +        return cb                                                                        
+      103 +                                                                                         
+      104 +    cf.param.add_update_callback(group="flightmode", name="althold", cb=make_cb("althold"
+          +))                                                                                       
+      105 +    cf.param.add_update_callback(group="flightmode", name="poshold", cb=make_cb("poshold"
+          +))                                                                                       
+      106 +    cf.param.request_param_update("flightmode.althold")                                  
+      107 +    cf.param.request_param_update("flightmode.poshold")                                  
+      108 +                                                                                         
+      109 +    if not got_values.wait(timeout=timeout_s):                                           
+      110 +        print("警告：读取 flightmode.althold/poshold 超时。", flush=True)                
+      111 +    print(                                                                               
+      112 +        f"当前 flightmode.althold={result.get('althold')}  "                             
+      113 +        f"flightmode.poshold={result.get('poshold')}",                                   
+      114 +        flush=True,                                                                      
+      115 +    )                                                                                    
+      116 +    return result                                                                        
+      117 +                                                                                         
+      118 +                                                                                         
+      119 +def ensure_raw_commander_mode(cf):                                                       
+      120 +    """若 althold/poshold 开着，强制关掉。光流模块在线时固件开机会自动 setCommandermode(P
+          +OSHOLD_MODE)，                                                                           
+      121 +    把 althold 和 poshold 都打开，导致本脚本发的原始 thrust/roll/pitch 被 RPYT 解码器丢弃
+          +、改用定高/定点                                                                          
+      122 +    速度 PID 的输出（带一个很大的固定前馈量，且没有上限），跟脚本"缓慢斜坡爬升"的意图完全
+          +不是一回事，                                                                             
+      123 +    会在电机上瞬间叠加出远超预期的输出。切估计器不会动这两个开关，必须单独关掉。"""      
+      124 +    flags = read_flightmode_flags(cf)                                                    
+      125 +    if flags.get("althold") or flags.get("poshold"):                                     
+      126 +        print("检测到 althold/poshold 开启，强制关闭，改用原始 thrust/roll/pitch...", flu
+          +sh=True)                                                                                 
+      127 +        cf.param.set_value("flightmode.althold", "0")                                    
+      128 +        cf.param.set_value("flightmode.poshold", "0")                                    
+      129 +        time.sleep(0.5)                                                                  
+      130 +        read_flightmode_flags(cf)                                                        
+      131 +                                                                                         
+      132 +                                                                                         
+      133  def main():
+      134      cflib.crtp.init_drivers()
+      135  
+
+● Now wire the call into main():
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(python/t4b_pitch_response_check.py)
+  ⎿  Added 1 line
+      156          cf.disconnected.add_callback(on_disconnected)
+      157  
+      158          ensure_complementary_estimator(cf)
+      159 +        ensure_raw_commander_mode(cf)                                                    
+      160  
+      161          # 提前建好 stop_event：既用于 setpoint 发送线程的退出信号，也给下面的 log 回调里
+           的
+      162          # 自动保护复用，两边共享同一把停止开关。
+
+  Thought for 7s, read 1 file (ctrl+o to expand)
+
+● Looks correct. Full picture and next steps:
+
+  修复完成
+
+  t4b_pitch_response_check.py 连接后现在会依次做两件事：
+  1. 检查并强制切回 complementaryEstimator（之前已加）。
+  2. 检查并强制关闭 flightmode.althold /
+     flightmode.poshold（新加的）——这两个开关才是导致电机瞬间打满的真正原因，跟估计器无关，之前一直没关掉。
+
+  给你的操作建议
+
+  1. 直接重跑 python t4b_pitch_response_check.py，连接后应该会打印出当前 althold/poshold 状态（大概率是 1
+     1），然后自动关掉并确认。关掉之后再做斜坡爬升+手动掰机头，这次电机响应应该会跟脚本原本预期的"缓慢跟随
+     、按 X 构型对角变化"一致，不会再出现瞬间打满或积分饱和。
+  2. 麻烦确认一下前面那两段贴的日志是不是不小心贴了两遍完全相同的内容（时间戳、每一位小数都完全一致）——如果
+     第二次是独立跑出来的真实数据，请重新贴一下，这样才能真正验证"不重启是否复现"。
+  3. 长期看，如果你不希望每次连接都要靠脚本手动拨这几个参数，之后可以考虑把
+     sensors_mpu6050_hm5883L_ms5611.c:635 那行"检测到光流就自动 setCommandermode(POSHOLD_MODE)"改成不自动开
+     、或者只在真正起飞后才开——现在先用参数覆盖这个方案够用，要不要动固件本身你再决定。
+
+✻ Baked for 9m 14s
+
+※ recap: We fixed t4b's motor-saturation bug by forcing off althold/poshold plus complementary estimator; 
+  now waiting for you to rerun the test and confirm it behaves, and to re-paste the second log run since it
+  looked identical to the first. (disable recaps in /config)
+
+claude --resume 8b157243-969f-4a21-9ce3-2329a8ba6ef6
