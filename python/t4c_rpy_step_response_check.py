@@ -14,10 +14,16 @@
 # 关键风险：roll/pitch 是角度模式（modeAbs），机身被支架卡住转不动，阶跃期间角度
 # 误差会一直存在、不会像真实飞行那样收敛；yaw 是角速度模式，同理角速度误差也会
 # 一直存在。误差持续存在会让角速度环积分一路 windup，跟 t4b 文件头注释里那次
-# "夹具固定住转不动"的经历是同一个问题。应对方式：每个阶跃只保持很短的时间
-# (STEP_HOLD_S)，看到 motor 变化的方向后立刻回中并停留一段时间(STEP_REST_S)让
-# 积分项回落，而不是像 t4b 那样长时间保持。MOTOR_ABORT_THRESHOLD /
-# RATE_OUTP_ABORT_THRESHOLD 仍然作为最后一道硬保护。
+# "夹具固定住转不动"的经历是同一个问题。
+#
+# 光靠"短脉冲+回中停留"并不够：固件只有在 control->thrust 精确等于 0 时才会调用
+# attitudeControllerResetAllPID()（见 controller_pid.c），只要回中时 thrust 还保持
+# 在 BASE_THRUST（非零），积分项就完全不会清零，上一个阶跃的残留会一直带进下一个
+# 阶跃，实测已经验证过这会污染读数（尤其是链式跑完 roll 再跑 pitch 的时候）。所以
+# 每个阶跃结束后，回中动作会真的把 thrust 打到 0 一瞬间（RESET_PULSE_S）触发硬件
+# 复位积分，再斜坡爬回 BASE_THRUST（RESET_RAMP_S），最后才停留 STEP_REST_S
+# 确认稳定——保证每个阶跃都是从干净的零积分状态起跑，互相不污染。
+# MOTOR_ABORT_THRESHOLD / RATE_OUTP_ABORT_THRESHOLD 仍然作为最后一道硬保护。
 #
 # 注意：4 个电机同时起转（哪怕基线很低）比 t3 的单电机爬坡电流冲击大得多。如果
 # 测试中出现"电机狂转、日志彻底不刷新、Ctrl+C 也止不住"，大概率是电流冲击把主控
@@ -41,7 +47,9 @@ SETTLE_TIME_S = 1.0     # 爬升完到开始第一个阶跃之间的停留，确
 SEND_PERIOD = 0.05      # 20Hz 发送 setpoint，避免 commander watchdog 超时进入 fallback
 
 STEP_HOLD_S = 0.6       # 每个阶跃保持的时长：短脉冲，避免支架限位下的积分饱和
-STEP_REST_S = 1.2       # 每个阶跃之间回中并停留的时长，给积分项回落的时间
+RESET_PULSE_S = 0.15    # 回中时把 thrust 打到 0 的时长，触发固件清零姿态/角速度环积分
+RESET_RAMP_S = 0.3      # 从 0 斜坡爬回 BASE_THRUST 的时长，避免复位后再次阶跃电流冲击
+STEP_REST_S = 0.5       # 爬回基线后再停留确认稳定的时长（此时积分已清零，不需要很长）
 REPEAT_COUNT = 1        # 整套阶跃序列重复几遍，想多看几次响应可以调大
 
 ROLL_STEP_DEG = 8.0     # roll 阶跃角度（角度模式）
@@ -273,7 +281,8 @@ def main():
                     print(
                         f"\n警告：pid_rate.{axis}_outP={outp:.0f} 超过 {RATE_OUTP_ABORT_THRESHOLD:.0f}，"
                         f"疑似 {axis} 轴角速度环积分饱和(windup)——机身被支架卡住转不动导致误差一直"
-                        "存在，自动停止并归零！请缩短 STEP_HOLD_S 或延长 STEP_REST_S 后再测。",
+                        "存在，自动停止并归零！即使每步都会回中复位积分，单次阶跃内仍可能因为支架"
+                        "没放平/角度太大而饱和，请缩短 STEP_HOLD_S 或调小对应的 *_STEP_DEG(PS) 后再测。",
                         flush=True,
                     )
                     stop_event.set()
@@ -351,26 +360,45 @@ def main():
                 time.sleep(SEND_PERIOD)
             return True
 
+        def send_ramp(from_thrust, to_thrust, duration_s):
+            """thrust 从 from_thrust 斜坡到 to_thrust，roll/pitch/yawrate 始终为 0，
+            避免电机推力突变造成的电流冲击。返回 False 表示需要中止。"""
+            ramp_steps = max(1, int(duration_s / SEND_PERIOD))
+            for i in range(1, ramp_steps + 1):
+                if stop_event.is_set() or link_lost.is_set():
+                    return False
+                if log_is_stale():
+                    print(
+                        f"\n警告：斜坡阶段超过 {LOG_STALE_TIMEOUT_S}s 未收到 motor 日志，"
+                        "链路或主控可能已异常，立即停止加推力！",
+                        flush=True,
+                    )
+                    stop_event.set()
+                    return False
+                thrust = int(from_thrust + (to_thrust - from_thrust) * i / ramp_steps)
+                cf.commander.send_setpoint(0, 0, 0, thrust)
+                time.sleep(SEND_PERIOD)
+            return True
+
+        def recenter_with_reset():
+            """回中：真的把 thrust 打到 0 一瞬间，触发固件清零姿态/角速度环积分
+            (controller_pid.c: control->thrust == 0 才会调用 attitudeControllerResetAllPID())，
+            再斜坡爬回 BASE_THRUST，避免上一个阶跃的残留积分污染下一个阶跃的读数。"""
+            print(f"    回中：thrust 打 0 触发积分复位（{RESET_PULSE_S:.2f}s）...", flush=True)
+            if not send_for(0, 0, 0, 0, RESET_PULSE_S):
+                return False
+            if not send_ramp(0, BASE_THRUST, RESET_RAMP_S):
+                return False
+            print(f"    已回到基线 {BASE_THRUST}，停留 {STEP_REST_S:.1f}s 确认稳定...", flush=True)
+            return send_for(0, 0, 0, BASE_THRUST, STEP_REST_S)
+
         def setpoint_loop():
             # 先发一次 thrust=0 解锁 thrust lock
             cf.commander.send_setpoint(0, 0, 0, 0)
             time.sleep(0.1)
 
-            ramp_steps = max(1, int(RAMP_TIME_S / SEND_PERIOD))
-            for i in range(1, ramp_steps + 1):
-                if stop_event.is_set() or link_lost.is_set():
-                    return
-                if log_is_stale():
-                    print(
-                        f"\n警告：斜坡爬升阶段超过 {LOG_STALE_TIMEOUT_S}s 未收到 motor 日志，"
-                        "链路或主控可能已异常，立即停止加推力！",
-                        flush=True,
-                    )
-                    stop_event.set()
-                    return
-                thrust = int(BASE_THRUST * i / ramp_steps)
-                cf.commander.send_setpoint(0, 0, 0, thrust)
-                time.sleep(SEND_PERIOD)
+            if not send_ramp(0, BASE_THRUST, RAMP_TIME_S):
+                return
 
             print(f"基线已到 {BASE_THRUST}，停留 {SETTLE_TIME_S:.1f}s 确认稳定...", flush=True)
             if not send_for(0, 0, 0, BASE_THRUST, SETTLE_TIME_S):
@@ -385,8 +413,7 @@ def main():
                     )
                     if not send_for(step["roll"], step["pitch"], step["yawrate"], BASE_THRUST, STEP_HOLD_S):
                         return
-                    print(f"    回中，停留 {STEP_REST_S:.1f}s 让积分回落...", flush=True)
-                    if not send_for(0, 0, 0, BASE_THRUST, STEP_REST_S):
+                    if not recenter_with_reset():
                         return
 
             print("\n全部阶跃已跑完，正常结束测试。", flush=True)
@@ -396,6 +423,8 @@ def main():
 
         print("\n即将开始：thrust 从 0 斜坡爬升到低速基线，稳定后依次对 roll/pitch/yaw 各发一正一负")
         print("的短脉冲阶跃，机身应保持固定不动，只看 motor.m1~m4 的加减速方向对不对。")
+        print("每个阶跃结束后会真的把 thrust 打到 0 一瞬间再爬回基线，触发固件清零积分，")
+        print("避免上一个阶跃的残留污染下一个阶跃的读数（这个过程中电机会短暂停一下，是预期行为）。")
         print("rateP(r,p,y) 是三个轴角速度环的 P 分量，用来判断是不是积分饱和触发了自动保护。")
         print("按 Ctrl+C 可随时提前结束测试。\n")
 
