@@ -74,7 +74,7 @@
  */
 //#define SENSORS_mpu6050_DLPF_256HZ
 
-//#define GYRO_ADD_RAW_AND_VARIANCE_LOG_VALUES
+#define GYRO_ADD_RAW_AND_VARIANCE_LOG_VALUES
 
 /**
  * Which sensors are populated on the board, selected in
@@ -1205,6 +1205,14 @@ LOG_ADD(LOG_FLOAT, xVariance, &gyroBiasRunning.variance.x)
 LOG_ADD(LOG_FLOAT, yVariance, &gyroBiasRunning.variance.y)
 LOG_ADD(LOG_FLOAT, zVariance, &gyroBiasRunning.variance.z)
 LOG_GROUP_STOP(gyro)
+
+// 跟上面 gyro.xRaw/yRaw/zRaw 对称：accelRaw 是取负/换算(accScaled)之前的原始寄存器整数，
+// 同一个宏一起开关，方便台架测试时对照 acc 取负前后的符号（t4d_imu_raw_axis_check.py 用）。
+LOG_GROUP_START(accRaw)
+LOG_ADD(LOG_INT16, xRaw, &accelRaw.x)
+LOG_ADD(LOG_INT16, yRaw, &accelRaw.y)
+LOG_ADD(LOG_INT16, zRaw, &accelRaw.z)
+LOG_GROUP_STOP(accRaw)
 #endif
 
 //TODO:
