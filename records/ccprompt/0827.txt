@@ -1,0 +1,459 @@
+CONFIG_TARGET_PYDRONE_S3=y的硬件情况：
+mpu6050正方形贴在飞机的up面上，也就是说俯视飞机，看到mpu6050的丝印，但跟机头的方向正好反过来，即mpu6050的y轴跟飞机的Front正好相反
+飞机的四个电机分别为m1（前右，顺时针叶片） m2（后右，逆时针叶片） m3（后左，顺时针叶片） m4（前左，逆时针叶片）如下图所示
+    机头 front
+M4(前左)     M1(前右)
+     \         /
+      \       /
+      /       \
+     /         \
+M3(后左)     M2(后右)
+以上为硬件实际情况：请使用中文回复
+1.请分析当前固件的飞机坐标系，世界坐标系，及在传感器映射，互补滤波（姿态估算），混动方面转换情况？
+2.再分析kalman滤波（姿态估算）的情况？
+
+先给出对当前硬件情况描述的理解，如飞机坐标系等
+
+
+我已经完整读完关键代码路径（传感器读取/换轴、互补滤波、Kalman滤波核心、混控、以及你们之前 t4b/t4c
+  调试留下的测试脚本和 Kconfig 说明），可以给出一个从数学上闭环推导的分析。结论先说：现有 PYDRONE_S3 
+  分支的换轴表，跟你描述的实际贴装方式（MPU6050 平贴、丝印朝上、Y 轴反 
+  Front）在数学上是完全自洽且正确的，且陀螺仪/加速度计、互补滤波、Kalman
+  滤波、混控四者内部彼此一致。下面是完整推导。
+
+  1. 固件的姿态角约定（贯穿全栈的隐含定义）
+
+  结合混控公式和飞机实际布局反推出机体坐标系是
+  X=机头前(Front)，Y=左(Left)，Z=上(Up)，右手系（FLU）。证据链：
+
+  - power_distribution_stock.c:98-101（QUAD_FORMATION_X，CONFIG_PITCH_DISTRIBUTION_INVERTED 当前未启用，见
+    sdkconfig:449）：
+    - roll：m1(前右)/m2(后右) 都是 -r，m3(后左)/m4(前左) 都是 +r → 正 roll ⇒ 右边推力小、左边推力大 ⇒
+      右倾。这正好是绕 +X(Front) 轴右手旋转的结果（+Y(左) 侧被抬高）。
+    - pitch：m1(前右)/m4(前左) 都是 +p，m2(后右)/m3(后左) 都是 -p → 正 pitch ⇒ 前边推力大 ⇒ 抬头。
+    - yaw：CW 桨(m1前右、m3后左) 为 +yaw，CCW 桨(m2后右、m4前左) 为 -yaw。CW 桨反扭矩是 CCW，正 yaw
+      命令加大 CW 桨 ⇒ 机身获得 CCW 反扭矩 ⇒ 机头左偏（俯视 CCW）。
+  - 用绕 Y(左) 轴的标准右手旋转矩阵验算：x'=x·cosθ+z·sinθ, z'=-x·sinθ+z·cosθ，机头点 (x,0,0) 在 +θ 下 z
+    分量变成 -xθ（Z 向下）——即数学上绕 +Y 轴正转 =
+    低头，跟"抬头=正pitch"的期望正好相反。这正是为什么两个姿态估计器都要对 pitch 取负：
+    - sensfusion6.c:273 注释直接写 //Pitch seems to be inverted
+    - kalman_core.c:1058 .pitch = -pitch*RAD_TO_DEG
+
+    两者取负逻辑完全一致，这也印证了你们 t4c 记录里"complementary/kalman 两个估计器的 pitch
+    符号数学上等价"的结论——不是估计器本身的问题。
+  - yaw 两个估计器都没有取负（sensfusion6.c:272、kalman_core.c:1050），跟绕 Z 轴旋转矩阵验算（机头点在 +θ
+    下 y 分量变正，即向 +Y=左偏）自洽，也跟混控的"+yaw→机头左偏"一致。
+
+  2. 传感器换轴表 (sensors_mpu6050_hm5883L_ms5611.c:437-478, PYDRONE_S3 走的是非 ESPLANE_V1 分支)
+
+  代码做的变换是：
+
+  body.gyro.x = -(chip寄存器Y轴)   body.acc.x = -(chip寄存器Y轴)
+  body.gyro.y =  (chip寄存器X轴)   body.acc.y =  (chip寄存器X轴)
+  body.gyro.z =  (chip寄存器Z轴)   body.acc.z =  (chip寄存器Z轴)
+
+  写成矩阵，这是绕 Z 轴 +90° 的纯旋转（行列式 = +1，不是镜像），等价于假设：芯片 Y+
+  指向机尾（-Front），芯片 X+ 指向机体 +Y（左），芯片 Z+ = 机体 Z+（贴平未翻面）。
+
+  用你给出的硬件事实反推验证芯片 X 轴指向：已知芯片 Z+ 朝上、Y+ 反 Front，且芯片本身传感器轴必为右手系（IC
+  制造保证，非镜像贴装），代入 X × Y = Z 求解可得 芯片 X+
+  必然指向机体左侧，无论如何摆都是这一个解、没有第二种可能。也就是说代码假设的芯片 X→机体左，跟你描述的贴装
+  方式数学上唯一对应，不存在"转对了方向但镜像贴反"的手性错误（行列式+1已排除镜像）。
+
+  结论：换轴表跟你描述的硬件贴装完全匹配，Z 轴（yaw）无取负也对（芯片未翻面）。
+
+  3. 互补滤波 (sensfusion6.c)
+
+  - 直接消费 sensorData.gyro(deg/s)、sensorData.acc(g) ——
+    即第2步换轴后的机体坐标系数据，Mahony(默认)/Madgwick 二选一（MADWICK_QUATERNION_IMU 宏未定义，走
+    Mahony，twoKp=0.8, twoKi=0.002）积分四元数。
+  - 隐含的世界/参考帧：初始四元数为单位阵时假设重力方向 = 世界 (0,0,1)，即世界 Z 朝上，和机体 Z
+    朝上在水平静止时重合——跟 Kalman 的世界帧约定一致（见下）。
+  - 输出 Euler 角在 sensfusion6GetEulerRPY（sensfusion6.c:263-275）里对 pitch 取负，与第1节结论一致。
+
+  4. 混控 (power_distribution_stock.c)
+
+  已在第1节验证过：roll/pitch/yaw 三个方向都跟机体坐标系约定自洽，且当前 CONFIG_PITCH_DISTRIBUTION_INVERTED
+  为关闭状态（ESP-Drone 官方公式，非 01Studio 反向公式），这个开关只有在电机接线跟
+  m1=前右/m2=后右/m3=后左/m4=前左这个假设不一致时才需要打开——这属于电机走线层面，跟 IMU 贴装无关，Kconfig
+  里也明确写了"必须用拆桨台架测试(T3)验证，不能从源码猜"（main/Kconfig.projbuild:150-157）。
+
+  5. 第一部分小结
+
+  传感器映射 → 互补滤波 → 混控这条链，在当前 PYDRONE_S3 配置（换轴表 + PITCH_DISTRIBUTION_INVERTED
+  off）下，跟你描述的实际硬件（MPU6050 贴平、Y 反 Front；M1 前右CW/M2 后右CCW/M3 后左CW/M4
+  前左CCW）是完全自洽、无符号/手性矛盾的。
+
+  ---
+
+  6. Kalman 滤波 (kalman_core.c / estimator_kalman.c)
+
+  - 输入：跟互补滤波用的是同一份 sensorData.gyro/acc（同一套第2步换轴结果），估计器只是
+    stabilizer.estimator 参数切换（1=complementary, 2=kalman，见你们的
+    t4_imu_axis_check.py），不存在两条独立的传感器路径。
+  - 世界坐标系：Z 朝上（ENU
+    风格）。证据：kalmanCorePredict（kalman_core.c:798,806-808,820,828-830）里高度/速度预测都是 ... -
+    GRAVITY_MAGNITUDE * this->R[2][2]，即水平静止时机体比力 acc.z≈+1g 抵消重力项，Z
+    状态量随"往上"增大——跟互补滤波假设的世界 Z 朝上一致。
+  - 姿态：内部用四元数 q[0..3] + 姿态误差 Rodrigues 参数 D0,D1,D2（kalman_core.c:211-212
+    注释），每步预测后把误差量并入姿态四元数、再重建旋转矩阵 R（标准 Mueller/Hamer UWB 论文方法）。
+  - 输出转换：kalmanCoreExternalizeState（kalman_core.c:1049-1059）用标准四元数转 Euler 公式算
+    roll/pitch/yaw，其中 pitch 同样取负（-pitch*RAD_TO_DEG），yaw
+    同样不取负——跟互补滤波的取负规则逐字一致。
+
+  结论：Kalman 滤波器和互补滤波器共享同一份换轴后的传感器数据，且输出角度的符号规则（pitch 取负、roll/yaw
+  不取负）完全相同。这跟你们 t4c 记录里"已经验证过 complementary/kalman 两个估计器的 pitch
+  符号数学上等价（不是估计器不一致）"的结论在代码层面得到了印证——两者不可能出现"一个对一个错"的情况，因为取
+  负逻辑是复制的、输入数据是共享的。
+
+  ---
+
+  剩余风险点（如果台架测试仍然发现符号不对）
+
+  既然传感器映射本身跟你描述的贴装方式数学自洽，如果之前 t4c
+  测出的"roll对、pitch反"依旧存在，可以重点排查这两个跟"代码假设"之外、无法从源码本身验证的物理环节：
+
+  1. 电机物理接线 vs MOTOR_M1..M4：混控假设 m1=前右/m2=后右/m3=后左/m4=前左，这只是软件里的编号，实际 PCB
+     丝印 M1~M4 焊盘/连接器插座是否真的按这个顺序接到对应 GPIO/PWM 通道，只能拆桨实测（Kconfig.projbuild
+     里也这么强调）。
+  2. 芯片本体 vs 我推导用的"标准右手系"假设：我的推导依赖"芯片自身 X/Y/Z
+     轴严格右手系、且未镜像贴装"，这对任何未经翻转贴装的 MPU6050/GY-521 都成立；但如果模块丝印箭头本身跟
+     datasheet（仓库里 docs/_static/mpu6050_xyz.png）标注不一致，仍建议用你们 t4d_imu_raw_axis_check.py
+     里教的手动倾斜 + 对照 accRaw/gyro*Raw 原始寄存器符号法，直接实测一次校验，而不是只信源码推导。
+
+✻ Churned for 6m 48s · done 14:14
+
+基于当前已经情况和推到的机体坐标系，查看互补和kalman、混动等算法中计算翻转的方向是否按照这种坐标系计算
+  的？
+  
+基于当前已经情况和推到的机体坐标系，查看互补和kalman、混动等算法中计算翻转的方向是否按照这种坐标系计算的 
+  ？                                                                                                       
+  
+  Thought for 23s (ctrl+o to expand)
+
+● 「翻转方向」我理解为：验证互补滤波、Kalman 滤波、混控里所有跟旋转方向相关的计算（叉乘、旋转矩阵构建、姿态
+  误差反馈、以及是否有专门的翻转/倒置检测逻辑）是否都统一遵循我们推导出的
+  FLU（X前/Y左/Z上）右手系，而不是只看最终输出的 roll/pitch/yaw 符号。我先搜索代码确认范围，再逐项核对。
+
+  Thought for 2m 3s, searched for 7 patterns, read 1 file (ctrl+o to expand)
+
+● 逐一核对下来，结论是：是的，互补滤波、Kalman、混控里所有跟旋转方向相关的计算，都统一建立在第一部分推导出
+  的 FLU（X前/Y左/Z上）右手系之上，没有发现哪个模块单独假设了不同方向。具体拆开看：
+
+  1. 专门的"翻转"检测：sitaw.c 的 Tumbled 保护
+
+  这是代码里唯一字面意义上检测"飞机翻了"的逻辑（sitaw.c:304-320）：
+
+  #define SITAW_TU_ACC_THRESHOLD (-0.5f)   // sitaw.h:54
+  void sitAwTuTest(float accz) { triggerTestValue(&sitAwTuAcc, accz); }  // triggerFuncIsLE，acc.z <= -0.5
+  触发
+
+  调用处 sitaw.c:128：sitAwTuTest(sensorData->acc.z)，飞行中触发即调
+  stabilizerSetEmergencyStop()（sitaw.c:144-147）紧急停机。
+
+  这个逻辑只依赖 acc.z，而我们在第一部分已经证明：换轴表里 Z 轴是直通的（accScaled.z = accelRaw.z *
+  scale，无交换、无取负），因为芯片贴平未翻面，芯片 Z+ 就是机体 Z+（朝上）。所以：
+  - 正常飞行水平时 acc.z ≈ +1g（法向力抵消重力）；
+  - 真的翻转倒扣飞行时 acc.z ≈ -1g → 触发 -0.5 阈值 →停机。
+
+  这个方向判断跟机体前/左的定义无关，只取决于"芯片 Z 轴有没有被翻面贴反"这一件事——而这正是用户描述里已经确
+  认的（贴平、丝印朝上），所以这处翻转保护的符号是对的，不会因为前面讨论的 X/Y 90° 旋转问题受影响。
+
+  2. 互补滤波里的旋转方向计算：Mahony 交叉项
+
+  sensfusion6.c:202-209：
+  halfvx = qx*qz - qw*qy;  halfvy = qw*qx + qy*qz;  halfvz = qw*qw - 0.5f + qz*qz;  //
+  姿态四元数估算的"重力方向"（世界+Z 在机体系下的投影）
+  halfex = ay*halfvz - az*halfvy;  halfey = az*halfvx - ax*halfvz;  halfez = ax*halfvy - ay*halfvx;  //
+  测量重力 × 估计重力 的叉积误差
+
+  这是标准 Madgwick/Mahony 论文原版公式（未被本项目改动），是通用的向量数学（叉积、四元数积分），本身不包含
+  "哪边是前/哪边是左"这种硬编码方向假设——它的方向正确性完全继承自输入的
+  gx,gy,gz,ax,ay,az（也就是第一步换轴后的机体系数据）。既然我们已经证明这组输入是自洽的右手系（行列式
+  +1，非镜像），这段叉积/反馈计算自然也是方向一致的，不需要单独验证符号。
+
+  estimatedGravityDirection（sensfusion6.c:310-314）算的是旋转矩阵第三列（机体系下的"上"方向），跟 Kalman
+  里的 R[2][0..2] 是同一套约定（世界 Z 朝上），两个估计器对"上"方向的定义一致。
+
+  3. Kalman 里的旋转方向计算：kalmanCorePredict
+
+  kalman_core.c:633 起的预测方程（this->R[2][0..2] 作为姿态旋转矩阵第三行，gyro->x/y/z 直接参与状态转移矩阵
+  A）同样是论文原版通用公式（Mueller & Hamer 2015），不含方向硬编码，继承输入数据的坐标系。姿态误差
+  D0,D1,D2 并入四元数、重建 R 的方式（kalman_core.c 里的 finalize
+  步骤）跟互补滤波用的四元数积分是同一套右手系约定。
+
+  输出端 kalmanCoreExternalizeState（kalman_core.c:1049-1059）跟互补滤波一样对 pitch 取负、yaw
+  不取负——这点在上一轮已经确认两者逐字一致。
+
+  4. 混控的旋转方向：已在上一轮验证过
+
+  power_distribution_stock.c 里 roll/pitch/yaw 的符号已经用电机物理位置+CW/CCW反扭矩方向逐项验证过，跟这个
+  FLU 系自洽（右倾=正roll，抬头=正pitch，机头左偏=正yaw），不再重复。
+
+  小结
+
+  翻转/旋转方向相关的计算分两类：
+  - 专门的方向判断（换轴表 processAccGyroMeasurements、翻转保护 sitaw.c 的 acc.z 阈值、混控的
+    roll/pitch/yaw 分配公式、两个估计器输出端的 pitch取负）——这几处是唯一"硬编码"了物理方向假设的地方，全
+    部逐项核对过，彼此一致，且跟你描述的硬件贴装/电机布局匹配。
+  - 通用姿态数学（Mahony 的四元数积分/叉积反馈、Kalman 的旋转矩阵预测/更新）——这些是坐标系无关的标准算法，
+    只是"照抄"输入数据的坐标系，不会引入独立的方向错误，只要输入自洽（已证明），它们就自洽。
+
+  所以目前源码层面看不到"某个模块方向算反了"的证据；如果台架仍测出符号问题，大概率还是落在上一轮提到的两个
+  物理层面、代码本身验证不了的点：电机实际接线顺序，或者模块丝印跟 datasheet 轴向标注是否真的一致。
+
+✻ Sautéed for 2m 28s · done 14:28
+
+※ recap: We audited the pydrone-cc firmware's coordinate-system consistency across sensor mapping, 
+  complementary/Kalman filters, mixer, and flip detection — everything checks out against the described 
+  hardware. Next: bench-verify motor wiring order and MPU6050 silkscreen-vs-datasheet axis labeling, since 
+  those can't be confirmed from source alone. (disable recaps in /config)
+
+❯ 跟标准 ZYX 欧拉角公式逐项比对: 标准应是 asin(2(qwqy-qxqz)),这里是                                        
+  asin(2(qxqz-qwqy))--------其他分析中有提到这种，也分析一下算法？                                         
+  
+  Thought for 1m 28s, searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● 你抓得很准，逐项代数比对确实能看出这里的门道，比想象中更精确地印证了之前的结论。逐项拆开算：
+
+  先摆出"标准 ZYX"公式（Wikipedia/航空常用的四元数→欧拉角，q=(w,x,y,z)）
+
+  roll  = atan2( 2(wx+yz),        w²-x²-y²+z² )
+  pitch = asin ( 2(wy-xz) )
+  yaw   = atan2( 2(wz+xy),        w²+x²-y²-z² )
+
+  Kalman (kalman_core.c:1050-1052)，q[0..3] = (w,x,y,z)（由 851 行标准四元数乘法实部公式
+  w1w2-x1x2-y1y2-z1z2 反推确认）：
+
+  yaw   = atan2f(2*(qx*qy+qw*qz), qw²+qx²-qy²-qz²)      // = atan2(2(wz+xy), w²+x²-y²-z²)  ——
+  跟标准公式逐项一致
+  roll  = atan2f(2*(qy*qz+qw*qx), qw²-qx²-qy²+qz²)      // = atan2(2(wx+yz), w²-x²-y²+z²)  ——
+  跟标准公式逐项一致
+  pitch = asinf(-2*(qx*qz - qw*qy))                     // = asin(2*(qw*qy - qx*qz)) = asin(2(wy-xz))  ——
+  这一步跟标准公式也是完全一致的！
+
+  关键点：-2*(qx*qz - qw*qy) 展开就是 2*(qw*qy - qx*qz)，跟标准 2(wy-xz) 逐项相同——asinf(-2*(...)) 这一步本
+  身没有反，只是写法上先把括号内顺序换了一下再加负号，代数上等价于标准公式。真正的反转发生在下一行：
+
+  .pitch = -pitch*RAD_TO_DEG,   // kalman_core.c:1058
+
+  这一步才是显式地对刚算出来的"标准"pitch 取负，而且代码上一行的注释写得很明确：// Save attitude, adjusted
+  for the legacy CF2 body coordinate system，stabilizer_types.h:155 也专门注明 attitude_t attitude; // deg
+  (legacy CF2 body coordinate system, where pitch is inverted)——这是 Bitcraze
+  官方就承认、且专门留了注释的历史遗留约定，不是本项目引入的bug。
+
+  roll、yaw 没有任何取负，跟标准公式逐项相同——只有 pitch 被单独处理。
+
+  互补滤波 (sensfusion6.c:272-274, 312-314)
+
+  gravX = 2*(qx*qz - qw*qy)          // sensfusion6.c:312
+  gravY = 2*(qw*qx + qy*qz)          // = 2(wx+yz)
+  gravZ = qw² - qx² - qy² + qz²      // = w²-x²-y²+z²
+
+  yaw   = atan2f(2*(qw*qz+qx*qy), qw²+qx²-qy²-qz²)   // 跟标准公式逐项一致，跟kalman的yaw公式字面上完全相同
+  roll  = atan2f(gravY, gravZ)                        // = atan2(2(wx+yz),
+  w²-x²-y²+z²)，跟标准/kalman的roll逐项一致
+  pitch = asinf(gravX) = asinf(2*(qx*qz - qw*qy))     // = asin(-2*(qw*qy-qx*qz)) = -asin(2(wy-xz))  ——
+  这里直接等于"标准公式的负数"
+
+  这里跟 Kalman 写法不同：互补滤波没有单独再取一次负号，而是直接在 gravX 的叉乘项顺序里就写成 qx*qz -
+  qw*qy（标准应是 qw*qy - qx*qz），顺序对调等价于隐含内嵌了一次负号，所以 pitch = asinf(gravX)
+  一步到位就等于 -标准pitch，只是没有像 kalman 那样用注释显式说明"这是故意反的"（唯一的线索是那句比较含糊的
+  //Pitch seems to be inverted）。
+
+  结论
+
+  ┌────────────────┬───────────────┬───────────────────────────────────────────────────┬───────────────┐
+  │                │     roll      │                       pitch                       │      yaw      │
+  ├────────────────┼───────────────┼───────────────────────────────────────────────────┼───────────────┤
+  │                │ atan2(2(wx+yz │                                                   │ atan2(2(wz+xy │
+  │ 标准ZYX公式    │ ),            │ asin(2(wy-xz))                                    │ ),            │
+  │                │ w²-x²-y²+z²)  │                                                   │ w²+x²-y²-z²)  │
+  ├────────────────┼───────────────┼───────────────────────────────────────────────────┼───────────────┤
+  │ Kalman最终输出 │ 与标准逐项相  │ = -标准pitch（先算出标准值，再显式-pitch，注释写  │ 与标准逐项相  │
+  │                │ 同            │ 明"legacy CF2"）                                  │ 同            │
+  ├────────────────┼───────────────┼───────────────────────────────────────────────────┼───────────────┤
+  │ 互补滤波最终输 │ 与标准逐项相  │ = -标准pitch（叉乘项顺序对调，隐含内置负号，一步  │ 与标准逐项相  │
+  │ 出             │ 同            │ 到位）                                            │ 同            │
+  └────────────────┴───────────────┴───────────────────────────────────────────────────┴───────────────┘
+
+  两个估计器最终输出的 pitch 数值上完全等价（都等于标准 ZYX 公式的负数），只是代码实现路径不同——Kalman
+  是"先算标准值、再显式取负、并留注释说明"，互补滤波是"把叉乘项顺序换掉、隐式内置负号、无解释性注释"。roll
+  和 yaw 两边则是逐项相同的标准公式，完全没有额外符号处理。
+
+  这跟你之前 t4c 记录的结论（"complementary/kalman 两
+  estimatedGravityDirection（sensfusion6.c:310-314）算  的是旋转矩阵第三列（机体系下的"上"方向），跟 Kalman
+  里的 R[2][0..2] 是同一套约定（世界 Z                  朝上），两个估计器对"上"方向的定义一致。
+                                                        3. Kalman 里的旋转方向计算：kalmanCorePredict
+                                                        kalman_core.c:633 起的预测方程（this->R[2][0..2]
+  作为姿态旋转矩阵第三行，gyro->x/y/z
+  直接参与状态转移矩阵
+  A）同样是论文原版通用公式（Mueller & Hamer 2015），
+  不含方向硬编码，继承输入数据的坐标系。姿态误差        D0,D1,D2 并入四元数、重建 R 的方式（kalman_core.c
+  里的 finalize
+  步骤）跟互补滤波用的四元数积分是同一套右手系约定。
+
+  输出端 kalmanCoreExternalizeState（kalman_core.c:104
+  9-1059）跟互补滤波一样对 pitch 取负、yaw
+  不取负——这点在上一轮已经确认两者逐字一致。
+
+  4. 混控的旋转方向：已在上一轮验证过
+
+  power_distribution_stock.c 里 roll/pitch/yaw 的符号
+  已经用电机物理位置+CW/CCW反扭矩方向逐项验证过，跟这
+  个 FLU 系自洽（右倾=正roll，抬头=正pitch，机头左偏=
+  正yaw），不再重复。
+
+  小结
+
+  翻转/旋转方向相关的计算分两类：
+  - 专门的方向判断（换轴表
+    processAccGyroMeasurements、翻转保护 sitaw.c 的
+    acc.z 阈值、混控的 roll/pitch/yaw
+    分配公式、两个估计器输出端的 pitch 取负）——这几处
+    是唯一"硬编码"了物理方向假设的地方，全部逐项核对过
+    ，彼此一致，且跟你描述的硬件贴装/电机布局匹配。
+  - 通用姿态数学（Mahony 的四元数积分/叉积反馈、Kalman
+    的旋转矩阵预测/更新）——这些是坐标系无关的标准算法
+    ，只是"照抄"输入数据的坐标系，不会引入独立的方向错
+    误，只要输入自洽（已证明），它们就自洽。
+
+  所以目前源码层面看不到"某个模块方向算反了"的证据；如
+  果台架仍测出符号问题，大概率还是落在上一轮提到的两个
+  物理层面、代码本身验证不了的点：电机实际接线顺序，或
+  者模块丝印跟 datasheet 轴向标注是否真的一致。
+
+✻ Sautéed for 2m 28s · done 14:28
+
+※ recap: We audited the pydrone-cc firmware's
+  coordinate-system consistency across sensor mapping,
+  complementary/Kalman filters, mixer, and flip
+  detection — everything checks out against the
+  described hardware. Next: bench-verify motor wiring
+  order and MPU6050 silkscreen-vs-datasheet axis
+  labeling, since those can't be confirmed from source
+  alone. (disable recaps in /config)
+
+❯ 跟标准 ZYX 欧拉角公式逐项比对: 标准应是             
+  asin(2(qwqy-qxqz)),这里是 asin(2(qxqz-qwqy))------- 
+  -其他分析中有提到这种，也分析一下算法？             
+
+  Thought for 1m 28s, searched for 1 pattern, read 1 
+  file (ctrl+o to expand)
+
+● 你抓得很准，逐项代数比对确实能看出这里的门道，比想象
+  中更精确地印证了之前的结论。逐项拆开算：
+
+  先摆出"标准 ZYX"公式（Wikipedia/航空常用的四元数→欧
+  拉角，q=(w,x,y,z)）
+
+  roll  = atan2( 2(wx+yz),        w²-x²-y²+z² )
+  pitch = asin ( 2(wy-xz) )
+  yaw   = atan2( 2(wz+xy),        w²+x²-y²-z² )
+
+  Kalman (kalman_core.c:1050-1052)，q[0..3] =
+  (w,x,y,z)（由 851 行标准四元数乘法实部公式
+  w1w2-x1x2-y1y2-z1z2 反推确认）：
+
+  yaw   = atan2f(2*(qx*qy+qw*qz), qw²+qx²-qy²-qz²)
+   // = atan2(2(wz+xy), w²+x²-y²-z²)  ——
+  跟标准公式逐项一致
+  roll  = atan2f(2*(qy*qz+qw*qx), qw²-qx²-qy²+qz²)
+   // = atan2(2(wx+yz), w²-x²-y²+z²)  ——
+  跟标准公式逐项一致
+  pitch = asinf(-2*(qx*qz - qw*qy))
+   // = asin(2*(qw*qy - qx*qz)) = asin(2(wy-xz))  ——
+  这一步跟标准公式也是完全一致的！
+
+  关键点：-2*(qx*qz - qw*qy) 展开就是 2*(qw*qy -
+  qx*qz)，跟标准 2(wy-xz) 逐项相同——asinf(-2*(...)) 这
+  一步本身没有反，只是写法上先把括号内顺序换了一下再加
+  负号，代数上等价于标准公式。真正的反转发生在下一行：
+
+  .pitch = -pitch*RAD_TO_DEG,   // kalman_core.c:1058
+
+  这一步才是显式地对刚算出来的"标准"pitch
+  取负，而且代码上一行的注释写得很明确：// Save
+  attitude, adjusted for the legacy CF2 body
+  coordinate system，stabilizer_types.h:155 也专门注明
+  attitude_t attitude; // deg (legacy CF2 body
+  coordinate system, where pitch is inverted)——这是
+  Bitcraze 官方就承认、且专门留了注释的历史遗留约定，
+  不是本项目引入的bug。
+
+  roll、yaw 没有任何取负，跟标准公式逐项相同——只有
+  pitch 被单独处理。
+
+  互补滤波 (sensfusion6.c:272-274, 312-314)
+
+  gravX = 2*(qx*qz - qw*qy)          //
+  sensfusion6.c:312
+  gravY = 2*(qw*qx + qy*qz)          // = 2(wx+yz)
+  gravZ = qw² - qx² - qy² + qz²      // = w²-x²-y²+z²
+
+  yaw   = atan2f(2*(qw*qz+qx*qy), qw²+qx²-qy²-qz²)
+  //
+  跟标准公式逐项一致，跟kalman的yaw公式字面上完全相同
+  roll  = atan2f(gravY, gravZ)
+  // = atan2(2(wx+yz),
+  w²-x²-y²+z²)，跟标准/kalman的roll逐项一致
+  pitch = asinf(gravX) = asinf(2*(qx*qz - qw*qy))
+  // = asin(-2*(qw*qy-qx*qz)) = -asin(2(wy-xz))  ——
+  这里直接等于"标准公式的负数"
+
+  这里跟 Kalman
+  写法不同：互补滤波没有单独再取一次负号，而是直接在
+  gravX 的叉乘项顺序里就写成 qx*qz - qw*qy（标准应是
+  qw*qy -
+  qx*qz），顺序对调等价于隐含内嵌了一次负号，所以
+  pitch = asinf(gravX) 一步到位就等于
+  -标准pitch，只是没有像 kalman 那样用注释显式说明"这
+  是故意反的"（唯一的线索是那句比较含糊的 //Pitch
+  seems to be inverted）。
+
+  结论
+
+  标准ZYX公式
+  roll: atan2(2(wx+yz), w²-x²-y²+z²)
+  pitch: asin(2(wy-xz))
+  yaw: atan2(2(wz+xy), w²+x²-y²-z²)
+  ────────────────────────────────────────
+  Kalman最终输出
+  roll: 与标准逐项相同
+  pitch: =
+  -标准pitch（先算出标准值，再显式-pitch，注释写明"leg
+  acy
+   CF2"）
+  yaw: 与标准逐项相同
+  ────────────────────────────────────────
+  互补滤波最终输出
+  roll: 与标准逐项相同
+  pitch: =
+  -标准pitch（叉乘项顺序对调，隐含内置负号，一步到位）
+  yaw: 与标准逐项相同
+
+  两个估计器最终输出的 pitch
+  数值上完全等价（都等于标准 ZYX
+  公式的负数），只是代码实现路径不同——Kalman
+  是"先算标准值、再显式取负、并留注释说明"，互补滤波是
+  "把叉乘项顺序换掉、隐式内置负号、无解释性注释"。roll
+  和 yaw
+  两边则是逐项相同的标准公式，完全没有额外符号处理。
+
+  这跟你之前 t4c 记录的结论（"complementary/kalman
+  两个估计器的 pitch 符号数学上等价"）在公式代数层面得
+  │                │ 同            │ 明"legacy CF2"）                                  │ 同            │
+  ├────────────────┼───────────────┼───────────────────────────────────────────────────┼───────────────┤
+  │ 互补滤波最终输 │ 与标准逐项相  │ = -标准pitch（叉乘项顺序对调，隐含内置负号，一步  │ 与标准逐项相  │
+  │ 出             │ 同            │ 到位）                                            │ 同            │
+  └────────────────┴───────────────┴───────────────────────────────────────────────────┴───────────────┘
+
+  两个估计器最终输出的 pitch 数值上完全等价（都等于标准 ZYX 公式的负数），只是代码实现路径不同——Kalman
+  是"先算标准值、再显式取负、并留注释说明"，互补滤波是"把叉乘项顺序换掉、隐式内置负号、无解释性注释"。roll
+  和 yaw 两边则是逐项相同的标准公式，完全没有额外符号处理。
+
+  这跟你之前 t4c 记录的结论（"complementary/kalman 两个估计器的 pitch 符号数学上等价"）在公式代数层面得到了
+  最精确的印证：这不是两套独立实现碰巧算出一样的结果，而是同一个"legacy CF2 对 pitch
+  取负"的约定，用两种不同但代数等价的写法各实现了一遍。所以如果台架测试仍然测出 pitch 反、roll
+  对，问题确定不在这两个估计器的四元数数学本身（两者是同一个约定的两种等价写法，不可能一个对一个错），只能
+  是上一轮提到的换轴表/贴装方向或电机接线这两个物理层面的候选。
