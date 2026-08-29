@@ -186,6 +186,16 @@ def main():
             "pid_rate.yaw_outP": None,
             "pid_rate.yaw_outI": None,
             "pid_rate.yaw_outD": None,
+            "stateEstimate.yaw": None,
+            "pid_attitude.yaw_outP": None,
+            "pid_attitude.yaw_outI": None,
+            "pid_attitude.yaw_outD": None,
+            "pid_attitude.roll_outP": None,
+            "pid_attitude.roll_outI": None,
+            "pid_attitude.roll_outD": None,
+            "pid_attitude.pitch_outP": None,
+            "pid_attitude.pitch_outI": None,
+            "pid_attitude.pitch_outD": None,
         }
 
         lg = LogConfig(name="motor", period_in_ms=50)
@@ -225,6 +235,28 @@ def main():
         lg_rpy.add_variable("pid_rate.yaw_outI", "float")
         lg_rpy.add_variable("pid_rate.yaw_outD", "float")
         cf.log.add_config(lg_rpy)
+
+        # 姿态角外环(pid_attitude，跟内环 pid_rate 是两层不同的 PID)：complementary 滤波器 yaw
+        # 没有磁力计做绝对基准，纯靠陀螺积分，哪怕机身完全静止、桨叶完全没转，gyro.z 只要有一点
+        # 零偏，stateEstimate.yaw 也会随时间线性跑飘；跑飘量喂给 pid_attitude.yaw 外环，算出的
+        # rateDesired.yaw 会越来越大，这条链路完全不需要真实转动或振动就能解释 pid_rate.yaw_outP
+        # 持续变大。跟 stateEstimate.yaw 放一起观察，看它是不是真的在单调跑飘。
+        lg_att = LogConfig(name="att_diag", period_in_ms=50)
+        lg_att.add_variable("stateEstimate.yaw", "float")
+        lg_att.add_variable("pid_attitude.yaw_outP", "float")
+        lg_att.add_variable("pid_attitude.yaw_outI", "float")
+        lg_att.add_variable("pid_attitude.yaw_outD", "float")
+        lg_att.add_variable("pid_attitude.roll_outP", "float")
+        lg_att.add_variable("pid_attitude.roll_outI", "float")
+        cf.log.add_config(lg_att)
+
+        # 单个 log block 最多 26 字节(LOG_MAX_LEN)，剩下的 roll_outD/pitch 外环三项放第二路。
+        lg_att2 = LogConfig(name="att_diag2", period_in_ms=50)
+        lg_att2.add_variable("pid_attitude.roll_outD", "float")
+        lg_att2.add_variable("pid_attitude.pitch_outP", "float")
+        lg_att2.add_variable("pid_attitude.pitch_outI", "float")
+        lg_att2.add_variable("pid_attitude.pitch_outD", "float")
+        cf.log.add_config(lg_att2)
 
         def check_auto_abort(m1, m2, m3, m4):
             """硬保护线 + windup 早期预警。任何一条触发就置位 stop_event，交给已有的收尾逻辑归零。"""
@@ -267,6 +299,16 @@ def main():
             yaw_outp = diag_state["pid_rate.yaw_outP"]
             yaw_outi = diag_state["pid_rate.yaw_outI"]
             yaw_outd = diag_state["pid_rate.yaw_outD"]
+            yaw_est = diag_state["stateEstimate.yaw"]
+            att_yaw_outp = diag_state["pid_attitude.yaw_outP"]
+            att_yaw_outi = diag_state["pid_attitude.yaw_outI"]
+            att_yaw_outd = diag_state["pid_attitude.yaw_outD"]
+            att_roll_outp = diag_state["pid_attitude.roll_outP"]
+            att_roll_outi = diag_state["pid_attitude.roll_outI"]
+            att_roll_outd = diag_state["pid_attitude.roll_outD"]
+            att_pitch_outp = diag_state["pid_attitude.pitch_outP"]
+            att_pitch_outi = diag_state["pid_attitude.pitch_outI"]
+            att_pitch_outd = diag_state["pid_attitude.pitch_outD"]
             rate_actual = -gyro_y if gyro_y is not None else None
             print(
                 f"t={timestamp:>8}  m1={data['motor.m1']:6d}  m2={data['motor.m2']:6d}  "
@@ -279,6 +321,13 @@ def main():
                 f"          pitchI={_fmt(outi)}  |  "
                 f"rollP={_fmt(roll_outp)}  rollI={_fmt(roll_outi)}  rollD={_fmt(roll_outd)}  |  "
                 f"yawP={_fmt(yaw_outp)}  yawI={_fmt(yaw_outi)}  yawD={_fmt(yaw_outd)}",
+                flush=True,
+            )
+            print(
+                f"          yaw={_fmt(yaw_est, 6)}  |  外环(attitude) "
+                f"yawP={_fmt(att_yaw_outp)} yawI={_fmt(att_yaw_outi)} yawD={_fmt(att_yaw_outd)}  |  "
+                f"rollP={_fmt(att_roll_outp)} rollI={_fmt(att_roll_outi)} rollD={_fmt(att_roll_outd)}  |  "
+                f"pitchP={_fmt(att_pitch_outp)} pitchI={_fmt(att_pitch_outi)} pitchD={_fmt(att_pitch_outd)}",
                 flush=True,
             )
             check_auto_abort(data["motor.m1"], data["motor.m2"], data["motor.m3"], data["motor.m4"])
@@ -302,14 +351,32 @@ def main():
             diag_state["pid_rate.yaw_outI"] = data["pid_rate.yaw_outI"]
             diag_state["pid_rate.yaw_outD"] = data["pid_rate.yaw_outD"]
 
+        def log_att_cb(timestamp, data, logconf):
+            diag_state["stateEstimate.yaw"] = data["stateEstimate.yaw"]
+            diag_state["pid_attitude.yaw_outP"] = data["pid_attitude.yaw_outP"]
+            diag_state["pid_attitude.yaw_outI"] = data["pid_attitude.yaw_outI"]
+            diag_state["pid_attitude.yaw_outD"] = data["pid_attitude.yaw_outD"]
+            diag_state["pid_attitude.roll_outP"] = data["pid_attitude.roll_outP"]
+            diag_state["pid_attitude.roll_outI"] = data["pid_attitude.roll_outI"]
+
+        def log_att2_cb(timestamp, data, logconf):
+            diag_state["pid_attitude.roll_outD"] = data["pid_attitude.roll_outD"]
+            diag_state["pid_attitude.pitch_outP"] = data["pid_attitude.pitch_outP"]
+            diag_state["pid_attitude.pitch_outI"] = data["pid_attitude.pitch_outI"]
+            diag_state["pid_attitude.pitch_outD"] = data["pid_attitude.pitch_outD"]
+
         lg.data_received_cb.add_callback(log_cb)
         lg_diag.data_received_cb.add_callback(log_diag_cb)
         lg_rate.data_received_cb.add_callback(log_rate_cb)
         lg_rpy.data_received_cb.add_callback(log_rpy_cb)
+        lg_att.data_received_cb.add_callback(log_att_cb)
+        lg_att2.data_received_cb.add_callback(log_att2_cb)
         lg.start()
         lg_diag.start()
         lg_rate.start()
         lg_rpy.start()
+        lg_att.start()
+        lg_att2.start()
 
         # 先确认遥测通路活着，再考虑给电机上电，绝不盲发推力
         print("等待第一帧 motor 日志，确认遥测通路正常...", flush=True)
@@ -327,6 +394,8 @@ def main():
             lg_diag.stop()
             lg_rate.stop()
             lg_rpy.stop()
+            lg_att.stop()
+            lg_att2.stop()
             return
 
         print("日志已确认在收，即将开始发送推力基线（斜坡爬升，避免电流冲击）。", flush=True)
@@ -408,6 +477,8 @@ def main():
             lg_diag.stop()
             lg_rate.stop()
             lg_rpy.stop()
+            lg_att.stop()
+            lg_att2.stop()
             print("测试结束。", flush=True)
     finally:
         cf.close_link()
