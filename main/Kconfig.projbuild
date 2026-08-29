@@ -123,14 +123,14 @@ menu "ESPDrone Config"
     menu "calibration angle"
         config PITCH_CALIB
             int "PITCH_CALIB deg*100"
-            range -200 200
+            range -1000 1000
             default 0
             help
                 if PITCH error angle is 0.90,set this 90
 
         config ROLL_CALIB
             int "ROLL_CALIB deg*100"
-            range -200 200
+            range -1000 1000
             default 0
             help
                 if ROLL error angle is 0.90,set this 90
