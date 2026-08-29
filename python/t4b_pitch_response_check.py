@@ -174,11 +174,18 @@ def main():
         # 超出 CRTP payload 限制。数值可能比 motor 那一路晚最多一个周期，人工读数够用。
         diag_state = {
             "pid_rate.pitch_outP": None,
+            "pid_rate.pitch_outI": None,
             "pid_rate.pitch_outD": None,
             "stateEstimate.roll": None,
             "stateEstimate.pitch": None,
             "gyro.y": None,
             "controller.pitchRate": None,
+            "pid_rate.roll_outP": None,
+            "pid_rate.roll_outI": None,
+            "pid_rate.roll_outD": None,
+            "pid_rate.yaw_outP": None,
+            "pid_rate.yaw_outI": None,
+            "pid_rate.yaw_outD": None,
         }
 
         lg = LogConfig(name="motor", period_in_ms=50)
@@ -190,6 +197,7 @@ def main():
 
         lg_diag = LogConfig(name="pid_diag", period_in_ms=50)
         lg_diag.add_variable("pid_rate.pitch_outP", "float")
+        lg_diag.add_variable("pid_rate.pitch_outI", "float")
         lg_diag.add_variable("pid_rate.pitch_outD", "float")
         lg_diag.add_variable("stateEstimate.roll", "float")
         lg_diag.add_variable("stateEstimate.pitch", "float")
@@ -205,6 +213,18 @@ def main():
         lg_rate.add_variable("gyro.y", "float")
         lg_rate.add_variable("controller.pitchRate", "float")
         cf.log.add_config(lg_rate)
+
+        # roll/yaw 角速度环的 P/I/D 分量：上次 m3 打满时 pitch_outP/outD 都很正常，
+        # 反解混控矩阵发现真正的大头在别的轴/别的项上，所以这里把 roll、yaw 的 outI
+        # （最可能出现"传感器角度不动但积分单调堆积"的一项）也一起打出来，坐实是谁在饱和。
+        lg_rpy = LogConfig(name="rpy_diag", period_in_ms=50)
+        lg_rpy.add_variable("pid_rate.roll_outP", "float")
+        lg_rpy.add_variable("pid_rate.roll_outI", "float")
+        lg_rpy.add_variable("pid_rate.roll_outD", "float")
+        lg_rpy.add_variable("pid_rate.yaw_outP", "float")
+        lg_rpy.add_variable("pid_rate.yaw_outI", "float")
+        lg_rpy.add_variable("pid_rate.yaw_outD", "float")
+        cf.log.add_config(lg_rpy)
 
         def check_auto_abort(m1, m2, m3, m4):
             """硬保护线 + windup 早期预警。任何一条触发就置位 stop_event，交给已有的收尾逻辑归零。"""
@@ -229,31 +249,43 @@ def main():
                 )
                 stop_event.set()
 
+        def _fmt(value, width=8, prec=1):
+            return f"{value:{width}.{prec}f}" if value is not None else f"{'n/a':>{width}}"
+
         def log_cb(timestamp, data, logconf):
             log_state["last"] = time.monotonic()
             outp = diag_state["pid_rate.pitch_outP"]
+            outi = diag_state["pid_rate.pitch_outI"]
             outd = diag_state["pid_rate.pitch_outD"]
             roll = diag_state["stateEstimate.roll"]
             pitch = diag_state["stateEstimate.pitch"]
             gyro_y = diag_state["gyro.y"]
             rate_desired = diag_state["controller.pitchRate"]
-            outp_s = f"{outp:8.1f}" if outp is not None else "    n/a"
-            outd_s = f"{outd:8.1f}" if outd is not None else "    n/a"
-            roll_s = f"{roll:6.1f}" if roll is not None else "   n/a"
-            pitch_s = f"{pitch:6.1f}" if pitch is not None else "   n/a"
-            rate_actual_s = f"{-gyro_y:8.1f}" if gyro_y is not None else "     n/a"
-            rate_desired_s = f"{rate_desired:8.1f}" if rate_desired is not None else "     n/a"
+            roll_outp = diag_state["pid_rate.roll_outP"]
+            roll_outi = diag_state["pid_rate.roll_outI"]
+            roll_outd = diag_state["pid_rate.roll_outD"]
+            yaw_outp = diag_state["pid_rate.yaw_outP"]
+            yaw_outi = diag_state["pid_rate.yaw_outI"]
+            yaw_outd = diag_state["pid_rate.yaw_outD"]
+            rate_actual = -gyro_y if gyro_y is not None else None
             print(
                 f"t={timestamp:>8}  m1={data['motor.m1']:6d}  m2={data['motor.m2']:6d}  "
                 f"m3={data['motor.m3']:6d}  m4={data['motor.m4']:6d}  |  "
-                f"rateP={outp_s}  rateD={outd_s}  roll={roll_s}  pitch={pitch_s}  |  "
-                f"rateDesired={rate_desired_s}  rateActual(-gyro.y)={rate_actual_s}",
+                f"rateP={_fmt(outp)}  rateD={_fmt(outd)}  roll={_fmt(roll, 6)}  pitch={_fmt(pitch, 6)}  |  "
+                f"rateDesired={_fmt(rate_desired)}  rateActual(-gyro.y)={_fmt(rate_actual)}",
+                flush=True,
+            )
+            print(
+                f"          pitchI={_fmt(outi)}  |  "
+                f"rollP={_fmt(roll_outp)}  rollI={_fmt(roll_outi)}  rollD={_fmt(roll_outd)}  |  "
+                f"yawP={_fmt(yaw_outp)}  yawI={_fmt(yaw_outi)}  yawD={_fmt(yaw_outd)}",
                 flush=True,
             )
             check_auto_abort(data["motor.m1"], data["motor.m2"], data["motor.m3"], data["motor.m4"])
 
         def log_diag_cb(timestamp, data, logconf):
             diag_state["pid_rate.pitch_outP"] = data["pid_rate.pitch_outP"]
+            diag_state["pid_rate.pitch_outI"] = data["pid_rate.pitch_outI"]
             diag_state["pid_rate.pitch_outD"] = data["pid_rate.pitch_outD"]
             diag_state["stateEstimate.roll"] = data["stateEstimate.roll"]
             diag_state["stateEstimate.pitch"] = data["stateEstimate.pitch"]
@@ -262,12 +294,22 @@ def main():
             diag_state["gyro.y"] = data["gyro.y"]
             diag_state["controller.pitchRate"] = data["controller.pitchRate"]
 
+        def log_rpy_cb(timestamp, data, logconf):
+            diag_state["pid_rate.roll_outP"] = data["pid_rate.roll_outP"]
+            diag_state["pid_rate.roll_outI"] = data["pid_rate.roll_outI"]
+            diag_state["pid_rate.roll_outD"] = data["pid_rate.roll_outD"]
+            diag_state["pid_rate.yaw_outP"] = data["pid_rate.yaw_outP"]
+            diag_state["pid_rate.yaw_outI"] = data["pid_rate.yaw_outI"]
+            diag_state["pid_rate.yaw_outD"] = data["pid_rate.yaw_outD"]
+
         lg.data_received_cb.add_callback(log_cb)
         lg_diag.data_received_cb.add_callback(log_diag_cb)
         lg_rate.data_received_cb.add_callback(log_rate_cb)
+        lg_rpy.data_received_cb.add_callback(log_rpy_cb)
         lg.start()
         lg_diag.start()
         lg_rate.start()
+        lg_rpy.start()
 
         # 先确认遥测通路活着，再考虑给电机上电，绝不盲发推力
         print("等待第一帧 motor 日志，确认遥测通路正常...", flush=True)
@@ -284,6 +326,7 @@ def main():
             lg.stop()
             lg_diag.stop()
             lg_rate.stop()
+            lg_rpy.stop()
             return
 
         print("日志已确认在收，即将开始发送推力基线（斜坡爬升，避免电流冲击）。", flush=True)
@@ -364,6 +407,7 @@ def main():
             lg.stop()
             lg_diag.stop()
             lg_rate.stop()
+            lg_rpy.stop()
             print("测试结束。", flush=True)
     finally:
         cf.close_link()
