@@ -158,3 +158,452 @@ ESP-Drone 自稳系统组成与原理分析
   python.exe）。请检查后重试。
   不用再干等猜测。这个改动只动了 t4b_pitch_response_check.py,其他 t0/t3/t4/t4c/t4d
   脚本还是老的连接方式——如果你也想要同样的超时保护,告诉我一声我再统一改。
+  
+  
+  全部 8 个文件都改了,统一收敛到 config.py 里的一个共用函数 connect_with_timeout():
+
+  - config.py:新增 connect_with_timeout(cf, uri, 
+    timeout_s=10.0),所有脚本共用同一份建链超时逻辑,避免每个脚本各写一份。
+  - t0/t3/t4/t4_sensor/t4b/t4c/t4d:全部由 with SyncCrazyflie(URI) as scf: 改成 cf = Crazyflie() +
+    connect_with_timeout(cf, URI),10
+    秒内没连上就打印具体原因并退出;原有业务逻辑(日志、电机测试、自动保护等)一字未动,只是外层套了
+    try/finally: cf.close_link() 保证退出时正常断链。
+
+  都已 py_compile 通过。没有实际硬件在这边跑不了功能验证,建议你连上飞机后先跑一次最简单的
+  t0_reset_reason.py 确认连接/超时提示符合预期,再继续跑其他脚本。
+
+✻ Churned for 5m 6s · done 12:16
+
+
+ roll=   3.9  pitch=   2.2 
+ roll=   3.3  pitch=   1.6
+ roll=   3.9  pitch=   1.0
+ roll=   4.5  pitch=   1.6 
+四轴平放四个方位的数字，如何在固件中去掉这个误差？
+
+已确认根因和现有机制。这个稳定偏差(不随4个朝向变化)
+  是IMU相对PCB的机械安装倾斜误差，esp-drone固件里已经
+  内置了专门校正它的机制，只是当前范围设置太小、也没被
+  开出来用。
+   
+  原理：sensors_mpu6050_hm5883L_ms5611.c 里 sensorsAcc
+  AlignToGravity()（在融合滤波器之前，对加速度计原始向
+  量做一次固定的roll/pitch旋转校正），旋转角度来自
+  PITCH_CALIB/ROLL_CALIB 这两个Kconfig选项（单位是
+  0.01°）。当前 sdkconfig 里两者都是0，且
+  main/Kconfig.projbuild 里限制的 range 只有
+  -200~200（±2°），你测到的偏差（roll均值≈3.9°,
+  pitch均值≈1.6°）已经超出这个范围。
+
+  我现在直接把这两处改掉：先放宽range，再把默认值设成
+  你实测的均值。
+  
+  
+  AlignToGravity()（在融合滤波器之前，对加速度计原始向
+  量做一次固定的roll/pitch旋转校正），旋转角度来自
+  PITCH_CALIB/ROLL_CALIB 这两个Kconfig选项（单位是
+  0.01°）。当前 sdkconfig 里两者都是0，且
+  main/Kconfig.projbuild 里限制的 range 只有
+  -200~200（±2°），你测到的偏差（roll均值≈3.9°,
+  pitch均值≈1.6°）已经超出这个范围。
+
+  我现在直接把这两处改掉：先放宽range，再把默认值设成
+  你实测的均值。
+  
+  已完成修改，具体如下：
+
+  1. main/Kconfig.projbuild — 把 PITCH_CALIB/ROLL_CALIB 的 range 从 -200~200（±2.00°）放宽到
+  -1000~1000（±10.00°），否则超过2°的偏差无法配置。
+
+  2. sdkconfig — 按你4次平放测量的均值设置：
+  - roll 均值 = (3.9+3.3+3.9+4.5)/4 ≈ 3.9° → CONFIG_ROLL_CALIB=390
+  - pitch 均值 = (2.2+1.6+1.0+1.6)/4 ≈ 1.6° → CONFIG_PITCH_CALIB=160
+
+  原理：这个偏差在4个朝向下都稳定存在，说明是IMU相对机身的固定机械安装误差，不是滤波器收敛问题。固件里
+  sensors_mpu6050_hm5883L_ms5611.c 的 sensorsAccAlignToGravity() 会在融合滤波之前，用这两个角度把加速度计原
+  始向量旋转校正回真实水平，这是这套固件本来就设计好、但没配置的机制（其他IMU驱动如 sensors_bosch.c
+  是从EEPROM读这两个值，这个MPU6050驱动直接用Kconfig编译期常量）。
+
+  接下来你需要：
+  idf.py build flash
+  重新烧录后，把四轴重新水平放置、4个朝向都测一下roll/pitch。
+
+  ⚠️  需要注意的一点：Kconfig帮助文本约定的符号是"若误差是0.90，就填90"（同号，非取反），我按这个约定填的正
+  值。如果刷完后误差变大而不是变小（比如从3.9°变成7.8°），说明这块板子的旋转方向和帮助文本描述的相反，把两
+  个值都改成负数（-390/-160）重新烧录即可。
+  
+  
+  t=  567436  m1= 19950  m2=     0  m3=  7270  m4= 40090  |  rateP= 13360.0  rateD=   -15.1  roll=  -0.2  pitch=  -4.7  |  rateDesired=    52.3  rateActual(-gyro.y)=    -1.1
+t=  567486  m1= 19945  m2=     0  m3=  7605  m4= 40119  |  rateP= 13324.9  rateD=    65.4  roll=  -0.2  pitch=  -4.7  |  rateDesired=    53.1  rateActual(-gyro.y)=    -0.3
+t=  567536  m1= 20214  m2=     0  m3=  7248  m4= 40582  |  rateP= 13380.2  rateD=    34.9  roll=  -0.2  pitch=  -4.7  |  rateDesired=    53.7  rateActual(-gyro.y)=     0.2
+t=  567586  m1= 20013  m2=     0  m3=  7455  m4= 40489  |  rateP= 14053.7  rateD=    93.2  roll=  -0.2  pitch=  -4.8  |  rateDesired=    54.6  rateActual(-gyro.y)=    -1.7
+t=  567636  m1= 20163  m2=     0  m3=  7267  m4= 40775  |  rateP= 13891.3  rateD=   -38.3  roll=  -0.2  pitch=  -4.8  |  rateDesired=    55.5  rateActual(-gyro.y)=    -0.1
+t=  567686  m1= 20205  m2=     0  m3=  7265  m4= 40797  |  rateP= 14121.6  rateD=   166.8  roll=  -0.2  pitch=  -4.8  |  rateDesired=    56.1  rateActual(-gyro.y)=    -0.4
+t=  567736  m1= 20436  m2=     0  m3=  7038  m4= 41004  |  rateP= 14179.8  rateD=   172.2  roll=  -0.2  pitch=  -4.8  |  rateDesired=    56.7  rateActual(-gyro.y)=    -0.1
+t=  567786  m1= 20409  m2=     0  m3=  7071  m4= 40935  |  rateP= 14721.9  rateD=    68.7  roll=  -0.2  pitch=  -4.9  |  rateDesired=    57.5  rateActual(-gyro.y)=    -1.4
+t=  567836  m1= 20470  m2=     0  m3=  6930  m4= 41206  |  rateP= 14460.9  rateD=   234.5  roll=  -0.2  pitch=  -4.9  |  rateDesired=    58.1  rateActual(-gyro.y)=     0.2
+t=  567886  m1= 20484  m2=     0  m3=  6944  m4= 41112  |  rateP= 15019.8  rateD=     7.3  roll=  -0.2  pitch=  -4.9  |  rateDesired=    58.9  rateActual(-gyro.y)=    -1.1
+
+警告：pid_rate.pitch_outP=15020 超过 15000，疑似姿态角环积分饱和(windup)——机身没放平或被夹具固定住转不动，自动停止并归零！请把机身调平后再测。
+
+@python/t4b_pitch_response_check.py 轻轻抬起飞机尾部就出现"警告：pid_rate.pitch_outP=15020 超过 15000..."是什么原因？
+
+看日志能确认这是脚本自己在文件头注释里(34-38行)预警过的那种情况——姿态角环积分饱和(windup)，不是电机方向反
+  了。
+
+  关键证据：
+
+  1. pitch 角度几乎没变：整段日志里 pitch 一直卡在 -4.7~-4.9°，roll 卡在 -0.2° 不动。也就是说你轻抬尾部这个
+     动作，飞机实际姿态角基本没被测出来发生真实变化——说明机身在测试开始时本来就没放平（有约 -4.7°
+     的初始倾角），而且抬尾部这一下机身没能真正转动（被夹具/底座卡住，或者抬升幅度太小传感器分辨不出来）。
+  2. rateActual(-gyro.y) 始终接近 0（-1.1、-0.3、0.2、-1.7…），说明机体确实没有在转动。但同时 rateDesired
+     在稳定线性爬升（52.3 → 58.9，约 500ms 内涨了 6.6），这是姿态角外环在看到那个"长期存在、一直没被纠正"的
+     -4.7°误差，积分项不断累积，吐出越来越大的期望角速度。
+  3. 因为机体实际没转（rateActual≈0），内环看到的角速度误差（期望-实际）跟着外环一起线性变大，pid_rate.pitc
+     h_outP 也就跟着爬升，最终摸到 15000 这条"疑似 windup"的早期预警线，脚本按设计自动停机保护。
+  4. 电机响应方向本身是对的：m1/m4(前) 涨到 20484/41112，m2/m3(后) 掉到
+     0/6944——对应"机头相对下沉(尾部被抬起→pitch
+     朝更负方向)"时，控制器应该加大前电机、减小后电机来把机头顶回来，这个方向没问题。m2 被压到 0
+     也是低位限幅，不是电机异常。
+
+  结论：不是电机响应方向的 bug，而是这次测试时机身没有真正放平/机身被约束住无法自由转动，导致角度误差长期不
+  收敛、积分越滚越大，触发了脚本里专门为这种场景设的保护（对应注释里"机身没放平+夹具固定住转不动"那一条）。
+  建议重新测试前先确认静置时 stateEstimate.pitch/roll 都接近
+  0，并确保抬动时机身能真正自由转动（不被固定座或线材卡住），再抬尾部观察。
+
+
+不对，重新测试了一次，机身一直保持roll=  -0.1  pitch=  -0.0，m3一直增大，直到触发警告
+t=  167751  m1= 10851  m2=     0  m3= 54997  m4=  2003  |  rateP=  -492.8  rateD=     3.2  roll=  -0.1  pitch=  -0.0  |  rateDesired=    -1.9  rateActual(-gyro.y)=     0.0
+t=  167801  m1= 10892  m2=     0  m3= 54976  m4=  2044  |  rateP=  -479.6  rateD=   -16.6  roll=  -0.1  pitch=  -0.0  |  rateDesired=    -1.9  rateActual(-gyro.y)=     0.0
+t=  167851  m1= 10845  m2=     0  m3= 55009  m4=  1999  |  rateP=  -477.6  rateD=    62.4  roll=  -0.1  pitch=  -0.0  |  rateDesired=    -1.9  rateActual(-gyro.y)=     0.0
+
+警告：m3=55009 已逼近满量程（硬保护线 55000），自动停止并归零！
+
+正在停止并归零...
+
+我把混控矩阵代进去反算了一下，这次跟 pitch 的 P/D 项基本没关系，是脚本没监控的其它环（很可能是 I 项 +
+  roll/yaw）在偷偷爆表。
+
+  ESP-Drone 用的是 X 构型混控（power_distribution_stock.c:98-101）：
+
+  m1 = thrust - r + p + yaw
+  m2 = thrust - r - p - yaw
+  m3 = thrust + r - p + yaw
+  m4 = thrust + r + p - yaw
+
+  用你这组数据（thrust 基线=15000），从 m1/m3/m4（m2 已被限幅到 0，方程不可靠，排除）反解 r、p、yaw：
+
+  - m1-thrust = -r+p+yaw = -4149
+  - m3-thrust =  r-p+yaw = 39997
+  - m4-thrust =  r+p-yaw = -12997
+
+  解得：r(roll) ≈ 13500，p(pitch) ≈ -8573，yaw ≈ 17924。
+
+  关键矛盾点：脚本日志里 pid_rate.pitch_outP 全程只有 -480 左右，但反解出来的实际
+  control->pitch（混控里真正生效的量，= outP+outI+outD 之和）却是 -8573，差了近 20
+  倍。说明这次真正把电机顶起来的，主要是 pid_rate.pitch_outI（积分项），而脚本根本没有采这个变量，所以
+  outP/outD 看起来很正常、告警线一直没触发，直到硬件限幅线才拦住。
+
+  另外 roll≈13500、yaw≈17924 同样是很大的量，但这个脚本从头到尾都没监控 roll 和 yaw 任何 PID 分量——而
+  roll/pitch 角度显示的是"当前姿态角"，跟"角速度环内部 I
+  项有没有饱和"是两件独立的事：即使传感器测出来的角度一直是 -0.1/-0.0 没有漂移，角速度环的积分项仍然可能因
+  为长期存在一个小的、方向不变的角速度误差（比如陀螺零偏、或者电机被限幅在 0 导致实际扭矩跟不上指令、缺乏
+  anti-windup 保护）而单调堆积，跟角度本身是否变化没有必然关系。
+
+  m2 从这次日志开始就一直卡在 0（下限幅），也是一个信号：如果 m2 长时间被压在最低值，说明某个方向的修正需
+  求早就超出了它能提供的（负向）调节余量，进入了执行器饱和，如果对应轴的积分环节没有做饱和限幅/退饱和(anti
+  -windup)，积分就会在饱和期间继续累积，等其他电机把这部分"差额"顶到 m3 上，就是你现在看到的现象。
+
+  建议下一步：给这个脚本加上
+  pid_rate.pitch_outI、pid_rate.roll_outP/outI/outD、pid_rate.yaw_outP/outI/outD（如果固件里有对应 log
+  变量）一起打印，确认到底是哪个轴、哪个分量在爆，而不是继续只盯 pitch 的 P/D。
+
+✻ Sautéed for 2m 2s · done 13:37
+
+❯ 好的                                                                                                     
+
+  Thought for 7s (ctrl+o to expand)
+
+● 好的，需要我帮你把 pid_rate.pitch_outI、roll/yaw 的 outP/outI/outD 加到 t4b_pitch_response_check.py
+  的日志里时，随时说一声。
+
+✻ Churned for 7s · done 13:38
+
+❯ 都加上    
+● All wired up correctly. Summary of the change to python/t4b_pitch_response_check.py:
+
+  - Added pid_rate.pitch_outI to the existing pid_diag log block (5 floats = 20 bytes, still under
+    firmware's 26-byte log block limit).
+  - Added a new rpy_diag log block with pid_rate.roll_outP/outI/outD and pid_rate.yaw_outP/outI/outD (6
+    floats = 24 bytes, fits the same limit).
+  - Wired the new block's callback into diag_state, added a second printed line per sample showing pitchI,
+    rollP/I/D, yawP/I/D, and added its start()/stop() calls to both cleanup paths.
+
+  The auto-abort logic (check_auto_abort) still only watches pitch_outP and the hard motor threshold — I
+  didn't touch that, since extending the windup early-warning to cover roll/yaw/I-terms is a judgment call
+  on thresholds that's worth deciding deliberately rather than folding in silently. Let me know if you want
+  that too.
+t= 1126830  m1=     0  m2=  6318  m3= 43984  m4=  9936  |  rateP= -3655.4  rateD=   -12.7  roll=  -0.1  pitch=   0.0  |  rateDesired=   -14.6  rateActual(-gyro.y)=     0.0
+          pitchI=-16650.0  |  rollP=  7268.0  rollI= 16650.0  rollD=    15.9  |  yawP= -4102.3  yawI= -2783.9  yawD=     0.0
+t= 1126880  m1=     0  m2=  6341  m3= 43989  m4=  9911  |  rateP= -3652.8  rateD=   -15.0  roll=  -0.1  pitch=   0.0  |  rateDesired=   -14.6  rateActual(-gyro.y)=     0.0
+          pitchI=-16650.0  |  rollP=  7269.3  rollI= 16650.0  rollD=    -0.4  |  yawP= -4102.4  yawI= -2783.9  yawD=    -0.0
+t= 1126930  m1=     0  m2=  6336  m3= 44022  m4=  9874  |  rateP= -3666.8  rateD=   -14.0  roll=  -0.1  pitch=   0.0  |  rateDesired=   -14.6  rateActual(-gyro.y)=     0.0
+          pitchI=-16650.0  |  rollP=  7267.8  rollI= 16650.0  rollD=     5.2  |  yawP= -4100.4  yawI= -2783.9  yawD=    -0.0
+t= 1126980  m1=     0  m2=  6276  m3= 43996  m4=  9940  |  rateP= -3665.8  rateD=   -42.2  roll=  -0.1  pitch=   0.0  |  rateDesired=   -14.6  rateActual(-gyro.y)=     0.1
+          pitchI=-16650.0  |  rollP=  7274.0  rollI= 16650.0  rollD=     7.7  |  yawP= -4113.2  yawI= -2783.9  yawD=    -0.0
+t= 1127030  m1=     0  m2=  6295  m3= 44005  m4=  9909  |  rateP= -3650.0  rateD=    26.3  roll=  -0.1  pitch=   0.0  |  rateDesired=   -14.6  rateActual(-gyro.y)=     0.0
+          pitchI=-16650.0  |  rollP=  7282.9  rollI= 16650.0  rollD=    -4.6  |  yawP= -4109.1  yawI= -2783.9  yawD=    -0.0
+t= 1127080  m1=     0  m2=  6265  m3= 44049  m4=  9943  |  rateP= -3651.8  rateD=   -17.6  roll=  -0.1  pitch=   0.0  |  rateDesired=   -14.6  rateActual(-gyro.y)=     0.0
+...
+
+t= 1142580  m1=   431  m2=  4075  m3= 46523  m4=  8971  |  rateP= -3911.1  rateD=    39.2  roll=  -0.2  pitch=   0.0  |  rateDesired=   -15.6  rateActual(-gyro.y)=    -0.0
+          pitchI=-16650.0  |  rollP=  8832.8  rollI= 16650.0  rollD=   -37.4  |  yawP= -5701.4  yawI= -2783.9  yawD=    -0.0
+t= 1142630  m1=   467  m2=  4033  m3= 46513  m4=  8987  |  rateP= -3934.3  rateD=   -14.8  roll=  -0.2  pitch=   0.0  |  rateDesired=   -15.6  rateActual(-gyro.y)=     0.1
+          pitchI=-16650.0  |  rollP=  8845.7  rollI= 16650.0  rollD=   -19.4  |  yawP= -5699.4  yawI= -2783.9  yawD=    -0.0
+t= 1142680  m1=   456  m2=  4096  m3= 46520  m4=  8928  |  rateP= -3902.7  rateD=    49.7  roll=  -0.2  pitch=   0.0  |  rateDesired=   -15.6  rateActual(-gyro.y)=    -0.0
+          pitchI=-16650.0  |  rollP=  8844.0  rollI= 16650.0  rollD=   -10.7  |  yawP= -5709.8  yawI= -2783.9  yawD=    -0.0
+t= 1142730  m1=   499  m2=  4021  m3= 46519  m4=  8961  |  rateP= -3920.8  rateD=    16.4  roll=  -0.2  pitch=   0.0  |  rateDesired=   -15.6  rateActual(-gyro.y)=     0.0
+          pitchI=-16650.0  |  rollP=  8821.8  rollI= 16650.0  rollD=   -17.0  |  yawP= -5705.4  yawI= -2783.9  yawD=    -0.0
+t= 1142780  m1=   439  m2=  4045  m3= 46533  m4=  8983  |  rateP= -3909.8  rateD=    22.3  roll=  -0.2  pitch=   0.0  |  rateDesired=   -15.6  rateActual(-gyro.y)=    -0.0
+          pitchI=-16650.0  |  rollP=  8853.4  rollI= 16650.0  rollD=     7.7  |  yawP= -5726.6  yawI= -2783.9  yawD=     0.0
+t= 1142830  m1=   497  m2=  4047  m3= 46527  m4=  8929  |  rateP= -3934.7  rateD=     6.1  roll=  -0.2  pitch=   0.0  |  rateDesired=   -15.6  rateActual(-gyro.y)=     0.1
+          pitchI=-16650.0  |  rollP=  8864.0  rollI= 16650.0  rollD=    15.9  |  yawP= -5712.7  yawI= -2783.9  yawD=    -0.0
+t= 1142880  m1=   455  m2=  4013  m3= 46591  m4=  8941  |  rateP= -3908.3  rateD=   -17.6  roll=  -0.2  pitch=   0.0  |  rateDesired=   -15.6  rateActual(-gyro.y)=     0.0
+          pitchI=-16650.0  |  rollP=  8857.4  rollI= 16650.0  rollD=   -37.4  |  yawP= -5729.8  yawI= -2783.9  yawD=    -0.0
+t= 1142930  m1=   498  m2=  4028  m3= 46560  m4=  8914  |  rateP= -3930.3  rateD=    21.2  roll=  -0.2  pitch=   0.0  |  rateDesired=   -15.6  rateActual(-gyro.y)=     0.1
+          pitchI=-16650.0  |  rollP=  8870.4  rollI= 16650.0  rollD=    35.8  |  yawP= -5732.8  yawI= -2783.9  yawD=     0.0
+t= 1142980  m1=   523  m2=  4003  m3= 46517  m4=  8957  |  rateP= -3914.5  rateD=   -25.4  roll=  -0.2  pitch=   0.0  |  rateDesired=   -15.6  rateActual(-gyro.y)=     0.0
+          pitchI=-16650.0  |  rollP=  8868.0  rollI= 16650.0  rollD=   -43.6  |  yawP= -5758.4  yawI= -2783.9  yawD=    -0.0
+t= 1143030  m1=   484  m2=  3984  m3= 46584  m4=  8948  |  rateP= -3898.1  rateD=    32.7  roll=  -0.2  pitch=   0.0  |  rateDesired=   -15.6  rateActual(-gyro.y)=    -0.0
+          pitchI=-16650.0  |  rollP=  8859.2  rollI= 16650.0  rollD=    -0.5  |  yawP= -5748.6  yawI= -2783.9  yawD=    -0.0
+
+这是测试记录，m3还是不断增加，请分析？
+
+
+把 pitchI、rollI、yawI 的数值和固件里三个角速度环各自的积分限幅算了一下，正好对得上——这次不是"某一项还在
+  爬"，而是roll、pitch、yaw 三个轴的角速度环积分项已经全部顶到各自的硬限幅、钉死不动了，m3
+  还在涨是另一个原因。
+
+  先确认三个积分项确实都已经饱和封顶：
+
+  pid.h 里角速度环的积分限幅和 Ki（当前生效的是 68-79 行那组配置）：
+
+  - roll/pitch rate: Ki=500.0，积分限幅 iLimit=33.3 → outI 封顶 = 500×33.3 = 16650
+  - yaw rate: Ki=16.7，积分限幅 iLimit=166.7 → outI 封顶 = 16.7×166.7 = 2783.9
+
+  你日志里：pitchI=-16650.0、rollI=16650.0、yawI=-2783.9，从第一行到最后一行、16
+  秒内一个数字都没变过——这不是巧合，是三个积分器全部撞到了 pid.c:86 里 constrain(pid->integ, -iLimit,
+  iLimit) 那条硬限幅，已经饱和封顶、动不了了。也就是说三个轴（不只是 pitch）都存在"命令了却纠正不回来"的持
+  续误差，跟脚本注释里说的"机身没放平/被夹具固定住转不动"完全对得上，只是这次不止 pitch 一个轴中招。
+
+  那 m3 为什么还在涨？ 靠反解混控矩阵（m1=thrust-r+p+yaw, m3=thrust+r-p+yaw...）可以看到：pitch
+  这一路（p）16 秒里基本没变，但 roll_outP 从 7268 涨到 8870（+22%），yaw_outP 从 -4102 涨到
+  -5701（+39%）——这两个还在往上爬的是 P 项，不是已经封顶的 I 项。P 项 = Kp×瞬时误差，而 roll/yaw
+  的期望速率你从头到尾发的都是 0，P 项还在持续变大只能说明：实际测到的 roll 角速度、yaw
+  角速度本身在变大，不是误差堆积出来的，是"转得越来越快"。
+
+  结合 m1 从 0 慢慢抬到 500 附近、m2 从 6300 掉到 4000、m4 基本不变，混控矩阵里 +r 和 +yaw 都直接加在 m3
+  上，roll 和 yaw 的 P 项同时在涨，自然就是 m3 一路被顶上去的主因。
+
+  两种最可能的原因，需要你排查区分：
+
+  1. 机身其实没有被完全固定住：如果只是搭在桌面/夹具上而不是真正锁死，四个电机反扭矩不完全抵消，会让机身慢
+     慢在 roll/yaw 方向加速转起来（越转越快，对应 P
+     项持续变大）——这种情况下继续跑下去电机只会越顶越高，直到再次触发保护。
+  2. 裸机振动/共振被陀螺误读成"在转"：桨叶拆了但电机直接顶在机身上转，长时间运行可能激起结构共振，振动幅度
+     随时间增大，陀螺原始角速度读数被污染，PID 把振动当成真实转动去纠正。
+
+  建议：
+  - 现在这组数据 m3 已经到 46584，距离 55000 的硬保护线不远且还在单调爬升，建议主动 Ctrl+C
+    结束，别等它自己触发。
+  - 停下来后重新检查机身是否在三个轴（roll、pitch、yaw）都被真正固定住了——之前只强调过
+    pitch/roll，但这次积分饱和是三个轴一起中招，说明固定方式对 yaw 方向的约束可能不够。
+  - 如果想坐实到底是"真转"还是"振动噪声"，可以照 pitch 那一路的做法，把 gyro.x（roll 角速度）、gyro.z（yaw
+    角速度）也加进日志跟 controller.rollRate/controller.yawRate 对比着看——需要的话我可以照着现有 rate_diag
+    那一路的模式给你加上。
+
+✻ Worked for 6m 50s · done 13:58
+
+❯ 既不是"真转"也不是"振动噪声"，因为当前叶桨并没有真的转动过，四轴一直没有动过。
+
+这个信息很关键，直接排除了"真实转动"和"振动噪声"这两个物理层面的解释——那 roll_outP、yaw_outP
+  还在涨,只能是纯软件/估计器层面的问题了。我看了一下 attitude_pid_controller.c，发现除了已经在监控的角速度
+  内环（pid_rate），飞控还有一层姿态角外环（pid_attitude 组：pidRoll/pidPitch/pidYaw 各自的
+  outP/outI/outD），这一层我们目前完全没有可见性，而它正好能解释"什么都没动、但输出还在往上爬"。
+
+  关键点在 controller_pid.c：
+
+  attitudeControllerCorrectAttitudePID(state->attitude.roll, state->attitude.pitch, state->attitude.yaw,
+                              attitudeDesired.roll, attitudeDesired.pitch, attitudeDesired.yaw,
+                              &rateDesired.roll, &rateDesired.pitch, &rateDesired.yaw);
+
+  if (setpoint->mode.roll == modeVelocity) {
+      rateDesired.roll = setpoint->attitudeRate.roll;   // 只有 roll/pitch 走 velocity 模式时才会覆盖
+      ...
+  }
+
+  - roll/pitch 是角度模式：rateDesired.roll/pitch 由外环角度 PID（pidRoll/pidPitch）算出来，不会被覆盖。
+  - yaw 没有对应的 velocity 覆盖分支：即使你发的是 yaw rate=0，firmware 的实现方式是把 attitudeDesired.yaw
+    按你给的速率去累加（速率=0 时保持不变），然后仍然靠外环 pidYaw（拿 attitudeDesired.yaw 和
+    state->attitude.yaw 的角度差）算出 rateDesired.yaw 喂给内环。
+
+  问题就在这个 state->attitude.yaw：你们前面已经把估计器切成了 complementary（互补滤波），而互补滤波对
+  roll/pitch 有加速度计（重力方向）做绝对基准校正，但 yaw 完全没有任何绝对参考（没有磁力计），全靠陀螺
+  gyro.z 积分。只要 gyro.z
+  有一点点零偏（哪怕零点几度/秒，机身完全静止时也很常见，属于陀螺固有噪声/温漂），估计出来的
+  state->attitude.yaw 就会随时间线性跑飘，而这个跑飘完全不需要机身真的转动、也不需要电机真的转起来。
+
+  跑飘的 yaw 估计和"原地不动"的 attitudeDesired.yaw 之间的差会越拉越大 → 外环 pidYaw 的输出（进而是
+  rateDesired.yaw）越来越大 → 内环 pid_rate.yaw_outP（=120×误差）跟着越来越大——这条链路完全不需要任何真实物
+  理运动，跟你观察到的"叶桨没转、机身没动"完全不矛盾，而且能直接解释 yaw_outP 那 39% 的持续增长。
+
+  roll 那边（7268→8870，+22%）机制略有不同：roll 的角度估计有重力校正，不会像 yaw
+  那样无界跑飘，所以更可能是外环 pidRoll 自己的积分项（这层我们也没监控，PID_ROLL_KI=2.9，积分限幅
+  PID_ROLL_INTEGRATION_LIMIT=20.0，即最大能贡献 58 的 rateDesired）在缓慢累积——对应的还是"哪怕角度只有
+  -0.1°~-0.2° 这么一丁点，只要一直不是精确 0，外环积分就会一直往一个方向堆"，本质跟第一次 pitch windup
+  是同一类问题，只是这次幅度小、走得慢。
+
+  要坐实这个判断，建议把 stateEstimate.yaw 和 pid_attitude 
+  组（roll_outP/I/D、pitch_outP/I/D、yaw_outP/I/D，是外环角度 PID，不是现在这个 pid_rate 
+  内环）也加进日志：如果 stateEstimate.yaw 随时间持续单向增大（哪怕机身没动），就直接证实是 yaw
+  无参考陀螺漂移在驱动整条链路。需要我现在就把这些加到脚本里吗？
+  
+  Both cleanup paths and all six log blocks are wired correctly, and the file compiles cleanly.
+
+  Summary of what was added to t4b_pitch_response_check.py:
+
+  - Two new log blocks: att_diag (stateEstimate.yaw, pid_attitude.yaw_outP/I/D, pid_attitude.roll_outP/I)
+    and att_diag2 (pid_attitude.roll_outD, pid_attitude.pitch_outP/I/D) — split across two blocks to stay
+    under the firmware's 26-byte-per-block log limit.
+  - A third printed line per sample showing stateEstimate.yaw plus all six outer-loop (pid_attitude) P/I/D
+    values for yaw/roll/pitch.
+  - Matching callbacks, diag_state entries, and start()/stop() calls in both cleanup paths.
+
+  Next run, watch stateEstimate.yaw in that third line: if it keeps climbing in one direction while the
+  airframe truly isn't moving, that confirms the gyro-drift-via-complementary-filter theory as the driver
+  of the still-growing yaw_outP/rollP.
+  
+t= 2485173  m1=  2235  m2= 11771  m3= 27425  m4= 18569  |  rateP=  -689.0  rateD=   -32.9  roll=  -0.1  pitch=   0.1  |  rateDesired=    -2.7  rateActual(-gyro.y)=     0.1
+          pitchI= -8449.5  |  rollP=  1263.3  rollI= 14580.1  rollD=   -15.4  |  yawP=   120.8  yawI=    57.8  yawD=     0.0
+          yaw=  -1.3  |  外环(attitude) yawP=     0.5 yawI=     0.4 yawD=     0.0  |  rollP=     0.9 rollI=     4.2 rollD=     0.0  |  pitchP=    -0.4 pitchI=    -2.2 pitchD=     0.0
+t= 2485223  m1=  2180  m2= 11796  m3= 27474  m4= 18550  |  rateP=  -695.8  rateD=    -9.1  roll=  -0.1  pitch=   0.1  |  rateDesired=    -2.7  rateActual(-gyro.y)=     0.1
+          pitchI= -8510.1  |  rollP=  1277.9  rollI= 14691.9  rollD=     9.3  |  yawP=   119.5  yawI=    58.5  yawD=     0.0
+          yaw=  -1.3  |  外环(attitude) yawP=     0.6 yawI=     0.4 yawD=     0.0  |  rollP=     0.9 rollI=     4.2 rollD=     0.0  |  pitchP=    -0.4 pitchI=    -2.2 pitchD=     0.0
+t= 2485273  m1=  2120  m2= 11754  m3= 27540  m4= 18586  |  rateP=  -697.6  rateD=    -3.8  roll=  -0.1  pitch=   0.1  |  rateDesired=    -2.7  rateActual(-gyro.y)=     0.1
+          pitchI= -8573.5  |  rollP=  1263.2  rollI= 14809.0  rollD=   -27.9  |  yawP=   114.4  yawI=    59.3  yawD=    -0.0
+          yaw=  -1.3  |  外环(attitude) yawP=     0.6 yawI=     0.4 yawD=     0.0  |  rollP=     0.9 rollI=     4.3 rollD=    -0.0  |  pitchP=    -0.4 pitchI=    -2.3 pitchD=    -0.0
+t= 2485323  m1=  2002  m2= 11736  m3= 27648  m4= 18614  |  rateP=  -688.3  rateD=    21.0  roll=  -0.1  pitch=   0.1  |  rateDesired=    -2.7  rateActual(-gyro.y)=     0.1
+          pitchI= -8637.4  |  rollP=  1254.2  rollI= 14926.3  rollD=   -40.8  |  yawP=   105.9  yawI=    60.0  yawD=    -0.0
+          yaw=  -1.3  |  外环(attitude) yawP=     0.6 yawI=     0.4 yawD=     0.0  |  rollP=     0.9 rollI=     4.3 rollD=     0.0  |  pitchP=    -0.4 pitchI=    -2.3 pitchD=     0.0
+...
+
+t= 2594073  m1=     0  m2= 12802  m3= 36278  m4= 22908  |  rateP= -2451.3  rateD=    11.6  roll=  -0.2  pitch=  -0.0  |  rateDesired=    -9.7  rateActual(-gyro.y)=     0.1
+          pitchI=-16650.0  |  rollP= 12515.6  rollI= 16650.0  rollD=   -10.4  |  yawP=    75.5  yawI=  2783.9  yawD=     0.0
+          yaw=  -0.8  |  外环(attitude) yawP=    -2.6 yawI=     3.2 yawD=     0.0  |  rollP=     1.1 rollI=    49.0 rollD=    -0.0  |  pitchP=     0.0 pitchI=    -9.7 pitchD=    -0.0
+t= 2594123  m1=     0  m2= 12767  m3= 36309  m4= 22933  |  rateP= -2443.0  rateD=    50.5  roll=  -0.2  pitch=  -0.0  |  rateDesired=    -9.7  rateActual(-gyro.y)=     0.0
+          pitchI=-16650.0  |  rollP= 12537.3  rollI= 16650.0  rollD=     1.5  |  yawP=    66.6  yawI=  2783.9  yawD=    -0.0
+          yaw=  -0.8  |  外环(attitude) yawP=    -2.6 yawI=     3.2 yawD=     0.0  |  rollP=     1.1 rollI=    49.0 rollD=    -0.0  |  pitchP=     0.0 pitchI=    -9.7 pitchD=    -0.0
+t= 2594173  m1=     0  m2= 12774  m3= 36334  m4= 22902  |  rateP= -2426.6  rateD=    10.3  roll=  -0.2  pitch=  -0.0  |  rateDesired=    -9.7  rateActual(-gyro.y)=    -0.0
+          pitchI=-16650.0  |  rollP= 12551.5  rollI= 16650.0  rollD=    -9.1  |  yawP=    72.2  yawI=  2783.9  yawD=     0.0
+          yaw=  -0.8  |  外环(attitude) yawP=    -2.6 yawI=     3.2 yawD=    -0.0  |  rollP=     1.1 rollI=    49.1 rollD=     0.0  |  pitchP=     0.0 pitchI=    -9.7 pitchD=     0.0
+t= 2594223  m1=     0  m2= 12763  m3= 36303  m4= 22901  |  rateP= -2442.0  rateD=   -16.8  roll=  -0.2  pitch=  -0.0  |  rateDesired=    -9.7  rateActual(-gyro.y)=     0.1
+          pitchI=-16650.0  |  rollP= 12553.1  rollI= 16650.0  rollD=   -28.4  |  yawP=    68.2  yawI=  2783.9  yawD=     0.0
+          yaw=  -0.8  |  外环(attitude) yawP=    -2.6 yawI=     3.2 yawD=     0.0  |  rollP=     1.1 rollI=    49.1 rollD=     0.0  |  pitchP=     0.0 pitchI=    -9.7 pitchD=     0.0
+t= 2594273  m1=     0  m2= 12767  m3= 36315  m4= 22913  |  rateP= -2444.1  rateD=     5.7  roll=  -0.2  pitch=  -0.0  |  rateDesired=    -9.7  rateActual(-gyro.y)=     0.1
+          pitchI=-16650.0  |  rollP= 12550.4  rollI= 16650.0  rollD=    28.0  |  yawP=    44.3  yawI=  2783.9  yawD=    -0.0
+          yaw=  -0.8  |  外环(attitude) yawP=    -2.6 yawI=     3.2 yawD=     0.0  |  rollP=     1.1 rollI=    49.1 rollD=     0.0  |  pitchP=     0.0 pitchI=    -9.7 pitchD=     0.0
+t= 2594323  m1=     0  m2= 12776  m3= 36288  m4= 22932  |  rateP= -2452.2  rateD=    18.8  roll=  -0.2  pitch=  -0.0  |  rateDesired=    -9.7  rateActual(-gyro.y)=     0.1
+          pitchI=-16650.0  |  rollP= 12565.9  rollI= 16650.0  rollD=    29.9  |  yawP=    57.4  yawI=  2783.9  yawD=     0.0
+          yaw=  -0.8  |  外环(attitude) yawP=    -2.6 yawI=     3.2 yawD=    -0.0  |  rollP=     1.1 rollI=    49.1 rollD=     0.0  |  pitchP=     0.0 pitchI=    -9.7 pitchD=    -0.0
+		  
+最新的测试数据，请分析
+
+这次新增的 stateEstimate.yaw 和 pid_attitude 数据直接把之前"yaw
+  陀螺漂移"的猜测否掉了——但同时也把真正的根因坐实了：是 roll（和小幅度的 
+  pitch）姿态角外环的积分项在稳定地往一个方向走，不是估计器漂移，也不是振动。
+
+  先看被否掉的假设：
+  yaw=-1.3（第一段，t≈2485173）到 yaw=-0.8（第二段，t≈2594073，109 秒之后）——基本没动，没有单向跑飘。外环
+  yawP/I/D 也一直很小（0.4~3.2）。说明 yaw
+  轴没有问题，之前"没有磁力计基准、陀螺积分跑飘"的猜测被这组数据直接推翻了。
+
+  真正在发生什么：
+
+  1. roll 角度读数 全程稳定在 -0.1° ~ -0.2°，从来没有跨过
+     0，也就是说传感器测出来的姿态一直"偏在一侧"，从未真正回正。
+  2. 对应外环 pid_attitude.roll_outI 从第一段的 4.2 涨到第二段的 49.0（109 秒涨了近 12 倍）——这正是
+     PID_ROLL_KI=2.9 在一个从不归零的小角度误差上持续积分的结果（pidRoll 的积分限幅是 20，对应 outI 上限
+     2.9×20≈58，49.0 已经很接近上限了）。
+  3. 外环算出来的这个越来越大的"期望滚转角速度"（roll 外环 P+I+D 总和：第一段 0.9+4.2+0≈5.1，第二段
+     1.1+49.0+0≈50.1）喂给了内环 pid_rate。因为机身实际没转（roll 角度稳定不变，真实转速理应是
+     0），内环看到的误差就约等于这个"期望速率"本身——250(Kp_rate)×50.1≈12525，跟你日志里 rollP(内环)从 1263
+     涨到 12551 几乎完全对上。
+  4. 内环自己的积分 rollI 也跟着从 14580 一路涨到封顶 16650（撞固件硬限幅，之前算过 = 500×33.3）。
+
+  pitch 是同一种病，只是病得慢一些：pitch 角度读数一直卡在 0.0°~0.1°，比 roll 更接近
+  0，但也从来没有真正等于 0。外环 pid_attitude.pitch_outI 从 -2.2 慢慢涨到
+  -9.7，同样是持续单向的小角度误差被 Ki=2.9 积分出来的结果，进而带动内环 pitchI 从 -8449 一路走到封顶
+  -16650。
+
+  yaw 之所以没事：外环 yaw 是走 rate 模式（每次 tick 直接把 attitudeDesired.yaw 按你发的 yawrate=0
+  累加，不动），只要估计出来的 stateEstimate.yaw 不跑飘（现在证实确实没跑飘），yaw
+  外环误差就一直很小，自然不会有这种雪球效应。
+
+  结论：跟第一次分析 pitch windup 时的机制一模一样，只是这次主战场在 roll 姿态角外环——机身在 roll
+  方向上有一个持续存在、从未被纠正回零的小倾角（约
+  -0.15°），因为机身被固定/搭在某个面上，这个小误差永远消不掉，姿态角外环的积分就会不停地往一个方向走，直到
+  撞上限幅，再把这份"永远追不上"的期望速率甩给内环，内环也跟着饱和，最后通过混控矩阵（m3 = thrust + roll/2
+  - pitch/2 + yaw）主要落在了 m3 上。
+
+  建议：这次测试可以先停下来，然后重新检查机身摆放——不只是 pitch，roll 方向也没放平（-0.15°
+  听起来很小，但只要不是精确
+  0，长时间通电测试就一定会被积分放大到失控）。如果条件允许，最好在支架上加个水平仪把 roll、pitch
+  都调到尽量贴近 0 再测，或者把单次持续通电时间控制得更短（比如 10-20
+  秒内看完就断电），避免这种"慢性积分病"有足够时间发展到撞限幅。
+  
+  t= 3464703  m1= 21828  m2=     0  m3= 10328  m4= 32812  |  rateP= 12458.8  rateD=   969.6  roll=  -0.5  pitch=  -6.1  |  rateDesired=    43.1  rateActual(-gyro.y)=    -6.7
+          pitchI=  8376.1  |  rollP=  1127.9  rollI= 12060.8  rollD=  -167.7  |  yawP=  -210.4  yawI=     2.9  yawD=     0.0
+          yaw=  -3.1  |  外环(attitude) yawP=    -3.3 yawI=     0.1 yawD=     0.0  |  rollP=     2.8 rollI=     4.3 rollD=     0.0  |  pitchP=    35.9 pitchI=     7.2 pitchD=     0.0
+t= 3464753  m1= 21701  m2=     0  m3= 10139  m4= 33589  |  rateP= 14872.6  rateD=    94.2  roll=  -0.3  pitch=  -6.6  |  rateDesired=    47.1  rateActual(-gyro.y)=   -12.3
+          pitchI=  9610.6  |  rollP=  1022.3  rollI= 12150.7  rollD=   -25.2  |  yawP=  -861.9  yawI=    -1.0  yawD=     0.0
+          yaw=  -3.0  |  外环(attitude) yawP=    -3.6 yawI=     0.1 yawD=     0.0  |  rollP=     2.0 rollI=     4.3 rollD=    -0.0  |  pitchP=    39.4 pitchI=     8.1 pitchD=     0.0
+t= 3464803  m1= 23321  m2=     0  m3=  8419  m4= 35303  |  rateP= 14528.6  rateD=  -116.2  roll=  -0.2  pitch=  -7.1  |  rateDesired=    50.9  rateActual(-gyro.y)=    -7.2
+          pitchI= 10986.4  |  rollP=  1281.9  rollI= 12248.1  rollD=    62.6  |  yawP=  -750.1  yawI=    -7.0  yawD=     0.0
+          yaw=  -2.9  |  外环(attitude) yawP=    -4.5 yawI=     0.0 yawD=    -1.4  |  rollP=     1.5 rollI=     4.4 rollD=    -0.0  |  pitchP=    42.1 pitchI=     9.0 pitchD=     0.0
+t= 3464853  m1= 22683  m2=     0  m3=  9135  m4= 35303  |  rateP= 16043.7  rateD=   173.5  roll=  -0.2  pitch=  -7.5  |  rateDesired=    54.1  rateActual(-gyro.y)=    -9.9
+          pitchI= 12265.0  |  rollP=  1343.3  rollI= 12368.3  rollD=    11.9  |  yawP=  -783.8  yawI=   -11.7  yawD=     0.0
+          yaw=  -2.8  |  外环(attitude) yawP=    -4.8 yawI=     0.0 yawD=     0.0  |  rollP=     1.4 rollI=     4.4 rollD=     0.0  |  pitchP=    44.3 pitchI=     9.9 pitchD=     0.0
+
+警告：pid_rate.pitch_outP=16044 超过 15000，疑似姿态角环积分饱和(windup)——机身没放平或被夹具固定住转不动，自动停止并归零！请把机身调平后再测。
+为什么机尾抬一点点就会触发警告？
+
+这次和之前几次不一样——这次是真实抬尾巴产生的正常响应，被无桨姿态环的高增益迅速放大到触发保护，不是"卡住不
+  动"的积分饱和假象。区别很明显：
+
+  这次角度和角速度都是真实在变化的，不是卡死不动：
+  - pitch 从 -6.1°→-6.6°→-7.1°→-7.5°，持续在变，不是之前那种钉死不动的情况。
+  - rateActual(-gyro.y) 从 -6.7→-12.3→-7.2→-9.9，也是真实非零的角速度读数，说明机身真的在转。
+
+  为什么"抬一点点"就能把 rateP 顶到 16000+：
+
+  1. 抬尾这一下已经把 pitch 角误差做到了 6~7.5°（相对水平设定点 0°），这在姿态环眼里已经不算小了。
+  2. 姿态角外环 pid_attitude.pitch：pitchP 从 35.9 涨到 44.3——正是 Kp=5.9 × 7.5°≈44
+     这个正常的比例响应，外环据此要求机体以 43~54 deg/s 的速度纠正回来（rateDesired 从 43.1 涨到 54.1，跟
+     pitchP+pitchI 加总吻合）。
+  3. 但机身实际转动速度(rateActual)只有 -6.7~-9.9 deg/s，远远追不上外环要求的 43~54
+     deg/s——桨叶拆了没有气动阻力/推力耦合，加上机身可能被你手/夹具部分限制着转，实际转速根本跟不上指令。
+  4. 这个"期望速率 vs 实际速率"的巨大缺口（约 50~64 deg/s）直接乘上内环 Kp_rate=250，rateP =
+     250×(54.1-(-9.9)) ≈ 16000，四条日志只跨了 150ms（t=3464703→3464853）就冲过了 15000
+     的保护线——比积分饱和快得多，是纯比例项瞬间打出来的。
+
+  响应方向本身是对的：m1/m4(前) 从 21828/32812 涨到 22683/35303，m2/m3(后) 从 0/10328 掉到
+  0/9135——抬尾（机头相对下沉）时加大前电机、减小后电机去纠正，方向没问题。只是幅度冲得太快。
+
+  本质原因：这正是脚本开头注释(6-12行)提前警告过的——裸机测试没有桨叶气动阻力/阻尼，姿态环和角速度环的增益都
+  是按真机(有桨、有转动惯量+气动耦合)调的，一旁的机身如果转动被明显"拖住"(手扶着、夹具限制)，哪怕只是一个中
+  等幅度的手动倾斜，也会在几百毫秒内就把角速度环的比例项顶到很高——保护逻辑这次是正确、及时地拦住了一个真实
+  的大误差，不是误报,也不是之前那种"没动却在饱和"的假象。
+
+  如果想在不触发这条保护线的前提下继续观察方向，建议抬得更缓、幅度更小（把角度误差控制在1-2°量级），或者确
+  保机身在测试时是真正自由的（不被手/夹具额外拖住转动），这样实际角速度能更快跟上期望角速度，rateP
+  就不会冲这么猛。
