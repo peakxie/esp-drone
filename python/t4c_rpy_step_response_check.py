@@ -43,10 +43,10 @@ import threading
 import time
 
 import cflib.crtp
+from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.log import LogConfig
-from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 
-from config import URI
+from config import URI, connect_with_timeout
 
 ESTIMATOR_NAMES = {0: "any", 1: "complementary", 2: "kalman"}
 
@@ -218,23 +218,25 @@ def main():
         print("已取消。")
         return
 
-    with SyncCrazyflie(URI) as scf:
-        cf = scf.cf
-        print("已连接。", flush=True)
+    cf = Crazyflie()
 
-        link_lost = threading.Event()
+    link_lost = threading.Event()
 
-        def on_connection_lost(uri, msg):
-            print(f"\n[链路] connection_lost: {msg}", flush=True)
-            link_lost.set()
+    def on_connection_lost(uri, msg):
+        print(f"\n[链路] connection_lost: {msg}", flush=True)
+        link_lost.set()
 
-        def on_disconnected(uri):
-            print("\n[链路] disconnected", flush=True)
-            link_lost.set()
+    def on_disconnected(uri):
+        print("\n[链路] disconnected", flush=True)
+        link_lost.set()
 
-        cf.connection_lost.add_callback(on_connection_lost)
-        cf.disconnected.add_callback(on_disconnected)
+    cf.connection_lost.add_callback(on_connection_lost)
+    cf.disconnected.add_callback(on_disconnected)
 
+    if not connect_with_timeout(cf, URI):
+        return
+
+    try:
         ensure_complementary_estimator(cf)
         ensure_raw_commander_mode(cf)
 
@@ -475,6 +477,8 @@ def main():
             lg.stop()
             lg_diag.stop()
             print("测试结束。", flush=True)
+    finally:
+        cf.close_link()
 
 
 if __name__ == "__main__":

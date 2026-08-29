@@ -6,10 +6,10 @@
 import time
 
 import cflib.crtp
+from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.log import LogConfig
-from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 
-from config import URI
+from config import URI, connect_with_timeout
 
 TEST_MIN = 10000  # 0~65535，斜坡起点：明显能看到转动但不会太猛
 TEST_MAX = 60000  # 斜坡终点
@@ -74,10 +74,11 @@ def main():
         print("已取消，未连接。")
         return
 
-    with SyncCrazyflie(URI) as scf:
-        cf = scf.cf
-        print("已连接。")
+    cf = Crazyflie()
+    if not connect_with_timeout(cf, URI):
+        return
 
+    try:
         try:
             cf.param.set_value("motorPowerSet.enable", "1")
             time.sleep(0.2)
@@ -103,6 +104,8 @@ def main():
                 print("motorPowerSet.enable = 0，已交还飞控。")
             except Exception as exc:
                 print(f"归零/交还飞控时出现异常，请立刻断电检查！错误: {exc}")
+    finally:
+        cf.close_link()
 
 
 if __name__ == "__main__":

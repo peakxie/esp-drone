@@ -5,19 +5,20 @@
 import time
 
 import cflib.crtp
+from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.log import LogConfig
-from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 
-from config import URI
+from config import URI, connect_with_timeout
 
 
 def main():
     cflib.crtp.init_drivers()
 
-    with SyncCrazyflie(URI) as scf:
-        cf = scf.cf
-        print("已连接。\n")
+    cf = Crazyflie()
+    if not connect_with_timeout(cf, URI):
+        return
 
+    try:
         # CRTP 单个 LOG 包 payload 有限（约 26 字节），全部变量分三组订阅。
         imu_lg = LogConfig(name="imu", period_in_ms=100)
         for v in ("acc.x", "acc.y", "acc.z", "gyro.x", "gyro.y", "gyro.z"):
@@ -84,6 +85,8 @@ def main():
             env_lg.stop()
             aux_lg.stop()
             print("\n测试结束。")
+    finally:
+        cf.close_link()
 
 
 if __name__ == "__main__":

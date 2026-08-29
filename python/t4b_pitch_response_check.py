@@ -19,14 +19,13 @@ import cflib.crtp
 from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.log import LogConfig
 
-from config import URI
+from config import URI, connect_with_timeout
 
 ESTIMATOR_NAMES = {0: "any", 1: "complementary", 2: "kalman"}
 
 BASE_THRUST = 15000     # 低速基线，只是为了在 idleThrust 之上留出可观察的差量
 RAMP_TIME_S = 1.0       # 从 0 斜坡爬升到 BASE_THRUST 的时长，避免 4 电机同时起转的电流冲击
 SEND_PERIOD = 0.05      # 20Hz 发送 setpoint，避免 commander watchdog 超时进入 fallback
-CONNECT_TIMEOUT_S = 10.0    # 建链超时：飞机没应答时 cflib 会无提示地一直重试，超过这个时间主动放弃并打印原因
 LOG_WAIT_TIMEOUT_S = 2.0    # 等待第一帧 motor 日志的超时：等不到就说明遥测没通，绝不能盲发推力
 LOG_STALE_TIMEOUT_S = 0.3   # 运行中超过这么久没收到新日志帧，视为链路/主控可能已经异常
 ZERO_BURST_COUNT = 15       # 收尾/异常时连续发送零推力的次数，抵御偶发丢包
@@ -131,47 +130,6 @@ def ensure_raw_commander_mode(cf):
         read_flightmode_flags(cf)
 
 
-def connect_with_timeout(cf, uri, timeout_s):
-    """带超时的建链：cflib 在链路完全没有应答时会无提示地一直重试，表现为"卡死无反应"。
-    这里主动等一个有限时间，超时或失败都打印原因并 close_link()，不再让人干等猜测。"""
-    result = {"failed_msg": None}
-    connected_evt = threading.Event()
-
-    def on_connected(_uri):
-        connected_evt.set()
-
-    def on_connection_failed(_uri, msg):
-        result["failed_msg"] = msg
-        connected_evt.set()
-
-    cf.connected.add_callback(on_connected)
-    cf.connection_failed.add_callback(on_connection_failed)
-
-    print(f"正在连接 {uri} （最长等待 {timeout_s:.0f}s）...", flush=True)
-    cf.open_link(uri)
-
-    ok = connected_evt.wait(timeout=timeout_s)
-    cf.connected.remove_callback(on_connected)
-    cf.connection_failed.remove_callback(on_connection_failed)
-
-    if not ok:
-        print(
-            f"连接超时（{timeout_s:.0f}s 内没有任何应答）：飞机可能没通电、没连上同一个 Wi-Fi、"
-            "IP/端口不对，或者上一次遗留的旧进程还占着地址（去任务管理器确认没有残留的 python.exe）。"
-            "请检查后重试。",
-            flush=True,
-        )
-        cf.close_link()
-        return False
-
-    if result["failed_msg"] is not None:
-        print(f"连接失败：{result['failed_msg']}", flush=True)
-        return False
-
-    print("已连接。", flush=True)
-    return True
-
-
 def main():
     cflib.crtp.init_drivers()
 
@@ -195,7 +153,7 @@ def main():
     cf.connection_lost.add_callback(on_connection_lost)
     cf.disconnected.add_callback(on_disconnected)
 
-    if not connect_with_timeout(cf, URI, CONNECT_TIMEOUT_S):
+    if not connect_with_timeout(cf, URI):
         return
 
     try:

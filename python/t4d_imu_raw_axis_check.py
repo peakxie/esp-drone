@@ -36,10 +36,10 @@ import threading
 import time
 
 import cflib.crtp
+from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.log import LogConfig
-from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 
-from config import URI
+from config import URI, connect_with_timeout
 
 ESTIMATOR_NAMES = {0: "any", 1: "complementary", 2: "kalman"}
 
@@ -82,10 +82,11 @@ def ensure_complementary_estimator(cf):
 def main():
     cflib.crtp.init_drivers()
 
-    with SyncCrazyflie(URI) as scf:
-        cf = scf.cf
-        print("已连接。", flush=True)
+    cf = Crazyflie()
+    if not connect_with_timeout(cf, URI):
+        return
 
+    try:
         ensure_complementary_estimator(cf)
 
         state = {
@@ -205,6 +206,8 @@ def main():
             lg_acc.stop()
             lg_att.stop()
             print("\n测试结束。", flush=True)
+    finally:
+        cf.close_link()
 
 
 if __name__ == "__main__":
