@@ -85,6 +85,11 @@ RATE_OUTP_ABORT_THRESHOLD = 15000.0
 #   m3 = thrust + roll/2 - pitch/2 + yaw
 #   m4 = thrust + roll/2 + pitch/2 - yaw
 # （CONFIG_PITCH_DISTRIBUTION_INVERTED 未设置，pitch 未取反）
+#
+# yaw 的两条 expect 已按修复后的方向改过：controller_pid.c 里原来的 control->yaw =
+# -control->yaw 已删除（t4e_yaw_response_check.py 实测坐实那行取负在本板 M1/M3 顺时针、
+# M2/M4 逆时针的实际接线下会让 yaw 角速度环变成正反馈）。删掉那次取负后，混控这里的
+# "yaw" 就是角速度环的原始输出，不再反号，下面两条 yaw 的期望方向据此对调过。
 STEPS = [
     {
         "label": f"ROLL  +{ROLL_STEP_DEG:.0f}deg",
@@ -109,12 +114,12 @@ STEPS = [
     {
         "label": f"YAW   +{YAW_STEP_DEGPS:.0f}deg/s",
         "roll": 0.0, "pitch": 0.0, "yawrate": YAW_STEP_DEGPS,
-        "expect": "期望 m1,m3 变大；m2,m4 变小",
+        "expect": "期望 m1,m3 变小；m2,m4 变大",
     },
     {
         "label": f"YAW   -{YAW_STEP_DEGPS:.0f}deg/s",
         "roll": 0.0, "pitch": 0.0, "yawrate": -YAW_STEP_DEGPS,
-        "expect": "期望 m1,m3 变小；m2,m4 变大",
+        "expect": "期望 m1,m3 变大；m2,m4 变小",
     },
 ]
 
