@@ -1,0 +1,454 @@
+本目录是小四轴固件，小四轴飞不起来，回正无力，软绵绵的。请分析
+
+这个仓库里已经有一条很长的调试线（records/ccprompt/0825~0829.txt + python/t3~t4d
+  一系列台架脚本），目标就是定位"回正无力、软绵绵"这个症状。把 git 历史和当前代码状态对照后，现状是：
+
+  1. 已确认并修复的一个问题
+
+  sdkconfig 里 CONFIG_PITCH_DISTRIBUTION_INVERTED 曾被错误设为 y（commit 2ae2034），8-27 号用
+  t4b_pitch_response_check.py 实测抬机头时发现：pitch 角持续增大、但前电机(m1/m4)反而越转越快、后电机(m2/m3
+  )越转越慢——这是正反馈，不是"响应弱"，是"越纠正越糟"。根因在 power_distribution_stock.c:92-97 的 p =
+  -p，在这块板子上把 control->pitch 的符号翻反了。现已改回 n（当前 sdkconfig:449 是 #
+  CONFIG_PITCH_DISTRIBUTION_INVERTED is not set），这一项目前是对的。
+
+  2. 一个已识别但没在代码里真正修掉的设计缺陷
+
+  sensors_mpu6050_hm5883L_ms5611.c:635：只要 PMW3901 光流传感器自检通过，固件会无条件调用
+  setCommandermode(POSHOLD_MODE)。这会让 crtp_commander_rpyt.c:192-202 把摇杆的 roll/pitch
+  直接改判成机体速度指令，姿态角目标不再来自摇杆，而是来自 positionController/velocityController
+  算出来的、被限幅在 ±rpLimit(默认20°)
+  内的间接值（position_controller_pid.c:219-234）——这和"回正无力、软绵绵"的描述高度吻合：不是自稳环变弱了，
+  是自稳环的目标源被换成了一条更慢、更间接、被限幅的链路。目前是通过关闭 CONFIG_SENSORS_ENABLE_DECK（commit
+  e16b36c，8-26）绕开的，但代码本身没改——一旦以后重新启用光流模块，这个"静默劫持摇杆"的行为会立刻复现。
+
+  3. 尚未证实/证伪的剩余嫌疑点
+
+  8-27 号的分析（records/ccprompt/0827.txt）把互补滤波、Kalman、混控矩阵的坐标系符号逐项核对了一遍，结论是
+  代码层面自洽，唯一还没排除的是两处物理层面、代码本身验证不了的点：
+  - 电机实际接线顺序是否真的对应 M1~M4 的假定位置/转向
+  - MPU6050 芯片丝印方向是否真的跟 datasheet/代码里的换轴表一致
+
+  这两项建议用已经写好的 python/t3_motor_mapping.py（单电机测试）和
+  python/t4d_imu_raw_axis_check.py（纯读传感器、电机不转，零风险）来做纯手工验证，代码分析已经走到头了。
+
+  4. 一个可能引入新偏差的最近改动
+
+  8-29 号 4e6772b 把 PITCH_CALIB/ROLL_CALIB 从 0 改成了 160/390（即 1.6°/3.9°），且把配置范围从 ±2° 放宽到
+  ±10°。3.9° 的 roll 配平量不小，如果这个值本身量错了方向或大小，会让水平设定点本身就偏了，表现出来也会很像
+  "怎么都回不平、软绵绵"。
+
+  建议下一步
+
+  1. 先确认现在遇到"软绵绵"的这次，是在当前 sdkconfig（deck 已关、pitch mixer
+     已恢复正常）下测的，还是历史遗留的旧现象描述。
+  2. 跑一次已经加了积分饱和自动保护的最新版 t4b_pitch_response_check.py（8f24b6c），看抬/低头时 m1m4/m2m3
+     是否符合期望方向、pid_rate.pitch_outP/outD 是否正常，而不是单调爬升到饱和。
+  3. 用 t3_motor_mapping.py + t4d_imu_raw_axis_check.py 补齐第 3
+     点提到的两个物理层验证，这是目前唯一还没做实的环节。
+  4. 复核一下 3.9° 的 ROLL_CALIB 是不是真的量对了。
+
+  需要我直接帮你跑一遍这几个脚本的代码检查，或者先看看 t3_motor_mapping.py/t4d_imu_raw_axis_check.py
+  里具体怎么判定方向对不对？
+  
+  1.是在当前 sdkconfig（deck 已关、pitch mixer
+     已恢复正常）下测的
+  2.看抬/低头时 m1m4/m2m3符合预期。是单调爬升到饱和。
+  3.m1到m4的位置是对的，m1（右上）m3（左下）俯视图机身上部时桨叶旋转是顺时针。 MPU6050 芯片丝印方向是芯片-Y对应机头X，芯片X对应机身坐标系Y，芯片Z对应机身坐标系Z。机身坐标系为FLU
+  4.3.9° 的 ROLL_CALIB 是真的量对了
+  
+  核对结果：你给的这几条硬件事实和代码里的换轴表、混控公式完全吻合，没有发现新的方向错误。
+
+  逐项核对
+
+  IMU 换轴（sensors_mpu6050_hm5883L_ms5611.c:437-478，非 ESPLANE_V1 分支）
+
+  代码实际做的事：
+  accelRaw.y = buffer[0:1]   // 芯片寄存器里的 X 轴
+  accelRaw.x = buffer[2:3]   // 芯片寄存器里的 Y 轴
+  gyroRaw.y  = buffer[8:9]   // 芯片寄存器里的 X 轴
+  gyroRaw.x  = buffer[10:11] // 芯片寄存器里的 Y 轴
+  ...
+  sensorData.gyro.x = -(gyroRaw.x - bias) * SCALE   // 即 -(芯片Y)
+  sensorData.gyro.y =  (gyroRaw.y - bias) * SCALE   // 即 +(芯片X)
+  换算成"芯片轴 → 机身轴"就是：机身X = -芯片Y，机身Y = +芯片X，机身Z =
+  +芯片Z。跟你说的"芯片-Y对应机头X（带负号），芯片X对应机身Y（不带负号）"逐项对上，FLU
+  假设也成立。这条链路没问题。
+
+  混控几何（power_distribution_stock.c:98-101）
+
+  m1 += yaw, m3 += yaw（同号），m2 -= yaw, m4 -= yaw。M1/M3 是对角线且你确认为顺时针(CW)：CW
+  桨在机身上产生的反作用力矩是逆时针方向，+yaw 指令增大 M1/M3（CW）推力、减小
+  M2/M4（CCW）推力，合力矩净增逆时针——在你描述的 FLU 机身坐标系下这正是"+yaw =
+  从上往下看逆时针"该有的方向，自洽。
+
+  陀螺/加计量程：SENSORS_GYRO_FS_CFG（写寄存器）和 SENSORS_DEG_PER_LSB_CFG（换算系数）都统一用的
+  MPU6050_..._2000/_16，两处量程定义没有互相打架，排除"量程配错导致增益被隐性缩放"这个候选。
+
+  所以：方向、接线、贴装、量程，四项全部核实是对的，之前 08-27 号留下的"物理层待验证"疑点现在可以清掉了。
+
+  关于"单调爬升到饱和"
+
+  这个现象在 t4b_pitch_response_check.py 文件头注释（第 34-38
+  行）里其实已经预先记录过：机身被夹具固定死、转不动的情况下，你手动给一个持续存在的倾角，姿态角外环的误差
+  永远不会归零，积分会一路爬升直到撞到饱和保护——这是这套"夹死测方向"测试方法本身的必然副作用，不是
+  bug。真实自由飞行时机身会真的转回去，误差会收敛，不会一直爬升。所以这一条不能算新证据，只能证明"方向对"，
+  不能用来判断"力度够不够"。
+
+  结论：怀疑方向要从"符号/接线"转向"力度/机械"
+
+  软件层面的符号链路已经查干净了。如果实际上机试飞（不是夹具测试）仍然"回正无力、软绵绵"，剩下的候选基本只
+  剩物理量级问题：
+
+  1. 推重比/电机功率不够：方向对但扭矩不够大，纠正動作天然就慢/软。
+  2. 刷式电机(CONFIG_MOTOR_BRUSHED_715)悬停点附近的死区/黏滞：小幅 PID 修正量在悬停 PWM
+     附近可能根本不足以产生可感知的转速差。
+  3. PID 增益本身对这个机架偏小：pid.h 里的 250/500/2.5（角速度环）、5.9/2.9/0（角度环）是 Bitcraze CF2
+     的原厂参数，如果这台"小四轴"的重量/惯量跟原型不一样，同样的 Kp 输出的力矩相对惯量就会显得弱。
+
+  建议下一步：不用夹具，改成手持悬停（桨叶装上、人手托着轻放，留好安全距离）或者拴绳限高的方式，实际给一个
+  小扰动看它是否能在半秒内收敛回水平；如果收敛明显偏慢，就是增益问题，可以直接用 CFClient/脚本临时调大
+  pid_rate.pitch_kp（attitude_pid_controller.c:202-210
+  暴露的参数）现场对比手感，不需要改代码重新编译。要不要我帮你写一个"手持悬停+实时改 Kp 对比"的测试脚本？
+   1.是在当前 sdkconfig（deck 已关、pitch mixer                                                           
+       已恢复正常）下测的                                                                                  
+    2.看抬/低头时 m1m4/m2m3符合预期。是单调爬升到饱和。                                                    
+    3.m1到m4的位置是对的，m1（右上）m3（左下）俯视图机身上部时桨叶旋转是顺时针。 MPU6050                   
+  芯片丝印方向是芯片-Y对应机头X，芯片X对应机身坐标系Y，芯片Z对应机身坐标系Z。机身坐标系为FLU               
+    4.3.9° 的 ROLL_CALIB 是真的量对了                                                                      
+
+  Thought for 3m 17s, searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● 核对结果：你给的这几条硬件事实和代码里的换轴表、混控公式完全吻合，没有发现新的方向错误。
+
+  逐项核对
+
+  IMU 换轴（sensors_mpu6050_hm5883L_ms5611.c:437-478，非 ESPLANE_V1 分支）
+
+  代码实际做的事：
+  accelRaw.y = buffer[0:1]   // 芯片寄存器里的 X 轴
+  accelRaw.x = buffer[2:3]   // 芯片寄存器里的 Y 轴
+  gyroRaw.y  = buffer[8:9]   // 芯片寄存器里的 X 轴
+  gyroRaw.x  = buffer[10:11] // 芯片寄存器里的 Y 轴
+  ...
+  sensorData.gyro.x = -(gyroRaw.x - bias) * SCALE   // 即 -(芯片Y)
+  sensorData.gyro.y =  (gyroRaw.y - bias) * SCALE   // 即 +(芯片X)
+  换算成"芯片轴 → 机身轴"就是：机身X = -芯片Y，机身Y = +芯片X，机身Z =
+  +芯片Z。跟你说的"芯片-Y对应机头X（带负号），芯片X对应机身Y（不带负号）"逐项对上，FLU
+  假设也成立。这条链路没问题。
+
+  混控几何（power_distribution_stock.c:98-101）
+
+  m1 += yaw, m3 += yaw（同号），m2 -= yaw, m4 -= yaw。M1/M3 是对角线且你确认为顺时针(CW)：CW
+  桨在机身上产生的反作用力矩是逆时针方向，+yaw 指令增大 M1/M3（CW）推力、减小
+  M2/M4（CCW）推力，合力矩净增逆时针——在你描述的 FLU 机身坐标系下这正是"+yaw =
+  从上往下看逆时针"该有的方向，自洽。
+
+  陀螺/加计量程：SENSORS_GYRO_FS_CFG（写寄存器）和 SENSORS_DEG_PER_LSB_CFG（换算系数）都统一用的
+  MPU6050_..._2000/_16，两处量程定义没有互相打架，排除"量程配错导致增益被隐性缩放"这个候选。
+
+  所以：方向、接线、贴装、量程，四项全部核实是对的，之前 08-27 号留下的"物理层待验证"疑点现在可以清掉了。
+
+  关于"单调爬升到饱和"
+
+  这个现象在 t4b_pitch_response_check.py 文件头注释（第 34-38
+  行）里其实已经预先记录过：机身被夹具固定死、转不动的情况下，你手动给一个持续存在的倾角，姿态角外环的误差
+  永远不会归零，积分会一路爬升直到撞到饱和保护——这是这套"夹死测方向"测试方法本身的必然副作用，不是
+  bug。真实自由飞行时机身会真的转回去，误差会收敛，不会一直爬升。所以这一条不能算新证据，只能证明"方向对"，
+  不能用来判断"力度够不够"。
+
+  结论：怀疑方向要从"符号/接线"转向"力度/机械"
+
+  软件层面的符号链路已经查干净了。如果实际上机试飞（不是夹具测试）仍然"回正无力、软绵绵"，剩下的候选基本只
+  剩物理量级问题：
+
+  1. 推重比/电机功率不够：方向对但扭矩不够大，纠正動作天然就慢/软。
+  2. 刷式电机(CONFIG_MOTOR_BRUSHED_715)悬停点附近的死区/黏滞：小幅 PID 修正量在悬停 PWM
+     附近可能根本不足以产生可感知的转速差。
+  3. PID 增益本身对这个机架偏小：pid.h 里的 250/500/2.5（角速度环）、5.9/2.9/0（角度环）是 Bitcraze CF2
+     的原厂参数，如果这台"小四轴"的重量/惯量跟原型不一样，同样的 Kp 输出的力矩相对惯量就会显得弱。
+
+  建议下一步：不用夹具，改成手持悬停（桨叶装上、人手托着轻放，留好安全距离）或者拴绳限高的方式，实际给一个
+  小扰动看它是否能在半秒内收敛回水平；如果收敛明显偏慢，就是增益问题，可以直接用 CFClient/脚本临时调大
+  pid_rate.pitch_kp（attitude_pid_controller.c:202-210
+  暴露的参数）现场对比手感，不需要改代码重新编译。要不要我帮你写一个"手持悬停+实时改 Kp 对比"的测试脚本？
+
+✻ Cooked for 3m 18s · done 9:32
+
+※ recap: Debugging why the pyDrone quadcopter self-levels weakly; wiring, IMU orientation, and calibration 
+  all check out fine. Next step: do a real hand-held hover test (not clamped) to see if tilt correction 
+  actually converges, and try raising PID Kp live if it's too slow. (disable recaps in /config)
+
+❯ m1m3的顺时针旋转，现在固件中yaw对吗？
+
+把 yaw 这条链路从"陀螺仪→双闭环 PID→混控→电机"完整过一遍符号，用你给的 M1/M3
+  顺时针（俯视）这个事实来对，结论是：现在的固件里，yaw 大概率是反的——跟当年 pitch 的 bug
+  是同一类问题，只是藏在另一处。
+
+  推导过程
+
+  1. 陀螺仪 Z 轴没有做任何取反（sensors_mpu6050_hm5883L_ms5611.c:467）：
+  sensorData.gyro.z = (gyroRaw.z - gyroBias.z) * SENSORS_DEG_PER_LSB_CFG;  // 不取负
+  你只提到 X/Y 轴的换轴/取负，没提 Z 轴要翻转，说明芯片 Z 轴跟机身 Z
+  轴（朝上）是同向贴装的。芯片自身的"陀螺 Z 轴正转"按右手定则，等于从上往下看是逆时针(CCW)——这是几乎所有
+  MEMS 陀螺（包括 MPU6050）datasheet 里统一的定义。所以：gyro.z 正值 = 机身俯视
+  CCW，且姿态融合、attitudeDesired.yaw 全程都在用同一个约定，没有第二次反转（这点 08-27
+  号已经逐项核对过，yaw 跟 roll 一样没被单独处理，只有 pitch 被反过）。
+
+  2. 角速度环 PID 是标准 error = desired - measured（pid.c:62），kp>0：也就是"当前 CCW 转速不够、还想要更多
+  CCW"时，pidYawRate 原始输出是正的。
+
+  3. 但 controller_pid.c:116 紧接着把它取反了：
+  attitudeControllerGetActuatorOutput(&control->roll, &control->pitch, &control->yaw);
+  control->yaw = -control->yaw;   // <-- 这一行
+  这行代码是初次移植（2020-05）就带进来的原始代码，从未因为这块板子的实际转向被重新验证过——t4c_rpy_step_res
+  ponse_check.py 里 yaw 那两条 "expect" 字符串，注释写的是"来自 power_distribution_stock.c
+  的混控公式"，也就是直接从代码反推出来的，跟当年 pitch
+  踩过的坑一模一样：拿代码自己的假设去验证代码自己，不是独立证据。
+
+  4. 混控（power_distribution_stock.c:98-101）：m1 += control->yaw，m3 += control->yaw，m2 -=
+  control->yaw，m4 -= control->yaw。
+
+  串起来：想要更多 CCW → 角速度环原始输出为正 → 第 116 行取反变成负 → control->yaw 为负 → m1、m3（你确认的
+  顺时针电机）转速反而降低，m2、m4（逆时针电机）转速升高。而顺时针电机转速降低=减少它们带来的 CCW 反作用力
+  矩，逆时针电机转速升高=增加它们带来的顺时针反作用力矩——两者叠加，合力矩净变化是更顺时针，跟"想要更多
+  CCW"完全反着来。
+
+  这不是"方向定义反了但收敛"那种温和问题，而是角速度内环本身的负反馈变成了正反馈：偏差越大、修正动作越往错
+  误方向推，跟当年 CONFIG_PITCH_DISTRIBUTION_INVERTED=y 时 pitch 的表现是同一种病。
+
+  需要你确认的唯一前提
+
+  这个结论建立在"MPU6050 是正面朝上贴装、Z 轴跟机身 Z 轴同向"这一条上（因为代码对 Z
+  轴没做任何取负处理）。如果芯片其实是倒装（背面朝上）的，结论会反过来。这一点你之前只描述了 X/Y
+  的贴装关系，Z 轴需要你确认一下。
+
+  建议验证方式
+
+  不要相信 t4c_rpy_step_response_check.py 里 yaw 那两条 "expect" 文字，按 t4b 那次揪出 pitch bug
+  的方法重新跑一遍：桨叶拆除、机身固定夹死，发一个持续的 yaw 阶跃（比如改用 t4b_pitch_response_check.py
+  的模式，或者手动扭转机头看 motor.m1~m4 +
+  pid_rate.yaw_outP），只看数字是收敛还是单调爬向饱和。如果确认是反的，修复点就是这一行——去掉或反转
+  controller_pid.c:116 的 control->yaw = -control->yaw（比等效地改混控矩阵符号更集中、影响面更小，因为
+  roll/pitch 不经过这一行）。
+
+  要不要我现在帮你把这个 yaw 阶跃验证脚本改出来（复用 t4b 里已经验证过的安全防护逻辑）？
+
+✻ Worked for 5m 1s · done 10:51
+
+❯ MPU6050 是正面朝上贴装、Z 轴跟机身 Z 轴同向---这一条是对的                                               
+
+  Thought for 29s (ctrl+o to expand)
+
+● premise 确认后，结论就是确定的了：当前固件的 yaw 是反的，跟当年 pitch 那次是同一类
+  bug（内环变成正反馈），只是藏在 controller_pid.c:116 的 control->yaw = -control->yaw
+  这一行，而不是混控矩阵里。
+  
+  法检查通过。新脚本 python/t4e_yaw_response_check.py
+  已创建，安全防护（超时建链、日志确认、斜坡推力、自动饱和/windup保护、断链归零）跟 t4b
+  完全同一套路，改动只在诊断内容上：
+
+  测试方法：桨叶拆除、机身固定，基线推力稳定后，持续把机头往左扭（俯视 CCW）。
+
+  怎么读结果（无需猜"expect"，直接看符号关系和电机数字）：
+  - gyro.z 应先读到正值——确认你确实在往 CCW 方向转。
+  - 正确（负反馈）：cmd_yaw 变负，m1、m3（顺时针电机）转速降低，m2、m4
+    升高——用减少顺时针电机反作用力矩的方式把机头拉回去。
+  - 若是 bug（正反馈，跟推导一致）：cmd_yaw 变正，m1、m3 升高，m2、m4
+    降低——顺时针电机转速升高会让机体反作用力矩更偏 CCW，等于在帮你继续往左转。
+  - 顺带打印 pid_rate.yaw_outP（取负前）和 cmd_yaw（取负后），两者应始终反号——这个不用当证据看，只是让
+    controller_pid.c:116 那行取负的存在感可视化。
+
+  跑之前记得先按现有 sdkconfig 编译刷机（deck 关、pitch mixer 已恢复正常），运行方式跟其他 t4* 脚本一致：cd
+  python && python t4e_yaw_response_check.py。测完把 m1~m4 和 cmd_yaw 的实际走势告诉我，我再决定要不要动
+  controller_pid.c:116。
+  
+  t=   24761  m1= 14058  m2= 15146  m3= 16266  m4= 14530  |  yawOutP(取负前)=  -171.9  cmd_yaw(取负后)=   190.0  |  gyro.z(正=CCW/左转)=0.0  rateDesired=    -0.8
+          yawOutI=   -18.7  yawOutD=    -0.0  |  yaw=  -0.0  roll=  -0.3  pitch=   0.6
+t=   24811  m1= 14371  m2= 14601  m3= 16303  m4= 14725  |  yawOutP(取负前)=  -142.9  cmd_yaw(取负后)=   151.0  |  gyro.z(正=CCW/左转)=0.0  rateDesired=    -0.7
+          yawOutI=   -19.3  yawOutD=    -0.0  |  yaw=  -0.0  roll=  -0.3  pitch=   0.6
+t=   24861  m1= 13775  m2= 15077  m3= 16531  m4= 14617  |  yawOutP(取负前)=  -158.7  cmd_yaw(取负后)=   178.0  |  gyro.z(正=CCW/左转)=0.2  rateDesired=    -0.6
+          yawOutI=   -19.8  yawOutD=     0.0  |  yaw=  -0.0  roll=  -0.3  pitch=   0.6
+t=   24911  m1= 13950  m2= 15256  m3= 16228  m4= 14566  |  yawOutP(取负前)=  -133.3  cmd_yaw(取负后)=   179.0  |  gyro.z(正=CCW/左转)=0.0  rateDesired=    -0.6
+          yawOutI=   -20.4  yawOutD=     0.0  |  yaw=  -0.0  roll=  -0.3  pitch=   0.6
+t=   24961  m1= 13847  m2= 15031  m3= 16505  m4= 14617  |  yawOutP(取负前)=   -68.6  cmd_yaw(取负后)=    89.0  |  gyro.z(正=CCW/左转)=    -0.1  rateDesired=    -0.4
+          yawOutI=   -21.2  yawOutD=     0.0  |  yaw=  -0.0  roll=  -0.3  pitch=   0.6
+t=   25011  m1= 14007  m2= 15103  m3= 16389  m4= 14501  |  yawOutP(取负前)=  -155.1  cmd_yaw(取负后)=   176.0  |  gyro.z(正=CCW/左转)=0.0  rateDesired=    -0.7
+          yawOutI=   -21.7  yawOutD=     0.0  |  yaw=  -0.0  roll=  -0.3  pitch=   0.6
+t=   25061  m1= 14831  m2= 14283  m3= 15883  m4= 15003  |  yawOutP(取负前)=  -175.7  cmd_yaw(取负后)=   190.0  |  gyro.z(正=CCW/左转)=0.1  rateDesired=    -0.8
+          yawOutI=   -22.4  yawOutD=    -0.0  |  yaw=  -0.0  roll=  -0.3  pitch=   0.6
+t=   25111  m1= 14083  m2= 15085  m3= 16337  m4= 14495  |  yawOutP(取负前)=  -333.4  cmd_yaw(取负后)=   593.0  |  gyro.z(正=CCW/左转)=0.5  rateDesired=    -1.0
+          yawOutI=   -23.7  yawOutD=     0.0  |  yaw=   0.0  roll=  -0.4  pitch=   0.6
+t=   25161  m1= 14185  m2= 14537  m3= 16579  m4= 14699  |  yawOutP(取负前)=  -184.9  cmd_yaw(取负后)=   210.0  |  gyro.z(正=CCW/左转)=    -0.1  rateDesired=    -1.0
+          yawOutI=   -25.4  yawOutD=     0.0  |  yaw=   0.0  roll=  -0.4  pitch=   0.6
+t=   25211  m1= 14612  m2= 14160  m3= 17006  m4= 14222  |  yawOutP(取负前)=  -355.5  cmd_yaw(取负后)=   382.0  |  gyro.z(正=CCW/左转)=0.2  rateDesired=    -1.5
+          yawOutI=   -27.1  yawOutD=     0.0  |  yaw=   0.0  roll=  -0.4  pitch=   0.6
+t=   25261  m1= 14942  m2= 13708  m3= 17470  m4= 13880  |  yawOutP(取负前)=  -778.6  cmd_yaw(取负后)=  1864.0  |  gyro.z(正=CCW/左转)=1.7  rateDesired=    -2.4
+          yawOutI=   -30.7  yawOutD=     0.0  |  yaw=   0.1  roll=  -0.4  pitch=   0.6
+t=   25311  m1= 16148  m2= 12844  m3= 18816  m4= 12192  |  yawOutP(取负前)= -1168.3  cmd_yaw(取负后)=  2061.0  |  gyro.z(正=CCW/左转)=1.4  rateDesired=    -4.6
+          yawOutI=   -38.6  yawOutD=     0.0  |  yaw=   0.2  roll=  -0.4  pitch=   0.6
+t=   25361  m1= 22964  m2=  5460  m3= 26250  m4=  5326  |  yawOutP(取负前)= -2437.4  cmd_yaw(取负后)=  2482.0  |  gyro.z(正=CCW/左转)=1.6  rateDesired=   -10.5
+          yawOutI=   -45.4  yawOutD=    -0.0  |  yaw=   0.2  roll=  -0.4  pitch=   0.6
+t=   25411  m1= 18556  m2= 10256  m3= 21310  m4=  9878  |  yawOutP(取负前)= -9535.6  cmd_yaw(取负后)=  9607.0  |  gyro.z(正=CCW/左转)=8.2  rateDesired=   -39.2
+          yawOutI=   -71.5  yawOutD=    -0.0  |  yaw=   0.6  roll=  -0.4  pitch=   0.6
+t=   25461  m1= 18353  m2= 10929  m3= 20549  m4= 10169  |  yawOutP(取负前)= -4841.4  cmd_yaw(取负后)=  3814.0  |  gyro.z(正=CCW/左转)=1.7  rateDesired=   -16.9
+          yawOutI=   -92.6  yawOutD=     0.0  |  yaw=   0.8  roll=  -0.4  pitch=   0.6
+t=   25511  m1= 19099  m2=  9895  m3= 21469  m4=  9537  |  yawOutP(取负前)= -4343.2  cmd_yaw(取负后)=  4451.0  |  gyro.z(正=CCW/左转)=0.9  rateDesired=   -20.8
+          yawOutI=  -108.5  yawOutD=    -0.0  |  yaw=   0.9  roll=  -0.4  pitch=   0.6
+t=   25561  m1= 19363  m2=  9469  m3= 21799  m4=  9369  |  yawOutP(取负前)= -5153.9  cmd_yaw(取负后)=  5284.0  |  gyro.z(正=CCW/左转)=5.4  rateDesired=   -20.4
+          yawOutI=  -130.4  yawOutD=     0.0  |  yaw=   1.0  roll=  -0.4  pitch=   0.6
+t=   25611  m1= 20998  m2=  8658  m3= 22342  m4=  8002  |  yawOutP(取负前)= -7175.0  cmd_yaw(取负后)=  7333.0  |  gyro.z(正=CCW/左转)=2.9  rateDesired=   -33.0
+          yawOutI=  -158.8  yawOutD=    -0.0  |  yaw=   1.2  roll=  -0.4  pitch=   0.6
+t=   25661  m1= 22912  m2=  5476  m3= 26512  m4=  5100  |  yawOutP(取负前)= -6482.0  cmd_yaw(取负后)=  6670.0  |  gyro.z(正=CCW/左转)=4.9  rateDesired=   -27.5
+          yawOutI=  -188.1  yawOutD=     0.0  |  yaw=   1.3  roll=  -0.4  pitch=   0.6
+t=   25711  m1= 27598  m2=  1306  m3= 30010  m4=  1086  |  yawOutP(取负前)= -9489.9  cmd_yaw(取负后)=  9712.0  |  gyro.z(正=CCW/左转)=3.9  rateDesired=   -43.5
+          yawOutI=  -223.0  yawOutD=    -0.0  |  yaw=   1.5  roll=  -0.4  pitch=   0.6
+t=   25761  m1= 27242  m2=  1484  m3= 30372  m4=   902  |  yawOutP(取负前)=-13540.8  cmd_yaw(取负后)= 13804.0  |  gyro.z(正=CCW/左转)=7.6  rateDesired=   -60.1
+          yawOutI=  -263.6  yawOutD=    -0.0  |  yaw=   1.8  roll=  -0.4  pitch=   0.6
+t=   25811  m1= 24421  m2=  4431  m3= 26983  m4=  4165  |  yawOutP(取负前)=-13496.6  cmd_yaw(取负后)= 13807.0  |  gyro.z(正=CCW/左转)=6.0  rateDesired=   -61.5
+          yawOutI=  -311.1  yawOutD=    -0.0  |  yaw=   2.1  roll=  -0.5  pitch=   0.6
+t=   25861  m1= 28625  m2=   541  m3= 30349  m4=   485  |  yawOutP(取负前)=-10345.0  cmd_yaw(取负后)= 13596.0  |  gyro.z(正=CCW/左转)=4.7  rateDesired=   -47.0
+          yawOutI=  -357.9  yawOutD=     0.0  |  yaw=   2.3  roll=  -0.5  pitch=   0.6
+t=   25911  m1= 25875  m2=  3233  m3= 28001  m4=  2891  |  yawOutP(取负前)=-11303.7  cmd_yaw(取负后)= 11717.0  |  gyro.z(正=CCW/左转)=4.7  rateDesired=   -51.9
+          yawOutI=  -413.5  yawOutD=     0.0  |  yaw=   2.6  roll=  -0.5  pitch=   0.6
+t=   25961  m1= 29612  m2=     0  m3= 33682  m4=     0  |  yawOutP(取负前)=-11473.5  cmd_yaw(取负后)= 13382.0  |  gyro.z(正=CCW/左转)=2.3  rateDesired=   -62.3
+          yawOutI=  -467.8  yawOutD=    -0.0  |  yaw=   2.7  roll=  -0.5  pitch=   0.6
+t=   26011  m1= 28173  m2=   731  m3= 30979  m4=   117  |  yawOutP(取负前)=-16121.6  cmd_yaw(取负后)= 16647.0  |  gyro.z(正=CCW/左转)=4.9  rateDesired=   -75.5
+          yawOutI=  -525.9  yawOutD=    -0.0  |  yaw=   3.0  roll=  -0.5  pitch=   0.6
+请分析
+
+数据完全证实了推导：这是正反馈，不是简单的方向反了那么温和。
+
+  读数据
+
+  - gyro.z 从 0 慢慢转正（0→8.2），yaw 从 0 涨到 3.0——确认你确实在往 CCW（左转）方向转机头，动作方向没错。
+  - rateDesired 从 -0.8 一路跌到 -75.5——外环看到 CCW 偏差越来越大，正确地要求越来越强的 CW
+    纠正。这一层没问题。
+  - yawOutP(取负前) 从 -172 一路探到 -16121.6——内环角速度 PID 本身算出来的值也是对的（负值 = 想要 CW
+    力矩，跟外环需求方向一致）。
+  - 但 cmd_yaw(取负后) 全程跟 yawOutP 反号，且从 190 涨到 16647——这就是 controller_pid.c:116
+    那行取负在实际生效。
+  - 电机侧：m1、m3（顺时针电机）从 14000/16000 一路冲到 28000/31000，m2、m4（逆时针电机）从 15000/14500
+    一路砸到 700/100 附近，最后甚至砸到 0（t=25961 那行 m2=0,m4=0）。
+
+  顺时针电机转速升高 = 机体反作用力矩更偏 CCW，正好是在帮你把机头往你转的方向继续推，不是拉回来。整个过程是
+  "你转多少、它推多少、越推你转得越多、它又推更多"——rateDesired 从 -0.8 一路恶化到 -75.5、yawOutP
+  同步恶化到 -16000+，最后触发了脚本里 YAW_RATE_OUTP_ABORT_THRESHOLD 的自动停止保护（最后一行已经
+  -16121.6，超过 15000 阈值），这跟当年 t4b 测出 pitch 正反馈时的收尾一模一样。
+
+  结论：yaw 通道确认是正反馈 bug，跟推导完全吻合，可以动代码了。
+  
+  修复已应用：controller_pid.c:116 的 control->yaw = -control->yaw;
+  已删除（保留注释说明原因和依据）。逻辑上，去掉这次取负后 cmd_yaw 会跟角速度环的原始输出同号，CCW 干扰下
+  M1/M3 应该降速、M2/M4 升速，产生正确方向的顺时针纠正力矩。
+
+  下一步建议：
+  1. 重新编译刷机。
+  2. 重跑 t4e_yaw_response_check.py，同样手动往左（CCW）扭机头，确认这次 cmd_yaw 变负、m1/m3 降速、m2/m4
+     升速，且不再出现刚才那种单调爬升到饱和/触发自动保护的情况。
+  3. 确认后，t4c_rpy_step_response_check.py 里 yaw 那两条 "expect"
+     字符串是根据旧（错误）混控假设写死的，需要同步改一下方向，避免以后又拿它当"独立证据"用。
+
+  要不要我先把 t4c 里那两条 yaw expect 也一并改掉？
+  
+t=   30185  m1= 13506  m2= 15672  m3= 15796  m4= 15026  |  yawOutP(取负前)=  -192.9  cmd_yaw(取负后)=  -249.0  |  gyro.z(正=CCW/左转)=    -0.1  rateDesired=    -1.1
+          yawOutI=   -56.7  yawOutD=    -0.0  |  yaw=   0.1  roll=  -0.4  pitch=   0.6
+t=   30235  m1= 13531  m2= 15723  m3= 15761  m4= 14985  |  yawOutP(取负前)=  -291.9  cmd_yaw(取负后)=  -303.0  |  gyro.z(正=CCW/左转)=     0.1  rateDesired=    -1.4
+          yawOutI=   -57.7  yawOutD=    -0.0  |  yaw=   0.1  roll=  -0.4  pitch=   0.6
+t=   30285  m1= 13181  m2= 15729  m3= 15925  m4= 15165  |  yawOutP(取负前)=  -295.2  cmd_yaw(取负后)=  -354.0  |  gyro.z(正=CCW/左转)=     0.2  rateDesired=    -1.3
+          yawOutI=   -59.1  yawOutD=     0.0  |  yaw=   0.1  roll=  -0.4  pitch=   0.6
+t=   30335  m1= 13501  m2= 15699  m3= 15655  m4= 15145  |  yawOutP(取负前)=  -387.1  cmd_yaw(取负后)=  -447.0  |  gyro.z(正=CCW/左转)=     0.1  rateDesired=    -1.8
+          yawOutI=   -60.7  yawOutD=    -0.0  |  yaw=   0.1  roll=  -0.4  pitch=   0.6
+t=   30385  m1=  8169  m2= 20367  m3= 12379  m4= 19085  |  yawOutP(取负前)=  -360.1  cmd_yaw(取负后)=  -422.0  |  gyro.z(正=CCW/左转)=     0.2  rateDesired=    -1.5
+          yawOutI=   -62.0  yawOutD=     0.0  |  yaw=   0.1  roll=  -0.4  pitch=   0.6
+t=   30435  m1= 12239  m2= 17103  m3= 14199  m4= 16459  |  yawOutP(取负前)= -4659.5  cmd_yaw(取负后)= -4726.0  |  gyro.z(正=CCW/左转)=     5.1  rateDesired=   -18.2
+          yawOutI=   -66.8  yawOutD=    -0.0  |  yaw=   0.2  roll=  -0.4  pitch=   0.6
+t=   30485  m1= 10884  m2= 17956  m3= 13584  m4= 17576  |  yawOutP(取负前)= -1703.0  cmd_yaw(取负后)= -1781.0  |  gyro.z(正=CCW/左转)=     2.5  rateDesired=    -6.0
+          yawOutI=   -78.1  yawOutD=     0.0  |  yaw=   0.4  roll=  -0.4  pitch=   0.6
+t=   30535  m1=  9871  m2= 18921  m3= 12931  m4= 18277  |  yawOutP(取负前)= -2678.8  cmd_yaw(取负后)= -2766.0  |  gyro.z(正=CCW/左转)=     1.4  rateDesired=   -12.0
+          yawOutI=   -88.1  yawOutD=    -0.0  |  yaw=   0.4  roll=  -0.4  pitch=   0.6
+t=   30585  m1=  9686  m2= 19602  m3= 11886  m4= 18826  |  yawOutP(取负前)= -3495.0  cmd_yaw(取负后)= -7469.0  |  gyro.z(正=CCW/左转)=     6.2  rateDesired=   -11.3
+          yawOutI=  -104.1  yawOutD=     0.0  |  yaw=   0.6  roll=  -0.4  pitch=   0.6
+t=   30635  m1=  9540  m2= 19414  m3= 11054  m4= 19992  |  yawOutP(取负前)= -4087.1  cmd_yaw(取负后)= -6720.0  |  gyro.z(正=CCW/左转)=     4.1  rateDesired=   -16.4
+          yawOutI=  -127.5  yawOutD=     0.0  |  yaw=   0.9  roll=  -0.4  pitch=   0.6
+t=   30685  m1=  8721  m2= 20445  m3= 10851  m4= 19983  |  yawOutP(取负前)= -4556.4  cmd_yaw(取负后)= -4038.0  |  gyro.z(正=CCW/左转)=     1.1  rateDesired=   -21.7
+          yawOutI=  -147.4  yawOutD=    -0.0  |  yaw=   1.0  roll=  -0.4  pitch=   0.6
+t=   30735  m1=  9342  m2= 19542  m3= 12102  m4= 19014  |  yawOutP(取负前)= -4133.5  cmd_yaw(取负后)= -4298.0  |  gyro.z(正=CCW/左转)=     1.5  rateDesired=   -19.1
+          yawOutI=  -164.9  yawOutD=     0.0  |  yaw=   1.0  roll=  -0.4  pitch=   0.6
+t=   30785  m1=  9189  m2= 20241  m3= 11237  m4= 19333  |  yawOutP(取负前)= -4095.0  cmd_yaw(取负后)= -4278.0  |  gyro.z(正=CCW/左转)=     0.4  rateDesired=   -20.1
+          yawOutI=  -183.2  yawOutD=     0.0  |  yaw=   1.1  roll=  -0.4  pitch=   0.6
+t=   30835  m1=  8423  m2= 20527  m3= 10929  m4= 20121  |  yawOutP(取负前)= -4584.2  cmd_yaw(取负后)= -4787.0  |  gyro.z(正=CCW/左转)=     1.4  rateDesired=   -21.4
+          yawOutI=  -203.2  yawOutD=     0.0  |  yaw=   1.1  roll=  -0.4  pitch=   0.6
+t=   30885  m1=  6985  m2= 21821  m3=  9755  m4= 21439  |  yawOutP(取负前)= -5099.6  cmd_yaw(取负后)= -6493.0  |  gyro.z(正=CCW/左转)=     2.2  rateDesired=   -23.2
+          yawOutI=  -225.3  yawOutD=     0.0  |  yaw=   1.2  roll=  -0.4  pitch=   0.6
+t=   30935  m1=  7101  m2= 21903  m3=  9303  m4= 21693  |  yawOutP(取负前)= -6380.5  cmd_yaw(取负后)= -6630.0  |  gyro.z(正=CCW/左转)=     1.7  rateDesired=   -30.2
+          yawOutI=  -249.7  yawOutD=    -0.0  |  yaw=   1.3  roll=  -0.4  pitch=   0.6
+t=   30985  m1=  7699  m2= 21121  m3= 10459  m4= 20721  |  yawOutP(取负前)= -6524.4  cmd_yaw(取负后)= -6798.0  |  gyro.z(正=CCW/左转)=     1.6  rateDesired=   -31.1
+          yawOutI=  -274.0  yawOutD=    -0.0  |  yaw=   1.4  roll=  -0.4  pitch=   0.6
+t=   31035  m1=  7377  m2= 21865  m3=  9603  m4= 21155  |  yawOutP(取负前)= -5622.2  cmd_yaw(取负后)= -5921.0  |  gyro.z(正=CCW/左转)=     0.9  rateDesired=   -27.3
+          yawOutI=  -299.1  yawOutD=     0.0  |  yaw=   1.4  roll=  -0.4  pitch=   0.6
+t=   31085  m1=  6608  m2= 22486  m3=  9026  m4= 21880  |  yawOutP(取负前)= -6185.3  cmd_yaw(取负后)= -6510.0  |  gyro.z(正=CCW/左转)=     2.2  rateDesired=   -28.7
+          yawOutI=  -325.3  yawOutD=     0.0  |  yaw=   1.5  roll=  -0.4  pitch=   0.6
+t=   31135  m1=  6162  m2= 22546  m3=  8358  m4= 22934  |  yawOutP(取负前)= -6828.7  cmd_yaw(取负后)= -9194.0  |  gyro.z(正=CCW/左转)=     3.2  rateDesired=   -30.9
+          yawOutI=  -354.7  yawOutD=     0.0  |  yaw=   1.6  roll=  -0.4  pitch=   0.6
+t=   31185  m1=  3267  m2= 25351  m3=  5357  m4= 26025  |  yawOutP(取负前)= -7352.7  cmd_yaw(取负后)= -9870.0  |  gyro.z(正=CCW/左转)=     3.4  rateDesired=   -33.6
+          yawOutI=  -387.3  yawOutD=     0.0  |  yaw=   1.8  roll=  -0.4  pitch=   0.6
+t=   31235  m1=  4939  m2= 23997  m3=  7291  m4= 23773  |  yawOutP(取负前)=-10262.0  cmd_yaw(取负后)=-10688.0  |  gyro.z(正=CCW/左转)=     3.4  rateDesired=   -47.8
+          yawOutI=  -426.0  yawOutD=    -0.0  |  yaw=   1.9  roll=  -0.4  pitch=   0.5
+t=   31285  m1=  3626  m2= 25546  m3=  5948  m4= 24880  |  yawOutP(取负前)= -8423.5  cmd_yaw(取负后)=-10412.0  |  gyro.z(正=CCW/左转)=     2.4  rateDesired=   -39.7
+          yawOutI=  -461.6  yawOutD=     0.0  |  yaw=   2.1  roll=  -0.4  pitch=   0.5
+t=   31335  m1=  3279  m2= 25633  m3=  5057  m4= 26031  |  yawOutP(取负前)= -9711.9  cmd_yaw(取负后)= -9215.0  |  gyro.z(正=CCW/左转)=     1.5  rateDesired=   -46.9
+          yawOutI=  -502.0  yawOutD=    -0.0  |  yaw=   2.2  roll=  -0.5  pitch=   0.5
+t=   31385  m1=  3437  m2= 25497  m3=  6059  m4= 25007  |  yawOutP(取负前)= -9083.9  cmd_yaw(取负后)= -9624.0  |  gyro.z(正=CCW/左转)=     2.3  rateDesired=   -43.2
+          yawOutI=  -540.8  yawOutD=     0.0  |  yaw=   2.2  roll=  -0.4  pitch=   0.5
+t=   31435  m1=  3205  m2= 25771  m3=  5365  m4= 25659  |  yawOutP(取负前)= -9669.2  cmd_yaw(取负后)=-10252.0  |  gyro.z(正=CCW/左转)=     2.7  rateDesired=   -45.7
+          yawOutI=  -583.0  yawOutD=     0.0  |  yaw=   2.3  roll=  -0.5  pitch=   0.5
+t=   31485  m1=   494  m2= 27904  m3=  3584  m4= 28018  |  yawOutP(取负前)=-10089.5  cmd_yaw(取负后)=-12236.0  |  gyro.z(正=CCW/左转)=     2.5  rateDesired=   -48.0
+          yawOutI=  -626.4  yawOutD=     0.0  |  yaw=   2.5  roll=  -0.5  pitch=   0.5
+t=   31535  m1=  1809  m2= 27331  m3=  4555  m4= 26305  |  yawOutP(取负前)=-12287.3  cmd_yaw(取负后)=-12961.0  |  gyro.z(正=CCW/左转)=     2.8  rateDesired=   -58.7
+          yawOutI=  -673.9  yawOutD=    -0.0  |  yaw=   2.6  roll=  -0.5  pitch=   0.5
+t=   31585  m1=   782  m2= 27676  m3=  3528  m4= 28014  |  yawOutP(取负前)=-11094.0  cmd_yaw(取负后)=-11818.0  |  gyro.z(正=CCW/左转)=     2.3  rateDesired=   -53.1
+          yawOutI=  -724.4  yawOutD=     0.0  |  yaw=   2.7  roll=  -0.5  pitch=   0.5
+t=   31635  m1=    71  m2= 28757  m3=  2751  m4= 28421  |  yawOutP(取负前)=-12070.4  cmd_yaw(取负后)=-12845.0  |  gyro.z(正=CCW/左转)=     4.5  rateDesired=   -56.0
+          yawOutI=  -775.3  yawOutD=     0.0  |  yaw=   2.9  roll=  -0.5  pitch=   0.5
+t=   31685  m1=     0  m2= 31701  m3=     0  m4= 31085  |  yawOutP(取负前)=-12757.6  cmd_yaw(取负后)=-13589.0  |  gyro.z(正=CCW/左转)=     3.9  rateDesired=   -59.9
+          yawOutI=  -831.8  yawOutD=     0.0  |  yaw=   3.1  roll=  -0.5  pitch=   0.5
+t=   31735  m1=     0  m2= 29848  m3=   882  m4= 30392  |  yawOutP(取负前)=-15500.1  cmd_yaw(取负后)=-16393.0  |  gyro.z(正=CCW/左转)=     3.3  rateDesired=   -74.1
+          yawOutI=  -893.7  yawOutD=    -0.0  |  yaw=   3.3  roll=  -0.5  pitch=   0.5
+请分析
+
+修复验证通过——方向已经反过来了，这次是正确的负反馈。
+
+  读数据
+
+  - cmd_yaw(取负后) 现在和 yawOutP(取负前) 同号了（比如最后一行 yawOutP=-15500.1，cmd_yaw=-16393.0，差值
+    -892.9 ≈ yawOutI=-893.7，正好对得上 cmd_yaw =
+    outP+outI+outD，说明第116行那次取负确实已经去掉，没有别的地方还在偷偷翻转）。
+  - 你持续往 CCW 转（gyro.z 从 0 涨到 4.5，yaw 从 0.1 涨到 3.3），这次
+    m1、m3（顺时针电机）转速持续降低（13506→0），m2、m4
+    持续升高（15026/15672→~30000+）——顺时针电机转速降低会减少它们贡献的 CCW
+    反作用力矩，逆时针电机升高会增加 CW 反作用力矩，两者叠加是在往 CW 方向拉，正好是在对抗你手上的 CCW
+    干扰，跟修复前的行为完全反过来了。
+
+  关于 m1/m3 最后砸到 0
+
+  这不是新问题，是同一个"夹具固定住转不动"的老现象（t4b 文件头注释、上次分析里都提过）：机身被你用手一直往
+  一个方向转、又没法真的转回去，误差就一直存在，rateDesired/outI 只会越垛越高，直到某个电机被压到地板（0）
+  或顶到天花板。方向已经对了，只是台架本身不让"纠正"真正生效。最后一行 yawOutP=-15500.1 已经超过脚本里
+  YAW_RATE_OUTP_ABORT_THRESHOLD=15000，应该已经（或即将）触发自动保护归零——这个跟设计意图一致，说明保护机制
+  也在正常工作。
+
+  结论：yaw 反向 bug 确认修复。 剩下两件事：
+  1. 找个不夹死的场景（手持轻放、或谨慎的实际试飞）验证真正自由状态下 yaw 能不能收敛回去，而不是只看方向。
+  2. 上次说的 t4c_rpy_step_response_check.py 里两条 yaw "expect"
+     字符串还是按旧（错误）混控假设写的，要不要我现在改掉？
+	 
+	 改完了，语法检查通过。
+
+  修改内容：
+  - python/t4c_rpy_step_response_check.py:82-91 的注释加了一段说明，指出 yaw 的 expect 已按修复后（去掉
+    control->yaw = -control->yaw）的方向改过，依据是 t4e_yaw_response_check.py 的实测。
+  - YAW +25deg/s 的 expect 从"m1,m3 变大；m2,m4 变小"改成"m1,m3 变小；m2,m4 变大"。
+  - YAW -25deg/s 的 expect 从"m1,m3 变小；m2,m4 变大"改成"m1,m3 变大；m2,m4 变小"。
+
+  roll/pitch 那四条没动，因为这次改动只影响 control->yaw，不影响 control->roll/control->pitch。
+	 
