@@ -144,6 +144,9 @@ static struct this_s this = {
   #ifdef CONFIG_TARGET_ESP32_S2_DRONE_V1_2
   .thrustBase = 42000,
   .thrustMin  = 8000,
+  #elif defined(CONFIG_TARGET_PYDRONE_S3)
+  .thrustBase = 34000,
+  .thrustMin  = 8000,
   #else
   .thrustBase = 36000,
   .thrustMin  = 20000,

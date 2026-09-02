@@ -1,0 +1,4 @@
+1.CONFIG_SENSORS_ENABLE_DECK=n使用互补滤波器，能够平稳飞起了
+2.开启CONFIG_SENSORS_ENABLE_DECK=y会使用ekf，请分析姿态解算和控制方向是否正确？
+3.ekf的输入传感器数据有哪些，如何验证一下数据是否都正确？
+4.参考python目录下脚本，自动控制四轴悬停50cm高 1s后降落？
