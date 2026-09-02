@@ -72,8 +72,9 @@ def main():
         print("  3. 缓慢抬高整机：baro.asl 应单调增大")
         print("  4. 手掌从远到近伸到机身下方：range.zrange 应单调减小到几十 mm 量级")
         print("  5. 手托机身做水平平移：motion.deltaX/deltaY 应有脉冲，方向要和平移方向对应")
-        print("     （如果反了，是光流贴装朝向问题，flowdeck_v1v2.c 已做过一次 -deltaX/-deltaY，")
-        print("      不要在这里再加一次翻转，先去核对贴装方向）\n")
+        print("     （这是翻转前的原始值，光流贴装方向已用 t4g_flow_mount_check.py 实测校准过，")
+        print("      当前 flowdeck_v1v2.c 是 dpixelx=deltaY, dpixely=deltaX，若怀疑不对，")
+        print("      去跑 t4g 重新核对，不要凭这里的原始值直接改那两行）\n")
 
         try:
             while True:

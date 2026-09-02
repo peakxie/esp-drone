@@ -94,10 +94,16 @@ static void flowdeckTask(void *param)
 
         pmw3901ReadMotion(NCS_PIN, &currentMotion);
 
-        // Flip motion information to comply with sensor mounting
-        // (might need to be changed if mounted differently)
-        int16_t accpx = -currentMotion.deltaY;
-        int16_t accpy = -currentMotion.deltaX;
+        // Swap X/Y to comply with sensor mounting (axes rotated 90deg vs body frame).
+        // No extra negation here: t4g_flow_mount_check.py measured stateEstimate.vx/vy
+        // against known real-world pushes (body FLU frame) on this board twice and both
+        // axes came back sign-inverted relative to the upstream -deltaY/-deltaX formula
+        // (e.g. pushing backward, i.e. real -X, gave positive stateEstimate.vx both times;
+        // pushing left, i.e. real +Y, gave negative stateEstimate.vy both times) -- a 180deg
+        // mounting offset from what that formula assumes. Axis pairing (which raw channel
+        // drives which EKF state) matched the upstream swap both times, only the sign didn't.
+        int16_t accpx = currentMotion.deltaY;
+        int16_t accpy = currentMotion.deltaX;
 
         // Outlier removal
         if (abs(accpx) < OULIER_LIMIT && abs(accpy) < OULIER_LIMIT) {
