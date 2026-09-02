@@ -2,3 +2,370 @@
 2.开启CONFIG_SENSORS_ENABLE_DECK=y会使用ekf，请分析姿态解算和控制方向是否正确？
 3.ekf的输入传感器数据有哪些，如何验证一下数据是否都正确？
 4.参考python目录下脚本，自动控制四轴悬停50cm高 1s后降落？
+5.用中文回复
+
+Now let me summarize the findings for all four questions.
+
+  1. CONFIG_SENSORS_ENABLE_DECK=n → complementary filter, flies smoothly
+
+  Confirmed by the code path: with the deck disabled, flowdeck2Test() never runs, so
+  setCommandermode(POSHOLD_MODE) is never called, requiredEstimator stays anyEstimator, and estimator.c
+  falls back to DEFAULT_ESTIMATOR = complementaryEstimator. Matches your observation.
+
+  2. With the deck enabled, is the EKF's attitude/control direction correct?
+
+  Yes. Traced how CONFIG_SENSORS_ENABLE_DECK=y actually switches estimators, since the "obvious" path is
+  dead code:
+  - In system.c, deckInit()/deckGetRequiredEstimator() are commented out — the estimator passed to
+    stabilizerInit() is always anyEstimator.
+  - The real trigger is in sensors_mpu6050_hm5883L_ms5611.c:635: when the PMW3901 flow sensor is detected,
+    it calls setCommandermode(POSHOLD_MODE) → registerRequiredEstimator(kalmanEstimator). Since
+    sensorsInit() runs before stateEstimatorInit() inside stabilizerInit(), this registration lands in time
+    to make the very first estimator selection Kalman.
+
+  Checked whether the EKF's sign/frame conventions match the complementary filter and the controller that
+  consumes them:
+  - kalman_core.c's kalmanCoreExternalizeState() applies pitch = -pitch with the comment "adjusted for the
+    legacy CF2 body coordinate system" — the same adjustment as sensfusion6.c's //Pitch seems to be
+    inverted. Roll/yaw are unadjusted in both. attitudeQuaternion is raw/unadjusted in both. So
+    state.attitude.{roll,pitch,yaw} has identical sign convention regardless of which estimator is active —
+    the attitude/rate PID and cflib's own pitch-negation compensation don't need to know which estimator
+    is running.
+  - Both estimators consume the same sensorData->gyro/acc from the shared HAL, so any board-mounting
+    corrections apply equally to both.
+  - The control-direction bugs found previously (CONFIG_PITCH_DISTRIBUTION_INVERTED mixer bug, and the
+    control->yaw = -control->yaw positive-feedback bug your t4e_yaw_response_check.py tracked down) live in
+    the mixer/rate-PID layer, which is estimator-agnostic — both fixes are already in place in current
+    code and apply the same whether complementary or Kalman is feeding the loop.
+
+  The only real caveat (already correctly handled by your own t4b/t4c/t4d/t4e scripts): on a static test
+  rig, Kalman's position/flow corrections have nothing real to correct against, so its quaternion is
+  untrustworthy in that specific no-motion scenario — that's a bench-test limitation, not a direction bug,
+  which is why those scripts force-switch to complementary before running.
+
+  3. EKF sensor inputs, and how to verify them
+
+  From estimator_kalman.c / kalman_core.c, actually fused (this hardware, current build):
+
+  ┌──────────────────────────┬─────────────────────┬────────────────────────────────┐
+  │          Input           │       Source        │            Used for            │
+  ├──────────────────────────┼─────────────────────┼────────────────────────────────┤
+  │ Gyro (deg/s)             │ MPU6050             │ attitude propagation (predict) │
+  ├──────────────────────────┼─────────────────────┼────────────────────────────────┤
+  │ Accel (g)                │ MPU6050             │ velocity propagation (predict) │
+  ├──────────────────────────┼─────────────────────┼────────────────────────────────┤
+  │ ToF range                │ VL53L1X (zRanger2)  │ height correction              │
+  ├──────────────────────────┼─────────────────────┼────────────────────────────────┤
+  │ Optical flow (dpixelx/y) │ PMW3901 (flowdeck2) │ horizontal velocity correction │
+  └──────────────────────────┴─────────────────────┴────────────────────────────────┘
+
+  Not fused, despite being read/logged: barometer (useBaroUpdate=false — KALMAN_USE_BARO_UPDATE is
+  commented out) and magnetometer (neither estimator ever calls estimatorEnqueueYawError/uses mag.* for
+  attitude — only the unused lighthouse module does). External position/pose/TDOA inputs are also dead
+  paths on this hardware.
+
+  How to verify each, with concrete log/param names:
+  - IMU: python/t4_sensor_readings_check.py pattern — level → acc.z≈1g, acc.x/y≈0; rotate one axis → only
+    that gyro.* moves.
+  - ToF: range.zrange (mm) should track hand distance under the sensor; cross-check against stateEstimate.z
+    (m) when the drone is level.
+  - Flow: motion.deltaX/deltaY, motion.squal (surface quality), motion.outlierCount; also
+    kalman_pred.predNX/predNY vs kalman_pred.measNX/measNY — these should track each other closely during
+    real motion; persistent mismatch means height or flow scaling is off.
+  - Filter health: stabilizer.estimator param should read 2; kalman.varX/varY/varZ (covariance) should
+    shrink and stay bounded, not diverge; kalman.rtUpdate/rtPred rate counters confirm the task isn't
+    stalling; kalman.rtBaro should stay ~0 (confirms baro really isn't fused).
+
+  4. Autonomous hover-and-land script
+
+  Added python/t5_hover_land.py, following your t4* scripts' conventions (config.py connection helper,
+  watchdog patterns). It uses cf.commander.send_hover_setpoint(vx, vy, yawrate, zdistance), which maps
+  directly to the firmware's hoverType packet (crtp_commander_generic.c) — this is exactly the control path
+  that POSHOLD_MODE/EKF is meant to serve, so it's a natural fit for your current deck-enabled config.
+
+  Flow: pre-flight check that range.zrange gives a sane reading (won't arm blind), ramp height 0.03m→0.5m
+  over 2s, hold 0.5m for 1s, ramp down to 0 over 2s, then send stop. Runs a log-staleness + hard time-limit
+  watchdog throughout, and Ctrl+C or a watchdog trip triggers a fast controlled descent from the current
+  commanded height rather than an instant motor cut.
+
+  This is unverified against real hardware (cflib isn't installed here, and I don't have a drone to test
+  against) — please do a first run with propeller guards / clear space and someone ready to cut power, same
+  as your other first-flight-style tests.
+
+✻ Cooked for 11m 43s · done 18:59
+
+用中文回复                                                                                               
+
+  Thought for 38s (ctrl+o to expand)
+
+● 1. CONFIG_SENSORS_ENABLE_DECK=n → 使用互补滤波器，能平稳飞起
+
+  代码路径印证了这一点：deck 关闭时，flowdeck2Test() 根本不会运行，setCommandermode(POSHOLD_MODE)
+  也不会被调用，requiredEstimator 会一直是 anyEstimator，estimator.c 里最终回退到 DEFAULT_ESTIMATOR = 
+  complementaryEstimator。跟你观察到的现象一致。
+
+  2. 开启 deck 后用 EKF，姿态解算和控制方向是否正确？
+
+  是正确的。 先弄清楚 CONFIG_SENSORS_ENABLE_DECK=y 到底是怎么切到 EKF
+  的，因为"看起来应该负责这件事"的那条路径其实是死代码：
+  - system.c 里 deckInit()/deckGetRequiredEstimator() 都被注释掉了，传给 stabilizerInit() 的 estimator
+    参数永远是 anyEstimator。
+  - 真正起作用的是 sensors_mpu6050_hm5883L_ms5611.c:635：检测到 PMW3901 光流传感器在线时，会调用
+    setCommandermode(POSHOLD_MODE) → registerRequiredEstimator(kalmanEstimator)。由于 stabilizerInit() 内部
+    sensorsInit() 是在 stateEstimatorInit()
+    之前执行的，这次注册刚好能在第一次选估计器时就生效，让开机就直接进入 Kalman。
+
+  然后核对了 EKF 的符号/坐标系约定是否跟互补滤波器、以及消费这些状态的控制器保持一致：
+  - kalman_core.c 的 kalmanCoreExternalizeState() 对 pitch 做了 pitch = -pitch，注释写的是"adjusted for the
+    legacy CF2 body coordinate system"——这跟 sensfusion6.c 里那行 //Pitch seems to be inverted
+    的翻转完全一样。roll/yaw 两边都没有额外翻转。attitudeQuaternion
+    在两个估计器里也都是"原始、未调整"的。也就是说不管当前是哪个估计器在跑，state.attitude.{roll,pitch,yaw}
+    的符号约定是一致的——姿态/角速度 PID，以及 cflib 那边对 pitch
+    的取负补偿，都不需要关心到底是哪个估计器在工作。
+  - 两个估计器读的是同一份
+    sensorData->gyro/acc（同一套硬件抽象层输出），所以任何板载安装方向的修正对两者是共享的、同等生效的。
+  - 之前实测揪出来的两个控制方向 bug——CONFIG_PITCH_DISTRIBUTION_INVERTED 混控配置错误，以及
+    t4e_yaw_response_check.py 坐实的 control->yaw = -control->yaw 正反馈问题——都在混控/角速度环这一层，跟估
+    计器无关；这两处修复目前都已经在代码里生效了，不管上游是互补滤波器还是 Kalman
+    给出的姿态/角速度误差，走到这一层结论都一样。
+
+  唯一真正跟估计器相关的注意点（你自己的 t4b/t4c/t4d/t4e
+  脚本已经处理得很到位）：在固定支架的台架测试场景下，Kalman
+  的位置/光流修正没有真实的平移运动可以拿来纠正，所以那种场景下它的四元数不可信——这是台架测试方法论上的局限
+  ，不是方向错误，所以那些脚本会在测试前强制切回互补滤波器。
+
+  3. EKF 的输入传感器有哪些，怎么验证数据对不对
+
+  翻了 estimator_kalman.c / kalman_core.c，当前这套硬件/编译配置下实际参与融合的是：
+
+  ┌───────────────────┬──────────────────────┬─────────────────────┐
+  │       输入        │         来源         │        用途         │
+  ├───────────────────┼──────────────────────┼─────────────────────┤
+  │ 陀螺仪（deg/s）   │ MPU6050              │ 姿态预测（predict） │
+  ├───────────────────┼──────────────────────┼─────────────────────┤
+  │ 加速度计（g）     │ MPU6050              │ 速度预测（predict） │
+  ├───────────────────┼──────────────────────┼─────────────────────┤
+  │ ToF 测距          │ VL53L1X（zRanger2）  │ 高度修正            │
+  ├───────────────────┼──────────────────────┼─────────────────────┤
+  │ 光流（dpixelx/y） │ PMW3901（flowdeck2） │ 水平速度修正        │
+  └───────────────────┴──────────────────────┴─────────────────────┘
+
+  没有参与融合，尽管硬件在读、数据也在打日志：气压计（useBaroUpdate=false，KALMAN_USE_BARO_UPDATE
+  宏被注释掉了）、磁力计（两个估计器都没有调用 estimatorEnqueueYawError 或用 mag.* 做姿态修正，只有没用到的
+  lighthouse 模块会调这个接口）。外部 position/pose/TDOA 输入在这块板子上也是死路径。
+
+  具体怎么验证，给出确切的 log/param 名字：
+  - IMU：沿用 python/t4_sensor_readings_check.py 的套路——水平放置时
+    acc.z≈1g、acc.x/y≈0；绕某一轴转动时应该只有对应的 gyro.* 有明显变化。
+  - ToF：range.zrange（mm）应随手掌到传感器的距离单调变化；机身水平时可以拿它跟
+    stateEstimate.z（m）互相印证。
+  - 光流：motion.deltaX/deltaY、motion.squal（表面纹理质量）、motion.outlierCount；另外
+    kalman_pred.predNX/predNY 跟 kalman_pred.measNX/measNY
+    在真实运动时应该基本对得上，长期偏离说明高度或光流标定有问题。
+  - 滤波器健康度：stabilizer.estimator 这个 param 应该读到
+    2；kalman.varX/varY/varZ（协方差）应该收敛并保持在合理范围，不应该发散；kalman.rtUpdate/rtPred
+    这两个速率计数器可以确认任务没有卡死；kalman.rtBaro 应该一直接近 0（印证气压确实没被融合）。
+
+  4. 自动悬停降落脚本
+
+  已新增 python/t5_hover_land.py，延续你 t4* 系列脚本的写法风格（config.py
+  的连接辅助函数、看门狗模式等）。用的是 cf.commander.send_hover_setpoint(vx, vy, yawrate,
+  zdistance)，对应固件 crtp_commander_generic.c 里的 hoverType 数据包——这正是 POSHOLD_MODE/EKF
+  那条链路设计出来要服务的控制方式，跟你现在 deck 已开启的配置正好对上。
+
+  流程：起飞前先检查 range.zrange 读数是否在合理范围（不会盲目起飞）→ 高度从 0.03m 斜坡爬升到 0.5m（2s）→
+  定高悬停 1s → 斜坡降到 0（2s）→ 发送停桨。全程跑一个日志新鲜度 + 硬性时长上限的看门狗，Ctrl+C
+  或看门狗触发时，会从当前指令高度做一次快速但连续的下降，而不是瞬间断电自由落体。
+
+  这个脚本没在真实硬件上跑过（这里没装 cflib，也没有实体飞机可测）——首次试飞请按你其他"第一次"类测试的惯例
+  ：装桨叶保护罩、留足净空、旁边有人随时准备断电。
+  
+  先实现一个脚本测量光流和高度传感器数据，注意光流方向
+  
+  已新增 python/t4f_flow_range_check.py，纯读日志、不碰电机/commander，零风险，手持即可测。
+
+  关键设计点：
+
+  1. 区分"原始光流值"和"喂给 EKF 的光流值"——motion.deltaX/deltaY 日志读到的是 PMW3901
+     翻转前的原始寄存器值；固件在 flowdeck_v1v2.c 里会先做 dpixelx=-deltaY, dpixely=-deltaX 再送进
+     kalmanCoreUpdateWithFlow。这次翻转只发生在局部变量里，日志看不到。脚本把这两个值分开打印（raw vs
+     ekf），避免"看原始值顺眼就以为喂给 EKF 的方向也对"——这是 t4b/t4e
+     系列已经踩过的坑（拿代码推导去验证代码自己）。
+  2. 按时间窗累加，不看瞬时值——慢速移动时光流瞬时读数噪声很大，脚本每 1s（ACCUM_WINDOW_S）把
+     dpixelx/dpixely 累加求和再打印。操作手法是"静止一个窗口 → 朝一个方向连续推动 1~2 个窗口 →
+     静止"，看哪个窗口累加值明显偏向某个符号，比瞬时值可靠。累加只统计 motion.motion==0xB0
+     的有效帧，跟固件真正推给 EKF 时的判定条件完全一致。
+  3. 测距方向——同时打印 range.zrange 和 stateEstimate.z，抬高应变大、靠近地面应变小，两者应能互相印证。
+  4. 交叉验证——若 stabilizer.estimator==2（kalman），额外打印 stateEstimate.x/y
+     相对起点的累计偏移，可以拿光流推动方向和最终位置估计漂移方向再对一遍；不是 kalman
+     时会提示这部分数字没有参考意义。
+
+  语法检查已通过（py_compile），但没有实机/cflib
+  环境可以跑，请你实际连接飞机测一遍再看结果。等这个脚本确认光流和测距方向都对了，再跑 t5_hover_land.py
+  会更稳妥。
+  
+  
+
+  
+  
+  python/t4f_flow_range_check.pyz测量正确，光流分不太清是否正确。直接跑t5_hover_land.py，会朝左边偏。当前  
+  stabilizer.estimator = 2 (kalman)                                                                        
+  起飞前地面测距 = 26mm，遥测正常，开始起飞。                                                              
+  阶段1/3：起飞爬升到 0.50m（2.0s）...                                                                     
+  阶段2/3：定高悬停 1.0s（当前 stateEstimate.z=0.18100528419017792）...                                    
+  阶段3/3：降落到地面（2.0s）...                                                                           
+  停桨。                                                                                                   
+  飞行结束。 
+  
+  三个文件都语法检查通过。现在说明诊断思路和接下来该跑什么。
+
+  关于"阶段2打印 z=0.181m"
+
+  这只是打印时刻恰好读到的一帧瞬时值，不代表爬升失败——但确实看不出爬升曲线是否正常追到了 0.5m。已经把
+  t5_hover_land.py 升级为全程每 0.3s 打印一次 target_h / z / x(drift) / 
+  y(drift)，下次跑能看到完整轨迹，而不是一个孤立数字。
+
+  关于"一直往左偏"
+
+  这个现象很值得重视，而且很可能不是光流方向测不准这么简单，而是能直接从代码结构推出一个明确的排查方向：
+
+  看了 controller_pid.c 才发现，send_hover_setpoint
+  这条路径的水平控制完全依赖光流融合出的速度估计——positionController()/velocityController() 会拿 EKF 的
+  state->velocity（光流喂出来的）去闭环纠正
+  roll/pitch，中间没有绝对位置反馈，纯靠"感觉自己在动就纠正"。如果光流的轴向/符号有问题，EKF
+  会在飞机明明静止时"觉得"自己在往某个方向漂，控制器就会持续输出一个纠正指令——而这个纠正方向恰好错了的话，
+  就会变成正反馈，表现正是"一直朝固定方向偏"，跟随机抖动完全不同。这跟你之前 t4e 抓到的 yaw
+  正反馈是同一类问题，只是这次可能藏在光流这一环。
+
+  所以我先做了一件能直接验证这个猜测的事，不用等光流方向彻底测清楚：新增 t5b_zdistance_hold.py，用
+  send_zdistance_setpoint（对应固件 zDistanceType）代替 send_hover_setpoint。读 controller_pid.c 第 84~90
+  行确认了：这个包只给 mode.z=modeAbs（定高闭环照常）,mode.roll/pitch 直接设成 0，从不碰
+  mode.x/mode.y（保持默认 modeDisable=0）——而固件里只要 mode.x 或 mode.y 是 modeDisable，光流闭环算出来的
+  roll/pitch 会被直接丢弃，改用你发的 0。也就是说这个脚本给出的是定高照常、水平完全开环配平的对照实验。
+
+  建议下一步：先跑 t5b_zdistance_hold.py（同样的起飞-悬停-降落节奏，但水平不吃光流闭环）：
+  - 如果这次基本不漂（或漂移明显更小/方向不固定）→ 证实是光流闭环的符号问题，回头去查 flowdeck_v1v2.c 里
+    dpixelx=-deltaY, dpixely=-deltaX 这次翻转是否符合你这块板 PMW3901 的真实贴装方向。
+  - 如果依然稳定往左漂、漂移速率跟原来差不多 → 说明跟光流没关系，是配平/机械不对称（PITCH_CALIB/ROLL_CALIB
+    或桨叶/电机不对称），去查光流没用。
+
+  另外新增了 t4g_flow_mount_check.py，用交互式"回车开始一段、做一个动作、回车结束"的打点方式替代 t4f
+  连续刷屏（这正是你说"分不太清"的原因——数据和动作对不上号）。它只看翻转前的原始
+  motion.deltaX/deltaY，建议贴着有纹理的桌面滑动而不是徒手悬空（悬空手抖会带入旋转，污染平移信号），同一方
+  向正反各做一次互相印证。测出来的真实物理方向，再去对 flowdeck_v1v2.c 那两行翻转对不对。
+
+  我建议顺序：先跑 t5b_zdistance_hold.py 定位问题范围，再用 t4g_flow_mount_check.py
+  把光流方向坐实，视结果决定是否要改 flowdeck_v1v2.c。
+
+✻ Cogitated for 6m 9s · done 19:51
+
+label               deltaX累加    deltaY累加   valid invalid
+yzheng                    30        -241     178     146
+---朝后的时候测量结果
+label               deltaX累加    deltaY累加   valid invalid
+xfu                      138          36     102     122
+---朝做的时候测量结果
+
+是否是  dpixelx=-deltaY, dpixely=-deltaX不需要反向？
+
+看数据发现一个问题，还不能直接下结论——两组测量的主导轴变了，这跟你脚本设计的"同方向正反两次应该互相印证"
+  的前提不符，我先说清楚为什么，再告诉你怎么补测。
+
+  先把当前代码的翻转套到你的数据上
+
+  代码里 dpixelx = -deltaY，dpixely = -deltaX（这两个才是喂给 EKF 的值）：
+
+  ┌──────────────────────┬─────────────┬─────────────┬─────────────────────┬─────────────────────┐
+  │         标签         │ 原始 deltaX │ 原始 deltaY │ → dpixelx(=-deltaY) │ → dpixely(=-deltaX) │
+  ├──────────────────────┼─────────────┼─────────────┼─────────────────────┼─────────────────────┤
+  │ yzheng（备注：朝后） │ 30          │ -241        │ +241                │ -30                 │
+  ├──────────────────────┼─────────────┼─────────────┼─────────────────────┼─────────────────────┤
+  │ xfu（备注：朝做）    │ 138         │ 36          │ -36                 │ -138                │
+  └──────────────────────┴─────────────┴─────────────┴─────────────────────┴─────────────────────┘
+
+  问题在哪
+
+  如果"朝后"和"朝做"真的是沿同一条直线的一来一回（比如朝前推一次、朝后拉一次），那原始 deltaX/deltaY 里占主
+  导的应该是同一个分量，只是符号相反——因为物理上就是同一根轴的正反运动，传感器测的应该是同一个通道在变化。
+
+  但你这两组数据里：
+  - "朝后" 那组，占主导的是 deltaY（-241，deltaX 只有 30，接近噪声）；
+  - "朝做" 那组，占主导的是 deltaX（138，deltaY 只有 36，接近噪声）。
+
+  主导轴换了，不是同一个分量符号相反，说明这两次动作不是沿同一条线的正反运动——可能是：
+  1. "朝做" 是个笔误，本来想打的方向和"朝后"不是一对（比如其实是往左/往右推，不是往前推）；
+  2. 或者其中一次动作混入了转动/高度变化，把信号污染到另一个轴上了（这正是脚本注释里提醒过的情况）。
+
+  在这种状态下我不能给你一个可靠的"要不要反向"的结论——万一猜错方向去改
+  flowdeck_v1v2.c，可能会把现在的左偏问题变得更糟，而不是修好。
+
+  建议怎么补测
+
+  麻烦确认一下：
+  1. "朝做"是不是想打"朝前"？（前后是一对，还是你其实测的是左右？）
+  2. 用 t4g_flow_mount_check.py 再做一轮，这次严格保证是同一条直线上的正反两次：比如"朝前推
+     30cm"和"朝后拉回 30cm（原路退回）"，标签就叫 forward/backward；然后单独再测一对
+     left/right。四段做完给我看结果。
+
+  判断标准很简单：forward 和 backward 里，占主导的应该是同一个原始分量（要么一直是 deltaX
+  占主导，要么一直是 deltaY 占主导），且两次的数值符号相反。left/right
+  同理。只要拿到这样一组干净的数据，我就能直接告诉你 dpixelx=-deltaY, dpixely=-deltaX
+  这两行该不该改、怎么改，不用再猜。
+
+✻ Baked for 1m 41s · done 20:26
+
+❯ "朝做" 是指朝左                                                                                          
+
+  Thought for 1m 48s (ctrl+o to expand)
+
+● 谢谢确认。"朝做"=朝左 之后，重新对一下：
+
+  重新核对轴对应关系
+
+  ┌────────┬────────────────┬────────────┬────────────┬────────────────────────┬────────────────────────┐
+  │  标签  │ 备注(真实动作) │ 原始deltaX │ 原始deltaY │        换算后          │        换算后          │
+  │        │                │            │            │   dpixelx(=-deltaY)    │   dpixely(=-deltaX)    │
+  ├────────┼────────────────┼────────────┼────────────┼────────────────────────┼────────────────────────┤
+  │ yzheng │ 朝后           │ 30         │ -241       │ +241                   │ -30                    │
+  ├────────┼────────────────┼────────────┼────────────┼────────────────────────┼────────────────────────┤
+  │ xfu    │ 朝左           │ 138        │ 36         │ -36                    │ -138                   │
+  └────────┴────────────────┴────────────┴────────────┴────────────────────────┴────────────────────────┘
+
+  好消息：这次不矛盾了。"朝后"这组换算后主导分量落在
+  dpixelx（前后轴对应的通道），"朝左"这组换算后主导分量落在
+  dpixely（左右轴对应的通道）——轴的配对关系是对的，没有 X/Y 轴搞反（也就是没有 90°
+  装反的问题）。这排除了一整类错误。
+
+  但符号还不能下结论——而且我不该继续靠手算符号往下推
+
+  现在剩下的问题是"朝后 → dpixelx=+241"这个符号对不对，但要判断这个符号"对不对"，还得知道固件里"body X
+  正方向"到底对应哪个物理朝向，这要经过 pitch 换算、legacy 坐标系翻转好几层。继续手推这条链路，正好会踩你们
+  团队一直在小心避开的坑——"拿代码推导去验证代码自己，等于没验证"。
+
+  有个更直接、不需要手算的办法：EKF 算出来的机体速度 stateEstimate.vx/vy 
+  本身就是有日志的，而且这正是喂给位置控制器 PID 的原始输入（position_controller_pid.c 里直接用
+  state->velocity.x/y）。不用我们手动套公式，直接推一下飞机、看 stateEstimate.vx/vy
+  报出来的方向和大小是不是跟真实动作对得上，这是最终结果的直接验证，比继续在 dpixelx/dpixely
+  上手算可靠得多。
+
+  我已经把 t4g_flow_mount_check.py 加了这部分：每一段标记期间会额外记录 stateEstimate.vx/vy
+  的峰值（带符号），跟原始 deltaX/deltaY 累加值一起打印。
+  
+  脚本已更新（并修复了一个小 bug：show_vel 在异常提前发生时可能未定义就被 finally 引用，现在会在进入 try
+  前先给默认值）。
+
+  再补充一个比"推一下看方向"更简单、也更直接对应你观察到的"一直往左偏"这个现象的检查，建议先做这个：
+
+  静止悬空测试：把飞机稳稳托在纹理丰富的桌面上方几厘米，完全不要移动，观察 stateEstimate.vx/vy
+  有没有长期偏向某个固定符号（而不是在 0
+  附近正负噪声）。这个跟"前进方向到底是不是反的"这种符号定义问题无关——只要真正静止时 EKF
+  却一直觉得自己在往某个方向漂，就直接证实了问题出在光流这条链路上（不管最终是装反了还是某个符号错了），而
+  且这个偏向的方向应该正好能对上你飞行时观察到的"往左偏"。
+
+  然后再做 forward/backward、left/right 的推动测试，看 vx/vy
+  峰值的符号是否随方向切换而稳定翻转（而不是看数值对不对——我们没有独立的"正方向就该是哪边"的基准，能确认的
+  是"翻转是否一致、以及静止时是否有虚假速度"这两件事，这两件事已经足够定位问题）。
+
+  拿到这几组数据（尤其是静止悬空那组）发我看看，我再帮你判断要不要动 flowdeck_v1v2.c。
+  
+  claude --resume 09ad82f5-d01e-487a-b75a-9f7f85ef1f1f
