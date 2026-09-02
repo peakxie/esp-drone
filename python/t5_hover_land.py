@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+# T5：第一次真正离地的自动化测试——起飞爬升到 50cm，定高悬停 1s，然后自动降落。
+#
+# 和 t4* 系列的区别：t4b/t4c/t4d/t4e 全部是"桨叶已拆、机身固定在支架上"的台架测试，
+# 从来没有真正离地飞行过。这个脚本是第一次真正起飞，所以：
+#   1. 用官方高层 setpoint（send_hover_setpoint，对应固件 crtp_commander_generic.c 里的
+#      hoverType：body 坐标系 vx/vy + 世界坐标系绝对高度 zDistance），把爬升/悬停/下降的
+#      速度和高度环全部交给固件的 position_controller_pid.c 闭环处理，脚本只管给"目标值"，
+#      不直接发姿态/推力（跟 t4b/t4c 反过来）。
+#   2. 定高悬停依赖 range.zrange（VL53L1X）喂给状态估计器；需要 CONFIG_SENSORS_ENABLE_DECK=y
+#      让光流/测距 deck 生效——光流一在线，sensors_mpu6050_hm5883L_ms5611.c 里
+#      flowdeck2Test()==true 会自动调用 setCommandermode(POSHOLD_MODE)，把估计器切到
+#      kalman（见 estimator.c 的 registerRequiredEstimator）。如果没检测到光流 deck，
+#      下面会打印警告但仍然尝试起飞——此时只有测距/气压的定高，没有水平位置修正，
+#      不能指望它能稳稳停在原地不漂。
+#   3. 起飞前必须先确认 range.zrange 有正常读数（几十~几百 mm 量级），否则说明测距没连上，
+#      绝不能盲目起飞——没有可靠高度反馈的"起飞"等于盲降油门，是最容易炸机的场景。
+#
+# 安全约定（延续 t4c/t4e）：
+#   - 全程以 SEND_PERIOD 周期性发送 setpoint，避免 commander watchdog（COMMANDER_WDT_TIMEOUT_*）
+#     超时进入 fallback。
+#   - 用高度日志做"链路存活"看门狗：超过 LOG_STALE_TIMEOUT_S 没收到新帧，立即认为链路/主控
+#     异常，跳过剩余阶段直接执行紧急下降。
+#   - Ctrl+C 不会瞬间切电机——会从当前高度做一次快速但连续的下降斜坡再停桨，避免半空自由落体。
+#   - 全程有一个 MAX_FLIGHT_TIME_S 硬上限，超时无条件进入紧急下降，防止任何逻辑错误导致
+#     "悬停指令一直发、飞机一直不降落"。
+#
+# 首次测试建议：室内、地面平整、四周留够 1m 净空、旁边有人随时准备断电，禁螺旋桨保护罩可选但推荐。
+
+import time
+
+import cflib.crtp
+from cflib.crazyflie import Crazyflie
+from cflib.crazyflie.log import LogConfig
+
+from config import URI, connect_with_timeout
+
+ESTIMATOR_NAMES = {0: "any", 1: "complementary", 2: "kalman"}
+
+TARGET_HEIGHT_M = 0.50     # 目标悬停高度
+LIFTOFF_HEIGHT_M = 0.03    # 起飞斜坡的起点目标高度，避免第一帧就是 0（等同于"还没起飞"）
+LAND_HEIGHT_M = 0.0        # 降落斜坡的终点目标高度
+
+TAKEOFF_TIME_S = 2.0       # 0.03m -> 0.50m 爬升斜坡时长
+HOVER_TIME_S = 1.0         # 到达目标高度后悬停时长（题目要求：1s）
+LAND_TIME_S = 2.0          # 0.50m -> 0m 下降斜坡时长
+TOUCHDOWN_SETTLE_S = 0.5   # 下降斜坡到 0 之后，贴地停留确认再停桨的时长
+
+SEND_PERIOD = 0.05         # 20Hz 发送 hover setpoint，同 t4c/t4e
+EMERGENCY_LAND_TIME_S = 1.0    # Ctrl+C/看门狗触发时，从当前高度紧急下降到 0 的时长（比正常降落更快）
+
+LOG_WAIT_TIMEOUT_S = 2.0   # 等待第一帧高度日志的超时：等不到就说明遥测没通，绝不能盲目起飞
+LOG_STALE_TIMEOUT_S = 0.3  # 运行中超过这么久没收到新日志帧，视为链路/主控可能已经异常
+MAX_FLIGHT_TIME_S = 15.0   # 从起飞指令发出到必须已经落地停桨的硬上限（保险丝，不依赖任何传感器判断）
+
+RANGE_SANE_MIN_MM = 20     # zrange 合理范围下限：起飞前地面回波太近，怀疑贴着障碍物/读数异常
+RANGE_SANE_MAX_MM = 4000   # zrange 合理范围上限：VL53L1X 有效量程外/悬空无回波，说明没测到地面
+
+
+class FlightAbort(Exception):
+    """内部信号：立即停止当前阶段，转入紧急下降。"""
+
+
+def read_current_estimator(cf, timeout_s=2.0):
+    """读取 stabilizer.estimator 参数，返回当前值（1=complementary, 2=kalman），超时返回 None。"""
+    import threading
+
+    got_value = threading.Event()
+    holder = {"value": None}
+
+    def estimator_cb(_name, value):
+        holder["value"] = int(value)
+        got_value.set()
+
+    cf.param.add_update_callback(group="stabilizer", name="estimator", cb=estimator_cb)
+    cf.param.request_param_update("stabilizer.estimator")
+    got_value.wait(timeout=timeout_s)
+
+    if holder["value"] is None:
+        print("警告：读取 stabilizer.estimator 超时，未确认当前估计器。", flush=True)
+    else:
+        label = ESTIMATOR_NAMES.get(holder["value"], "unknown")
+        print(f"当前 stabilizer.estimator = {holder['value']} ({label})", flush=True)
+
+    return holder["value"]
+
+
+def main():
+    cflib.crtp.init_drivers()
+
+    cf = Crazyflie()
+    if not connect_with_timeout(cf, URI):
+        return
+
+    state = {
+        "zrange_mm": None,
+        "last_log_t": None,
+        "z_est": None,
+    }
+
+    def aux_cb(_timestamp, data, _logconf):
+        state["zrange_mm"] = data["range.zrange"]
+        state["z_est"] = data["stateEstimate.z"]
+        state["last_log_t"] = time.monotonic()
+
+    aux_lg = LogConfig(name="aux", period_in_ms=50)
+    aux_lg.add_variable("range.zrange", "uint16_t")
+    aux_lg.add_variable("stateEstimate.z", "float")
+    cf.log.add_config(aux_lg)
+    aux_lg.data_received_cb.add_callback(aux_cb)
+    aux_lg.start()
+
+    try:
+        estimator = read_current_estimator(cf)
+        if estimator != 2:
+            print(
+                "警告：当前不是 kalman 估计器——没有检测到光流 deck，或者 "
+                "CONFIG_SENSORS_ENABLE_DECK 没有开。定高仍会依赖测距/气压工作，但没有水平位置"
+                "修正，飞机可能会缓慢漂移，请留意周围净空。",
+                flush=True,
+            )
+
+        # 等第一帧高度日志，确认遥测通了，绝不能在没有高度反馈的情况下起飞
+        deadline = time.monotonic() + LOG_WAIT_TIMEOUT_S
+        while state["last_log_t"] is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if state["last_log_t"] is None:
+            print("错误：等不到 range.zrange/stateEstimate.z 日志，遥测未连通，放弃起飞。", flush=True)
+            return
+
+        zrange0 = state["zrange_mm"]
+        if zrange0 is None or not (RANGE_SANE_MIN_MM <= zrange0 <= RANGE_SANE_MAX_MM):
+            print(
+                f"错误：起飞前 range.zrange={zrange0}mm 超出合理范围"
+                f"[{RANGE_SANE_MIN_MM},{RANGE_SANE_MAX_MM}]mm，怀疑测距传感器读数异常，放弃起飞。"
+                " 请确认飞机放在平整地面、传感器朝下且未被遮挡。",
+                flush=True,
+            )
+            return
+
+        print(f"起飞前地面测距 = {zrange0}mm，遥测正常，开始起飞。", flush=True)
+
+        flight_deadline = time.monotonic() + MAX_FLIGHT_TIME_S
+        current_target_h = [0.0]  # 用 list 装着，方便在闭包/异常处理里读取"最后一次发出的目标高度"
+
+        def watchdog_ok():
+            if time.monotonic() > flight_deadline:
+                print("警告：飞行总时长超过硬上限，强制转入紧急下降。", flush=True)
+                return False
+            if state["last_log_t"] is None or (time.monotonic() - state["last_log_t"]) > LOG_STALE_TIMEOUT_S:
+                print("警告：高度日志已停止刷新，链路/主控可能异常，强制转入紧急下降。", flush=True)
+                return False
+            return True
+
+        def send_ramp(start_h, end_h, duration_s):
+            """线性斜坡把 zDistance 从 start_h 发到 end_h，vx=vy=0（原地悬停），yawrate=0。"""
+            t0 = time.monotonic()
+            while True:
+                now = time.monotonic()
+                elapsed = now - t0
+                frac = min(1.0, elapsed / duration_s) if duration_s > 0 else 1.0
+                target_h = start_h + (end_h - start_h) * frac
+                current_target_h[0] = target_h
+
+                cf.commander.send_hover_setpoint(0.0, 0.0, 0.0, target_h)
+
+                if not watchdog_ok():
+                    raise FlightAbort()
+
+                if frac >= 1.0:
+                    break
+                time.sleep(SEND_PERIOD)
+
+        def hold(height_m, duration_s):
+            t0 = time.monotonic()
+            while time.monotonic() - t0 < duration_s:
+                current_target_h[0] = height_m
+                cf.commander.send_hover_setpoint(0.0, 0.0, 0.0, height_m)
+                if not watchdog_ok():
+                    raise FlightAbort()
+                time.sleep(SEND_PERIOD)
+
+        try:
+            print(f"阶段1/3：起飞爬升到 {TARGET_HEIGHT_M:.2f}m（{TAKEOFF_TIME_S:.1f}s）...", flush=True)
+            send_ramp(LIFTOFF_HEIGHT_M, TARGET_HEIGHT_M, TAKEOFF_TIME_S)
+
+            print(f"阶段2/3：定高悬停 {HOVER_TIME_S:.1f}s（当前 stateEstimate.z={state['z_est']}）...", flush=True)
+            hold(TARGET_HEIGHT_M, HOVER_TIME_S)
+
+            print(f"阶段3/3：降落到地面（{LAND_TIME_S:.1f}s）...", flush=True)
+            send_ramp(TARGET_HEIGHT_M, LAND_HEIGHT_M, LAND_TIME_S)
+            hold(LAND_HEIGHT_M, TOUCHDOWN_SETTLE_S)
+
+        except (FlightAbort, KeyboardInterrupt):
+            print(
+                f"触发紧急下降：从当前目标高度 {current_target_h[0]:.2f}m 快速降到地面"
+                f"（{EMERGENCY_LAND_TIME_S:.1f}s）...",
+                flush=True,
+            )
+            try:
+                send_ramp(current_target_h[0], LAND_HEIGHT_M, EMERGENCY_LAND_TIME_S)
+            except (FlightAbort, KeyboardInterrupt):
+                pass  # 已经在尽力下降了，watchdog 再触发也不再重入，直接走到下面的停桨
+
+        print("停桨。", flush=True)
+        for _ in range(15):
+            cf.commander.send_stop_setpoint()
+            time.sleep(0.02)
+
+        print("飞行结束。", flush=True)
+    finally:
+        aux_lg.stop()
+        cf.close_link()
+
+
+if __name__ == "__main__":
+    main()
