@@ -349,6 +349,7 @@ def main():
                     frac = min(1.0, elapsed / duration_s) if duration_s > 0 else 1.0
                     thrust = start_thrust * (1.0 - frac)
                     cf.commander.send_setpoint(0, 0, 0, int(thrust))
+                    print_status(0.0, force=True)  # 2026-09 诊断：这 duration_s 内发生了什么之前完全是黑盒
                     if frac >= 1.0:
                         break
                     time.sleep(SEND_PERIOD)
