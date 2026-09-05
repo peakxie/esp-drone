@@ -26,6 +26,17 @@
 #     "悬停指令一直发、飞机一直不降落"。
 #
 # 首次测试建议：室内、地面平整、四周留够 1m 净空、旁边有人随时准备断电，禁螺旋桨保护罩可选但推荐。
+#
+# 2026-09 更新：t5b_zdistance_hold.py（开环，roll/pitch 强制 0）比这里（闭环）漂得更快更狠，
+# 证实水平方向存在一个持续偏置，之前用的 send_hover_setpoint 只有速度闭环（vx=vy=0），没有
+# 位置误差反馈——速度纠正到 0 之后，之前已经漂掉的位置是回不来的。这次改成
+# send_position_setpoint(x0, y0, target_h, yaw0)，把 x/y/yaw 全程钉在起飞时的绝对坐标，让
+# position_controller_pid.c 里本来就存在、但这个脚本一直没用到的位置外环（pidX/pidY，
+# kp=1.9, ki=0.1）参与闭环，主动纠正累积位置误差，不只是纠正速度。
+# 注意：这条 mode.x/y=modeAbs 路径在这个项目里是第一次真正启用飞行验证过，建议第一次测试时
+# TARGET_HEIGHT_M 用较低值、HOVER_TIME_S 缩短，并确保离墙/障碍物净空比之前更大（>2m）。
+# 同时把 velCtlPid.vxKi/vyKi 从默认 1.0 临时调大（运行时 param，断电重启会恢复默认），
+# 让内层速度环更快压制恒定偏置，跟外层位置环配合使用。
 
 import time
 
@@ -56,6 +67,9 @@ MAX_FLIGHT_TIME_S = 15.0   # 从起飞指令发出到必须已经落地停桨的
 
 RANGE_SANE_MIN_MM = 20     # zrange 合理范围下限：起飞前地面回波太近，怀疑贴着障碍物/读数异常
 RANGE_SANE_MAX_MM = 4000   # zrange 合理范围上限：VL53L1X 有效量程外/悬空无回波，说明没测到地面
+
+VX_KI_OVERRIDE = 2.0   # velCtlPid.vxKi 默认 1.0，先保守翻倍——一次调太猛容易在闭环里振荡
+VY_KI_OVERRIDE = 2.0   # velCtlPid.vyKi 默认 1.0，同上
 
 
 class FlightAbort(Exception):
@@ -99,8 +113,10 @@ def main():
         "z_est": None,
         "x_est": None,
         "y_est": None,
+        "yaw_est": None,
         "x0": None,
         "y0": None,
+        "yaw0": None,
     }
 
     def aux_cb(_timestamp, data, _logconf):
@@ -108,9 +124,11 @@ def main():
         state["z_est"] = data["stateEstimate.z"]
         state["x_est"] = data["stateEstimate.x"]
         state["y_est"] = data["stateEstimate.y"]
+        state["yaw_est"] = data["stabilizer.yaw"]
         if state["x0"] is None:
             state["x0"] = state["x_est"]
             state["y0"] = state["y_est"]
+            state["yaw0"] = state["yaw_est"]
         state["last_log_t"] = time.monotonic()
 
     aux_lg = LogConfig(name="aux", period_in_ms=50)
@@ -118,6 +136,7 @@ def main():
     aux_lg.add_variable("stateEstimate.z", "float")
     aux_lg.add_variable("stateEstimate.x", "float")
     aux_lg.add_variable("stateEstimate.y", "float")
+    aux_lg.add_variable("stabilizer.yaw", "float")
     cf.log.add_config(aux_lg)
     aux_lg.data_received_cb.add_callback(aux_cb)
     aux_lg.start()
@@ -131,6 +150,15 @@ def main():
                 "修正，飞机可能会缓慢漂移，请留意周围净空。",
                 flush=True,
             )
+
+        cf.param.set_value("velCtlPid.vxKi", str(VX_KI_OVERRIDE))
+        cf.param.set_value("velCtlPid.vyKi", str(VY_KI_OVERRIDE))
+        time.sleep(0.2)
+        print(
+            f"已将 velCtlPid.vxKi/vyKi 覆盖为 {VX_KI_OVERRIDE}/{VY_KI_OVERRIDE}（默认 1.0，"
+            "断电重启会恢复默认）。",
+            flush=True,
+        )
 
         # 等第一帧高度日志，确认遥测通了，绝不能在没有高度反馈的情况下起飞
         deadline = time.monotonic() + LOG_WAIT_TIMEOUT_S
@@ -181,7 +209,9 @@ def main():
             )
 
         def send_ramp(start_h, end_h, duration_s):
-            """线性斜坡把 zDistance 从 start_h 发到 end_h，vx=vy=0（原地悬停），yawrate=0。"""
+            """线性斜坡把 zDistance 从 start_h 发到 end_h，x/y/yaw 全程钉在起飞时的绝对坐标不变
+            （modeAbs 位置闭环，不是速度闭环），交给 position_controller_pid.c 的 pidX/pidY 主动
+            纠正累积位置误差。"""
             t0 = time.monotonic()
             while True:
                 now = time.monotonic()
@@ -190,7 +220,7 @@ def main():
                 target_h = start_h + (end_h - start_h) * frac
                 current_target_h[0] = target_h
 
-                cf.commander.send_hover_setpoint(0.0, 0.0, 0.0, target_h)
+                cf.commander.send_position_setpoint(state["x0"], state["y0"], target_h, state["yaw0"])
                 print_status(target_h)
 
                 if not watchdog_ok():
@@ -204,7 +234,7 @@ def main():
             t0 = time.monotonic()
             while time.monotonic() - t0 < duration_s:
                 current_target_h[0] = height_m
-                cf.commander.send_hover_setpoint(0.0, 0.0, 0.0, height_m)
+                cf.commander.send_position_setpoint(state["x0"], state["y0"], height_m, state["yaw0"])
                 print_status(height_m)
                 if not watchdog_ok():
                     raise FlightAbort()
