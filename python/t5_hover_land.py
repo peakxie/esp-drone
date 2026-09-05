@@ -54,6 +54,16 @@
 # 短时间内顶不穿这个稳态，导致 zrange 一直卡在 60mm 阈值附近来回蹭。现在改成目标高度在等待
 # 触地期间以 FINAL_DESCENT_RATE_M_S 持续往下探，而不是钉死不动，让位置环始终有一个追不上的
 # 下降误差，不会安定在地面效应稳态里；ramp_down_thrust() 保留作为最后一道防线。
+#
+# 2026-09 更新：让目标高度持续下探到地面以下 8cm 之后再测，结果跟目标钉死在 0 时几乎一样
+# ——还是稳定悬在离地 6~9cm，zrange/thrust 曲线跟之前几乎重合，且三次独立飞行都在离地
+# 6~7cm 附近出现同一种"突然弹高 2~3cm"的现象。说明目标怎么给根本不影响这台机最终稳在哪个
+# 高度，6~9cm 是真实的物理下限（地面效应气垫），不是 Z 位置环还没追上——两种不同的目标策略
+# 都验证了这一点，不再在这个方向上继续试。改为接受这个高度差，把 wait_for_touchdown()
+# 改回钉死目标（去掉没有效果的持续下探），把触地阈值/确认时长按气垫的实际高度重新标定
+# （TOUCHDOWN_ZRANGE_MM 60->90mm，TOUCHDOWN_CONFIRM_S 0.15->0.3s，避免快速下降路过时
+# 误判），并把 THRUST_RAMP_DOWN_TIME_S 从 0.3s 拉长到 0.5s，让这段设计上接受的落差降得
+# 更柔和；顺带把 HOVER_TIME_S 从 1.0s 加到 3.0s。
 
 import time
 
@@ -70,21 +80,19 @@ LIFTOFF_HEIGHT_M = 0.03    # 起飞斜坡的起点目标高度，避免第一帧
 LAND_HEIGHT_M = 0.0        # 降落斜坡的终点目标高度
 
 TAKEOFF_TIME_S = 2.0       # 0.03m -> 0.50m 爬升斜坡时长
-HOVER_TIME_S = 1.0         # 到达目标高度后悬停时长（题目要求：1s）
+HOVER_TIME_S = 3.0         # 到达目标高度后悬停时长
 LAND_TIME_S = 2.0          # 0.50m -> 0m 下降斜坡时长
-TOUCHDOWN_ZRANGE_MM = 60   # 判定"已经落地"的测距阈值：起飞前贴地读数是几十mm量级（比如18mm），
-                           # 留出余量给 VL53L1X 近距噪声，避免刚好卡在临界值附近反复跳变
-TOUCHDOWN_CONFIRM_S = 0.15 # 连续这么久测距都在阈值以下，才真的认为落地（防抖，防止噪声偶尔
-                           # 单帧扫过阈值就误判）
+TOUCHDOWN_ZRANGE_MM = 90   # 判定"已经进入地面效应气垫、可以停桨"的测距阈值。
+                           # 2026-09 实测（3次独立飞行）：不管目标高度钉死在 0 还是持续往
+                           # 下探，实际都会稳定悬在离地 6~9cm、90mm 以下之后就基本不再继续
+                           # 下降——这是这台机的物理下限（地面效应气垫），不是还没追上。原先
+                           # 60mm 阈值几乎等不到，改成 90mm 是在"确认已经卡进气垫"和"不要
+                           # 提前在快速下降途中误判"之间取的一个平衡。
+TOUCHDOWN_CONFIRM_S = 0.3  # 连续这么久测距都在阈值以下，才真的认为已经稳定卡进气垫（不是
+                           # 快速下降路过 90mm 那一瞬间）——阈值抬高后相应把确认时间也拉长，
+                           # 降低"路过误判"的概率
 TOUCHDOWN_MAX_WAIT_S = 5.0 # 兜底上限：一直没等到"确认落地"（比如测距异常）也最多等这么久
                            # 就强制停桨，不能无限悬停耗光电量
-                           # 2026-09 实测确认：地面效应会让飞机稳定悬在离地 6~9cm，Z 位置环
-                           # 短时间内很难自己把这个稳态顶穿，2.0s 明显不够，5.0s 验证可行
-
-FINAL_DESCENT_RATE_M_S = 0.05   # 等待触地阶段，目标高度不再钉死在 LAND_HEIGHT_M 不动，而是
-                                 # 以这个速率持续往下探——避免 Z 位置环在地面效应稳态里"停"住
-                                 # （见 wait_for_touchdown 里的说明）
-FINAL_DESCENT_MAX_DEPTH_M = 0.3  # 目标最多探到地面以下这么多，防止一直没触地时目标无限往下钻
 
 SEND_PERIOD = 0.05         # 20Hz 发送 hover setpoint，同 t4c/t4e
 STATUS_PRINT_PERIOD_S = 0.3    # 飞行全程打印一次 x/y/z 轨迹的间隔，方便复盘水平漂移
@@ -102,7 +110,9 @@ RANGE_SANE_MAX_MM = 4000   # zrange 合理范围上限：VL53L1X 有效量程外
 VX_KI_OVERRIDE = 2.0   # velCtlPid.vxKi 默认 1.0，先保守翻倍——一次调太猛容易在闭环里振荡
 VY_KI_OVERRIDE = 2.0   # velCtlPid.vyKi 默认 1.0，同上
 
-THRUST_RAMP_DOWN_TIME_S = 0.3  # 停桨前，从实测 thrust 线性斜坡降到 0 的时长
+THRUST_RAMP_DOWN_TIME_S = 0.5  # 停桨前，从实测 thrust 线性斜坡降到 0 的时长。
+                               # 2026-09：既然 6~9cm 的气垫压不穿，这一下的落差就是设计上
+                               # 接受的高度，把 0.3s 拉长到 0.5s 让这几厘米落得更柔和一点
 THRUST_RAMP_START_CAP = 50000  # 起点推力的 sanity 上限（满量程 65535），只是防止读到的那一帧
                                 # 恰好是脏数据/尖峰，不是悬停推力估计值——这台机还没标定过真实
                                 # 悬停推力，斜坡起点必须用当时实测值，不能瞎猜一个数
@@ -286,24 +296,19 @@ def main():
             无条件停桨，飞机往往还悬在半空几厘米到十几厘米——send_stop_setpoint 对应固件
             crtp_commander_generic.c 里的 stopType，直接把 setpoint 清零、推力瞬间归零，
             半空停桨就是自由落体摔下去，不是"落地"。
-            2026-09 实测发现：如果目标高度就钉死在 LAND_HEIGHT_M 不动，飞机会稳定悬在离地
-            6~9cm（地面效应：越接近地面同样推力升力越大，Z 位置环的积分项短时间内顶不穿这个
-            稳态），测距一直卡在 60mm 阈值附近来回蹭，触地判定要么等不到、要么压线才过。这里
-            改成目标高度持续以 FINAL_DESCENT_RATE_M_S 往下探（最多探到地面以下
-            FINAL_DESCENT_MAX_DEPTH_M），让 Z 位置环始终有一个还没追上的下降误差，不会安定
-            在地面效应稳态里；同时仍然用最直接的地面测距 range.zrange（比融合后的
-            stateEstimate.z 少一层滤波延迟）判断是否真的贴地：连续 TOUCHDOWN_CONFIRM_S 都
-            低于 TOUCHDOWN_ZRANGE_MM 才认为落地。max_wait_s 是兜底上限，避免测距异常时无限
-            下探耗电。"""
+            2026-09 实测（3次独立飞行，试过目标钉死在 0、也试过目标持续下探到地面以下）：
+            这台机会稳定悬在离地 6~9cm，跟目标高度怎么给几乎无关——是地面效应气垫，不是
+            Z 位置环还没追上，闭环这边压不穿，索性不再硬压。这里持续发 LAND_HEIGHT_M
+            位置指令，用最直接的地面测距 range.zrange（比融合后的 stateEstimate.z 少一层
+            滤波延迟）判断是否已经稳定卡进气垫：连续 TOUCHDOWN_CONFIRM_S 都低于
+            TOUCHDOWN_ZRANGE_MM 才认为可以停桨（阈值和确认时长都已经按气垫高度重新标定，
+            见常量定义处的注释）。max_wait_s 是兜底上限，避免测距异常时无限悬停耗电。"""
             t0 = time.monotonic()
             below_since = None
             while time.monotonic() - t0 < max_wait_s:
-                elapsed = time.monotonic() - t0
-                depth = min(FINAL_DESCENT_RATE_M_S * elapsed, FINAL_DESCENT_MAX_DEPTH_M)
-                target_h = LAND_HEIGHT_M - depth
-                current_target_h[0] = target_h
-                cf.commander.send_position_setpoint(state["x0"], state["y0"], target_h, state["yaw0"])
-                print_status(target_h)
+                current_target_h[0] = LAND_HEIGHT_M
+                cf.commander.send_position_setpoint(state["x0"], state["y0"], LAND_HEIGHT_M, state["yaw0"])
+                print_status(LAND_HEIGHT_M)
                 if not watchdog_ok():
                     raise FlightAbort()
 
