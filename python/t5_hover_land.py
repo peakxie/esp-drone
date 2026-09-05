@@ -93,6 +93,10 @@ TOUCHDOWN_CONFIRM_S = 0.3  # 连续这么久测距都在阈值以下，才真的
                            # 降低"路过误判"的概率
 TOUCHDOWN_MAX_WAIT_S = 5.0 # 兜底上限：一直没等到"确认落地"（比如测距异常）也最多等这么久
                            # 就强制停桨，不能无限悬停耗光电量
+CLOSE_TO_GROUND_LOG_ZRANGE_MM = 150  # 2026-09 诊断用：一进入这个高度以内，print_status
+                                     # 不再受 STATUS_PRINT_PERIOD_S 节流，改成每帧（20Hz）
+                                     # 都打印——之前 0.3s 一次的采样看不清触地前后到底是
+                                     # "稳定贴地了才弹起来"还是"一碰地就立刻弹起"
 
 SEND_PERIOD = 0.05         # 20Hz 发送 hover setpoint，同 t4c/t4e
 STATUS_PRINT_PERIOD_S = 0.3    # 飞行全程打印一次 x/y/z 轨迹的间隔，方便复盘水平漂移
@@ -243,9 +247,9 @@ def main():
 
         last_status_print = [0.0]
 
-        def print_status(target_h):
+        def print_status(target_h, force=False):
             now = time.monotonic()
-            if now - last_status_print[0] < STATUS_PRINT_PERIOD_S:
+            if not force and now - last_status_print[0] < STATUS_PRINT_PERIOD_S:
                 return
             last_status_print[0] = now
             x0, y0 = state["x0"], state["y0"]
@@ -308,11 +312,12 @@ def main():
             while time.monotonic() - t0 < max_wait_s:
                 current_target_h[0] = LAND_HEIGHT_M
                 cf.commander.send_position_setpoint(state["x0"], state["y0"], LAND_HEIGHT_M, state["yaw0"])
-                print_status(LAND_HEIGHT_M)
+                zrange = state["zrange_mm"]
+                close_to_ground = zrange is not None and zrange <= CLOSE_TO_GROUND_LOG_ZRANGE_MM
+                print_status(LAND_HEIGHT_M, force=close_to_ground)
                 if not watchdog_ok():
                     raise FlightAbort()
 
-                zrange = state["zrange_mm"]
                 now = time.monotonic()
                 if zrange is not None and zrange <= TOUCHDOWN_ZRANGE_MM:
                     if below_since is None:
