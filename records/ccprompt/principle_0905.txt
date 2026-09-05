@@ -1,0 +1,303 @@
+根据固件代码逐行hover的原理                         
+
+  Thought for 1m 54s, searched for 4 patterns, read 4 
+  files (ctrl+o to expand)
+
+● 这套固件的"定高悬停"其实是四层嵌套闭环,从上到下依次
+  是:CRTP setpoint 解析 → 主循环调度 → 位置环(外环) →
+  速度环(内环,产出角度和推力) → 姿态/角速度环 →
+  混控输出。我按调用顺序逐行讲。
+     
+  1. setpoint 从哪来:CRTP 包解析
+
+  crtp_commander_generic.c:384-401
+  void crtpCommanderGenericDecodeSetpoint(setpoint_t
+  *setpoint, CRTPPacket *pk)
+  {
+    ...
+    uint8_t type = pk->data[0];
+    memset(setpoint, 0, sizeof(setpoint_t));   // 396:
+  每次先清零，上一帧的字段不会残留
+    if (type<nTypes && (packetDecoders[type] != NULL))
+  {
+      packetDecoders[type](setpoint, type,
+  ((char*)pk->data)+1, pk->size-1);   // 399:
+  按包类型分发
+    }
+  }
+  你在 t5 脚本里用的 send_position_setpoint(x,y,z,yaw)
+  对应 positionType=7 → positionDecoder(第353-369行):
+  setpoint->mode.x = modeAbs;   // 357
+  setpoint->mode.y = modeAbs;   // 358
+  setpoint->mode.z = modeAbs;   // 359
+  setpoint->position.x/y/z = values->x/y/z;   //
+  361-363
+  setpoint->mode.yaw = modeAbs;               // 366
+  setpoint->attitude.yaw = values->yaw;       // 368
+  即:x/y/z 全部是"绝对位置闭环"(modeAbs),yaw
+  也是绝对角度闭环——这就是为什么 t5 能把 x0/y0/yaw0
+  全程钉死。
+
+  (如果用 send_hover_setpoint,走的是 hoverDecoder
+  第278-298行:z 仍是 modeAbs 绝对高度,但 x/y 是
+  modeVelocity+velocity_body=true——机体坐标系速度闭环,
+  不是位置闭环,这也是脚本注释里说 t5 从 hover 换成
+  position setpoint 的原因:hover 只纠正速度,纠正到 0
+  后已经漂掉的位置回不来。)
+
+  2. 主循环:1kHz 调度(stabilizer.c:268-319)
+
+  stateEstimator(&state, &sensorData, &control, tick);
+    // 293: EKF/互补滤波，产出
+  state->position/velocity/attitude
+  commanderGetSetpoint(&setpoint, &state);
+     // 296: 取最新一帧 setpoint（含 watchdog
+  超时清零逻辑）
+  sitAwUpdateSetpoint(&setpoint, &sensorData, &state);
+      // 299: 姿态异常保护（tumble等）会在这里改写
+  setpoint
+  controller(&control, &setpoint, &sensorData, &state,
+  tick);  // 302: 分发到 controllerPid()
+  ...
+  if (emergencyStop || !systemIsArmed()) powerStop();
+      // 307-308
+  else powerDistribution(&control);
+      // 310: 混控发到电机
+
+  3. controllerPid() 分频调度(controller_pid.c:62-161)
+
+  - 位置环只跑 100Hz(POSITION_RATE):第78-80行 if
+    (RATE_DO_EXECUTE(POSITION_RATE, tick))
+    positionController(...)
+  - 姿态/角速度环跑 500Hz(ATTITUDE_RATE):第82-132行
+
+  这就是外环(位置/速度)比内环(姿态/角速度)慢 5
+  倍的经典串级 PID
+  结构——外环给内环下"角度目标",内环负责快速纠偏。
+
+  4. 位置环(外环,position_controller_pid.c:187-217)
+
+  if (setpoint->mode.x == modeAbs)
+    setpoint->velocity.x = runPid(state->position.x,
+  &this.pidX, setpoint->position.x, DT);  // 203
+  // y、z 同理（207-214），z 用的是 pidZ: kp=1.6,
+  ki=0.5
+  velocityController(thrust, attitude, setpoint,
+  state);  // 216
+  把"位置误差"(setpoint->position.z -
+  state->position.z,即目标高度和 EKF 估计高度的差)喂给
+  pidZ(kp=1.6/ki=0.5),输出不是推力,是"期望垂直速度",
+  直接覆写进 setpoint->velocity.z。x/y 同理,pidX/pidY(
+  kp=1.9/ki=0.1)把位置误差转成期望水平速度——这正是 t5
+  脚本注释里提到、之前一直没启用的那个外环。
+
+  5. 速度环(内环,velocityController(),同文件219-247行)
+
+  float rollRaw  = runPid(state->velocity.x,
+  &this.pidVX, setpoint->velocity.x, DT);  // 229
+  float pitchRaw = runPid(state->velocity.y,
+  &this.pidVY, setpoint->velocity.y, DT);  // 230
+  attitude->pitch = -(rollRaw*cosyaw) -
+  (pitchRaw*sinyaw);   // 233: 机体/世界坐标转换
+  attitude->roll  = -(pitchRaw*cosyaw) +
+  (rollRaw*sinyaw);   // 234
+  ...
+  float thrustRaw = runPid(state->velocity.z,
+  &this.pidVZ, setpoint->velocity.z, DT);  // 240:
+  pidVZ kp=22/ki=15
+  *thrust = thrustRaw*thrustScale + this.thrustBase;
+  // 242: 加上悬停前馈量 thrustBase
+  if (*thrust < this.thrustMin) *thrust =
+  this.thrustMin;  // 244-246: 限幅下限
+  这就是悬停能"稳"的关键:垂直方向不是直接把外环算出来
+  的东西当推力用,而是先转成"期望垂直速度"再让 pidVZ
+  去纠正,推力=thrustRaw*1000 +
+  thrustBase。thrustBase(这块板子上是 34000~42000,见第
+  143-157行)是"大概能刚好把机身托住"的开环前馈值,PID
+  只需要在这个基础上做小幅修正,不用从 0
+  攒到能悬停的量——这也是为什么起飞爬升阶段响应比较快。
+  水平方向(roll/pitch)则是把"速度误差"转成"倾角"——想往
+  前飞就是往前倾一点,物理上跟人骑自行车拐弯一个道理。
+
+  6. 姿态环/角速度环(controller_pid.c:82-132)
+
+  外环给出的 attitudeDesired.roll/pitch(来自
+  velocityController)喂给 attitudeControllerCorrectAtt
+  itudePID(第92-94行)算出期望角速度 rateDesired,再喂给
+  attitudeControllerCorrectRatePID(第109-110行)用陀螺
+  仪实测角速度纠正,最终
+  attitudeControllerGetActuatorOutput 产出
+  control->roll/pitch/yaw(112-114行)——这层是真正每 2ms
+  响应一次的"快环",负责姿态稳定,不直接管高度/位置。
+
+  7. 停桨/急停的特殊路径(controller_pid.c:143-160)
+
+  if (control->thrust == 0) {
+    control->thrust = control->roll = control->pitch =
+  control->yaw = 0;
+    attitudeControllerResetAllPID();
+    positionControllerResetAllPID();          // 156:
+  所有 PID 积分项清零
+    attitudeDesired.yaw = state->attitude.yaw;
+  }
+  这解释了为什么之前的降落 bug
+  一停桨就是硬摔:send_stop_setpoint() → stopType=0 →
+  stopDecoder 什么都不做(第85-88行,注释直接写"Keeps
+  setpoint to 0: stops the motors and
+  fall"),配合第396行的 memset 清零,setpoint->thrust=0
+  且 mode.z=modeDisable,导致 actuatorThrust =
+  setpoint->thrust = 0(第84-85行),control->thrust==0
+  直接触发上面这段——推力瞬间归零,没有任何"缓降"过渡,是
+  设计上就是这样("stops the motors and fall"),缓降的责
+  任完全在客户端(脚本)侧,要靠脚本自己用位置/zDistance
+  斜坡把高度降到 0
+  附近再停桨,这也印证了我们之前修的那个 bug 的根因。
+    control->thrust = control->roll = control->pitch = control->yaw = 0;
+    attitudeControllerResetAllPID();
+    positionControllerResetAllPID();          // 156: 所有 PID 积分项清零
+    attitudeDesired.yaw = state->attitude.yaw;
+  }
+  这解释了为什么之前的降落 bug 一停桨就是硬摔:send_stop_setpoint() → stopType=0 → stopDecoder
+  什么都不做(第85-88行,注释直接写"Keeps setpoint to 0: stops the motors and fall"),配合第396行的 memset
+  清零,setpoint->thrust=0 且 mode.z=modeDisable,导致 actuatorThrust = setpoint->thrust =
+  0(第84-85行),control->thrust==0 直接触发上面这段——推力瞬间归零,没有任何"缓降"过渡,是设计上就是这样("stops
+  the motors and fall"),缓降的责任完全在客户端(脚本)侧,要靠脚本自己用位置/zDistance 斜坡把高度降到 0
+  附近再停桨,这也印证了我们之前修的那个 bug 的根因。
+
+  一句话总结:悬停 = 100Hz 位置外环(位置误差→期望速度)嵌 500Hz
+  速度/姿态内环(速度误差→倾角/推力,推力=PID输出+thrustBase前馈)嵌 500Hz 角速度环(陀螺仪纠偏)——四层串级
+  PID,而"停桨"是完全独立于这套闭环之外的一条特殊短路径,一触发就无过渡地把推力砸到 0。
+
+✻ Cooked for 2m 23s · done 13:52
+
+claude --resume 86dded29-9c98-4ba8-abee-382d4bca48fb
+
+结合代码分析下posHoldMode的控制过程，以及如何控制前后左右上下？
+
+posHoldMode 控制流程分析
+
+  这是 ESP-Drone（Bitcraze Crazyflie 2.0 的 ESP32 移植版）的定点悬停模式。核心思路：姿态角设定被替换为速度
+  设定，摇杆输入不再直接控制倾角，而是控制机体速度，再由位置/速度控制器换算出对应的姿态角和推力。
+
+  1. 模式定义与进入方式
+
+  - posHoldMode 是 crtp_commander_rpyt.c:83 的静态标志位。
+  - setCommandermode()（同文件 91-123 行）在 case POSHOLD_MODE 时：altHoldMode=true;
+    posHoldMode=true;，并强制切换状态估计器为 Kalman 滤波器（registerRequiredEstimator(kalmanEstimator)），
+    因为定点悬停需要可靠的水平速度/位置估计，普通互补滤波器给不了。
+  - 也可通过参数 flightmode.poshold 直接置位（265 行 PARAM_ADD）。
+  - 自动触发：sensors_mpu6050_hm5883L_ms5611.c:635 附近，检测到光流模块（PMW3901）自检通过时会自动调用
+    setCommandermode(POSHOLD_MODE)；如果只有气压计没有光流，只能进
+    ALTHOLD_MODE（水平方向没法定住，代码注释里写明了原因）。
+
+  2. 摇杆输入 → 速度设定值（crtp_commander_rpyt.c:192-260）
+
+  在 posHoldMode 分支里：
+
+  setpoint->mode.x = modeVelocity;
+  setpoint->mode.y = modeVelocity;
+  setpoint->mode.roll = modeDisable;
+  setpoint->mode.pitch = modeDisable;
+  setpoint->velocity_body = true;
+
+  setpoint->velocity.x = -pitch/30.0f;   // 前后速度指令（机体坐标系）
+  setpoint->velocity.y = -roll/30.0f;    // 左右速度指令（机体坐标系）
+
+  同时因为 altHoldMode 也被强制打开：
+
+  setpoint->mode.z = modeVelocity;
+  setpoint->velocity.z = (rawThrust - 32767.f) / 32767.f;  // 上下速度指令（世界坐标系）
+
+  Yaw 独立处理（不受 posHold 影响）：setpoint->attitudeRate.yaw = -yaw，即角速度指令。
+
+  也就是说，四个方向的操控方式：
+
+  ┌───────────┬────────┬───────────────────────────────────┬───────────────────────────────────────┐
+  │   动作    │ 摇杆量 │           对应 setpoint           │                 说明                  │
+  ├───────────┼────────┼───────────────────────────────────┼───────────────────────────────────────┤
+  │ 前进/后退 │ pitch  │ velocity.x = -pitch/30            │ ±30° 摇杆角映射到 ±1 m/s 机体前后速度 │
+  ├───────────┼────────┼───────────────────────────────────┼───────────────────────────────────────┤
+  │ 左移/右移 │ roll   │ velocity.y = -roll/30             │ 同理映射到左右速度                    │
+  ├───────────┼────────┼───────────────────────────────────┼───────────────────────────────────────┤
+  │ 上升/下降 │ thrust │ velocity.z = (thrust-32767)/32767 │ 以摇杆中位为悬停，正负决定升降速度    │
+  ├───────────┼────────┼───────────────────────────────────┼───────────────────────────────────────┤
+  │ 转向      │ yaw    │ attitudeRate.yaw = -yaw           │ 角速度指令，与定点悬停无关            │
+  └───────────┴────────┴───────────────────────────────────┴───────────────────────────────────────┘
+
+  velocity_body=true 标记 x/y 速度是机体坐标系下的量，需要后续按当前 yaw 角旋转成世界坐标系速度。
+
+  3. 级联控制器（stabilizer.c → controller_pid.c → position_controller_pid.c）
+
+  主循环 stabilizerTask()（stabilizer.c:268 附近）每 tick 依次做：状态估计 → 取 setpoint → 调用控制器 →
+  电机分配。
+
+  控制器 controllerPid()（controller_pid.c:62）内部两级频率：
+  - 100Hz：位置/速度环 positionController()
+  - 500Hz：姿态角环 + 角速度环
+
+  位置/速度环（position_controller_pid.c:187-247）：
+
+  因为 posHoldMode 下 mode.x/mode.y 是 modeVelocity 而非 modeAbs，位置 PID（pidX/pidY，仅在 POSSET_MODE
+  下用）不参与，代码走到：
+
+  setpoint->velocity.x = bodyvx*cosyaw - bodyvy*sinyaw;   // 机体→世界坐标旋转
+  setpoint->velocity.y = bodyvy*cosyaw + bodyvx*sinyaw;
+
+  再进入 velocityController()：
+
+  rollRaw  = runPid(state->velocity.x, &pidVX, setpoint->velocity.x, DT);
+  pitchRaw = runPid(state->velocity.y, &pidVY, setpoint->velocity.y, DT);
+  // 按 -yaw 旋转回机体坐标系
+  attitude->pitch = -(rollRaw*cosf(yawRad)) - (pitchRaw*sinf(yawRad));
+  attitude->roll  = -(pitchRaw*cosf(yawRad)) + (rollRaw*sinf(yawRad));
+  // clamp 到 ±rpLimit（默认20°）
+
+  thrustRaw = runPid(state->velocity.z, &pidVZ, setpoint->velocity.z, DT);
+  *thrust = thrustRaw*1000 + thrustBase;   // thrustBase 为悬停前馈推力
+
+  关键点：所谓"定点悬停"实际上是零速度闭环，不是绝对位置闭环——摇杆回中时目标速度为 0，靠速度
+  PID（pidVX/pidVY/pidVZ）配合 Kalman
+  估计的实际速度做闸门修正，抵消漂移，并不存在世界坐标系下的位置误差反馈环（那是 POSSET_MODE 才用
+  pidX/pidY/pidZ）。
+
+  得到的 attitude.roll/pitch（期望倾角）和 actuatorThrust（期望推力）回到 controllerPid()：因为
+  mode.roll/mode.pitch = modeDisable，姿态角环直接采用位置/速度环算出来的
+  attitudeDesired.roll/pitch，再走：
+
+  角度 PID（pidRoll/pidPitch/pidYaw，500Hz）→ 角速度设定 → 角速度
+  PID（pidRollRate/pidPitchRate/pidYawRate）→ control.roll/pitch/yaw（int16），control.thrust =
+  actuatorThrust。
+
+  4. 电机混控（power_distribution_stock.c:87-111，X 构型）
+
+  m1 = thrust - roll + pitch + yaw;
+  m2 = thrust - roll - pitch - yaw;
+  m3 = thrust + roll - pitch + yaw;
+  m4 = thrust + roll + pitch - yaw;
+
+  5. 完整链路总结
+
+  摇杆(roll,pitch,yaw,thrust)
+    → crtpCommanderRpytDecodeSetpoint()：生成机体系 vx/vy + 世界系 vz + yaw角速度
+    → stabilizerTask(): Kalman 状态估计 state.position/velocity/attitude
+    → positionController(): 机体速度→世界速度（用当前 yaw 旋转）
+    → velocityController(): 速度PID(pidVX/pidVY/pidVZ) → 期望横滚/俯仰角 + 推力（世界速度误差旋转回机体系）
+    → 姿态角PID → 角速度PID → control.roll/pitch/yaw/thrust
+    → powerDistribution() → 四个电机 PWM
+
+  关键参数（可通过 param 系统在线调整）
+
+  - 速度环增益（组 velCtlPid）：vxKp=25, vxKi=1；vyKp=25, vyKi=1；vzKp=22, vzKi=15
+  - 位置环增益（组 posCtlPid，仅 POSSET_MODE 用）：xKp=1.9, yKp=1.9, zKp=1.6；另有
+    rpLimit（最大倾角，默认20°）、xyVelMax/zVelMax（默认1.0 m/s）、thrustBase（悬停前馈推力）
+  - 姿态角环增益（组 pid_attitude）：roll/pitch Kp=5.9, Ki=2.9；yaw Kp=6.0, Ki=1.0, Kd=0.35
+  - 角速度环增益（组 pid_rate）：roll/pitch Kp=250, Ki=500, Kd=2.5；yaw Kp=120, Ki=16.7
+
+  一句话总结：posHoldMode
+  把摇杆的俯仰/横滚角输入重新解释为机体前后/左右速度指令，油门输入解释为垂直速度指令，全部经速度 PID
+  闭环后再转换为姿态角和推力，最终由姿态/角速度双环 PID
+  和电机混控输出到四个电机——本质是"零速度悬停"而非严格的绝对位置锁定。
+
+✻ Crunched for 4m 13s · done 18:03
+
+claude --resume d4700392-c115-45c9-90be-797f5fa41961
