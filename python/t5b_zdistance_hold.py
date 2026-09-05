@@ -61,8 +61,9 @@ LOG_WAIT_TIMEOUT_S = 2.0
 LOG_STALE_TIMEOUT_S = 0.3
 MAX_FLIGHT_TIME_S = 15.0
 
-RANGE_SANE_MIN_MM = 20
 RANGE_SANE_MAX_MM = 4000
+# 不设下限，理由同 t5_hover_land.py：VL53L1X 贴近量程下限时读数本身偏随机，起飞前贴地
+# 见到几十 mm 以内的低读数是正常现象，不是故障。
 
 
 class FlightAbort(Exception):
@@ -144,10 +145,9 @@ def main():
             return
 
         zrange0 = state["zrange_mm"]
-        if zrange0 is None or not (RANGE_SANE_MIN_MM <= zrange0 <= RANGE_SANE_MAX_MM):
+        if zrange0 is None or zrange0 > RANGE_SANE_MAX_MM:
             print(
-                f"错误：起飞前 range.zrange={zrange0}mm 超出合理范围"
-                f"[{RANGE_SANE_MIN_MM},{RANGE_SANE_MAX_MM}]mm，放弃起飞。",
+                f"错误：起飞前 range.zrange={zrange0}mm 超出合理范围（上限 {RANGE_SANE_MAX_MM}mm），放弃起飞。",
                 flush=True,
             )
             return

@@ -65,8 +65,10 @@ LOG_WAIT_TIMEOUT_S = 2.0   # 等待第一帧高度日志的超时：等不到就
 LOG_STALE_TIMEOUT_S = 0.3  # 运行中超过这么久没收到新日志帧，视为链路/主控可能已经异常
 MAX_FLIGHT_TIME_S = 15.0   # 从起飞指令发出到必须已经落地停桨的硬上限（保险丝，不依赖任何传感器判断）
 
-RANGE_SANE_MIN_MM = 20     # zrange 合理范围下限：起飞前地面回波太近，怀疑贴着障碍物/读数异常
 RANGE_SANE_MAX_MM = 4000   # zrange 合理范围上限：VL53L1X 有效量程外/悬空无回波，说明没测到地面
+# 注意：不设下限。VL53L1X 在贴近量程下限（几十 mm 以内）本身读数就偏随机（sensor 物理特性，
+# 不是故障），实测起飞前贴地就见过 18mm 这种正常但偏低的读数——用一个固定下限去卡它，卡掉的
+# 是正常起飞，不是真的故障；真正的"没测到地面/被挡住"用上限（读数异常大或超出量程）就够判断了。
 
 VX_KI_OVERRIDE = 2.0   # velCtlPid.vxKi 默认 1.0，先保守翻倍——一次调太猛容易在闭环里振荡
 VY_KI_OVERRIDE = 2.0   # velCtlPid.vyKi 默认 1.0，同上
@@ -169,10 +171,10 @@ def main():
             return
 
         zrange0 = state["zrange_mm"]
-        if zrange0 is None or not (RANGE_SANE_MIN_MM <= zrange0 <= RANGE_SANE_MAX_MM):
+        if zrange0 is None or zrange0 > RANGE_SANE_MAX_MM:
             print(
-                f"错误：起飞前 range.zrange={zrange0}mm 超出合理范围"
-                f"[{RANGE_SANE_MIN_MM},{RANGE_SANE_MAX_MM}]mm，怀疑测距传感器读数异常，放弃起飞。"
+                f"错误：起飞前 range.zrange={zrange0}mm 超出合理范围（上限 {RANGE_SANE_MAX_MM}mm），"
+                "怀疑测距传感器读数异常，放弃起飞。"
                 " 请确认飞机放在平整地面、传感器朝下且未被遮挡。",
                 flush=True,
             )
