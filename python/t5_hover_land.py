@@ -45,6 +45,15 @@
 # 现在改成：停桨前先跑一段 ramp_down_thrust()，以当时实测的 stabilizer.thrust 为起点，用
 # 原始 setpoint（cf.commander.send_setpoint(0,0,0,thrust)，同 t4b/t4c 用的接口）线性斜坡
 # 降到 0，而不是直接猜一个悬停推力去斜坡——这台机还没做过真正的悬停推力标定，猜的数不可信。
+#
+# 2026-09 更新：加了 stabilizer.thrust/zrange 打印后实测发现，上面那个推力斜坡治标不治本——
+# 判定触地那一刻 thrust 依然在 49000~54000，跟整个飞行过程中的悬停推力几乎是同一个量级，
+# 说明触地判定发生时飞机真的还悬在离地几厘米，不是"已经落地才被瞬间断电"。往前追一层发现：
+# 只要 wait_for_touchdown() 把目标高度钉死在 LAND_HEIGHT_M=0 不动，飞机会稳定悬在离地
+# 6~9cm——典型的地面效应稳态（越接近地面同样推力升力越大），Z 位置环（pidZ，ki=0.5）的积分项
+# 短时间内顶不穿这个稳态，导致 zrange 一直卡在 60mm 阈值附近来回蹭。现在改成目标高度在等待
+# 触地期间以 FINAL_DESCENT_RATE_M_S 持续往下探，而不是钉死不动，让位置环始终有一个追不上的
+# 下降误差，不会安定在地面效应稳态里；ramp_down_thrust() 保留作为最后一道防线。
 
 import time
 
@@ -69,9 +78,13 @@ TOUCHDOWN_CONFIRM_S = 0.15 # 连续这么久测距都在阈值以下，才真的
                            # 单帧扫过阈值就误判）
 TOUCHDOWN_MAX_WAIT_S = 5.0 # 兜底上限：一直没等到"确认落地"（比如测距异常）也最多等这么久
                            # 就强制停桨，不能无限悬停耗光电量
-                           # 2026-09 诊断性临时调大（原 2.0）：t5 实测发现降落末段 z 卡在离地
-                           # 6~9cm 反复横跳、2s 内从未跌破 60mm 阈值，不确定是"还没等到"还是
-                           # "真收敛在一个非零稳态"，先给够时间看曲线走向，定位完再改回合理值
+                           # 2026-09 实测确认：地面效应会让飞机稳定悬在离地 6~9cm，Z 位置环
+                           # 短时间内很难自己把这个稳态顶穿，2.0s 明显不够，5.0s 验证可行
+
+FINAL_DESCENT_RATE_M_S = 0.05   # 等待触地阶段，目标高度不再钉死在 LAND_HEIGHT_M 不动，而是
+                                 # 以这个速率持续往下探——避免 Z 位置环在地面效应稳态里"停"住
+                                 # （见 wait_for_touchdown 里的说明）
+FINAL_DESCENT_MAX_DEPTH_M = 0.3  # 目标最多探到地面以下这么多，防止一直没触地时目标无限往下钻
 
 SEND_PERIOD = 0.05         # 20Hz 发送 hover setpoint，同 t4c/t4e
 STATUS_PRINT_PERIOD_S = 0.3    # 飞行全程打印一次 x/y/z 轨迹的间隔，方便复盘水平漂移
@@ -272,16 +285,25 @@ def main():
             （position_controller_pid.c 闭环响应 + EKF 滤波延迟），如果按固定时长悬停后就
             无条件停桨，飞机往往还悬在半空几厘米到十几厘米——send_stop_setpoint 对应固件
             crtp_commander_generic.c 里的 stopType，直接把 setpoint 清零、推力瞬间归零，
-            半空停桨就是自由落体摔下去，不是"落地"。这里改成持续发 LAND_HEIGHT_M 位置指令，
-            用最直接的地面测距 range.zrange（比融合后的 stateEstimate.z 少一层滤波延迟）
-            判断是否真的贴地：连续 TOUCHDOWN_CONFIRM_S 都低于 TOUCHDOWN_ZRANGE_MM 才认为
-            落地。max_wait_s 是兜底上限，避免测距异常时无限悬停耗电。"""
+            半空停桨就是自由落体摔下去，不是"落地"。
+            2026-09 实测发现：如果目标高度就钉死在 LAND_HEIGHT_M 不动，飞机会稳定悬在离地
+            6~9cm（地面效应：越接近地面同样推力升力越大，Z 位置环的积分项短时间内顶不穿这个
+            稳态），测距一直卡在 60mm 阈值附近来回蹭，触地判定要么等不到、要么压线才过。这里
+            改成目标高度持续以 FINAL_DESCENT_RATE_M_S 往下探（最多探到地面以下
+            FINAL_DESCENT_MAX_DEPTH_M），让 Z 位置环始终有一个还没追上的下降误差，不会安定
+            在地面效应稳态里；同时仍然用最直接的地面测距 range.zrange（比融合后的
+            stateEstimate.z 少一层滤波延迟）判断是否真的贴地：连续 TOUCHDOWN_CONFIRM_S 都
+            低于 TOUCHDOWN_ZRANGE_MM 才认为落地。max_wait_s 是兜底上限，避免测距异常时无限
+            下探耗电。"""
             t0 = time.monotonic()
             below_since = None
             while time.monotonic() - t0 < max_wait_s:
-                current_target_h[0] = LAND_HEIGHT_M
-                cf.commander.send_position_setpoint(state["x0"], state["y0"], LAND_HEIGHT_M, state["yaw0"])
-                print_status(LAND_HEIGHT_M)
+                elapsed = time.monotonic() - t0
+                depth = min(FINAL_DESCENT_RATE_M_S * elapsed, FINAL_DESCENT_MAX_DEPTH_M)
+                target_h = LAND_HEIGHT_M - depth
+                current_target_h[0] = target_h
+                cf.commander.send_position_setpoint(state["x0"], state["y0"], target_h, state["yaw0"])
+                print_status(target_h)
                 if not watchdog_ok():
                     raise FlightAbort()
 
