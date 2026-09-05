@@ -470,3 +470,5 @@ xfu                      138          36     102     122
   3. 都确认没问题后，再跑 t5_hover_land.py，看"往左偏"是否解决。如果还有残余漂移（幅度应该明显变小），大概
      率是配平（PITCH_CALIB/ROLL_CALIB）或机械对称性的问题，跟光流无关，可以再用 t5b_zdistance_hold.py
      单独定位。
+	 
+claude --resume 09ad82f5-d01e-487a-b75a-9f7f85ef1f1f

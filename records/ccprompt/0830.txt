@@ -451,4 +451,5 @@ t=   31735  m1=     0  m2= 29848  m3=   882  m4= 30392  |  yawOutP(取负前)=-1
   - YAW -25deg/s 的 expect 从"m1,m3 变小；m2,m4 变大"改成"m1,m3 变大；m2,m4 变小"。
 
   roll/pitch 那四条没动，因为这次改动只影响 control->yaw，不影响 control->roll/control->pitch。
+  
 	 
