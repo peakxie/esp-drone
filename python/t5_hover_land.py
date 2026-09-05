@@ -67,8 +67,11 @@ TOUCHDOWN_ZRANGE_MM = 60   # 判定"已经落地"的测距阈值：起飞前贴�
                            # 留出余量给 VL53L1X 近距噪声，避免刚好卡在临界值附近反复跳变
 TOUCHDOWN_CONFIRM_S = 0.15 # 连续这么久测距都在阈值以下，才真的认为落地（防抖，防止噪声偶尔
                            # 单帧扫过阈值就误判）
-TOUCHDOWN_MAX_WAIT_S = 2.0 # 兜底上限：一直没等到"确认落地"（比如测距异常）也最多等这么久
+TOUCHDOWN_MAX_WAIT_S = 5.0 # 兜底上限：一直没等到"确认落地"（比如测距异常）也最多等这么久
                            # 就强制停桨，不能无限悬停耗光电量
+                           # 2026-09 诊断性临时调大（原 2.0）：t5 实测发现降落末段 z 卡在离地
+                           # 6~9cm 反复横跳、2s 内从未跌破 60mm 阈值，不确定是"还没等到"还是
+                           # "真收敛在一个非零稳态"，先给够时间看曲线走向，定位完再改回合理值
 
 SEND_PERIOD = 0.05         # 20Hz 发送 hover setpoint，同 t4c/t4e
 STATUS_PRINT_PERIOD_S = 0.3    # 飞行全程打印一次 x/y/z 轨迹的间隔，方便复盘水平漂移
@@ -226,7 +229,8 @@ def main():
             dx = (state["x_est"] - x0) if (x0 is not None and state["x_est"] is not None) else None
             dy = (state["y_est"] - y0) if (y0 is not None and state["y_est"] is not None) else None
             print(
-                f"    target_h={target_h:.2f}m  z={state['z_est']}  "
+                f"    target_h={target_h:.2f}m  z={state['z_est']}  zrange={state['zrange_mm']}mm  "
+                f"thrust={state['thrust_est']}  "
                 f"x={state['x_est']}(drift={dx})  y={state['y_est']}(drift={dy})",
                 flush=True,
             )
