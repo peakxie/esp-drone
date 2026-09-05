@@ -55,7 +55,12 @@ LAND_HEIGHT_M = 0.0        # 降落斜坡的终点目标高度
 TAKEOFF_TIME_S = 2.0       # 0.03m -> 0.50m 爬升斜坡时长
 HOVER_TIME_S = 1.0         # 到达目标高度后悬停时长（题目要求：1s）
 LAND_TIME_S = 2.0          # 0.50m -> 0m 下降斜坡时长
-TOUCHDOWN_SETTLE_S = 0.5   # 下降斜坡到 0 之后，贴地停留确认再停桨的时长
+TOUCHDOWN_ZRANGE_MM = 60   # 判定"已经落地"的测距阈值：起飞前贴地读数是几十mm量级（比如18mm），
+                           # 留出余量给 VL53L1X 近距噪声，避免刚好卡在临界值附近反复跳变
+TOUCHDOWN_CONFIRM_S = 0.15 # 连续这么久测距都在阈值以下，才真的认为落地（防抖，防止噪声偶尔
+                           # 单帧扫过阈值就误判）
+TOUCHDOWN_MAX_WAIT_S = 2.0 # 兜底上限：一直没等到"确认落地"（比如测距异常）也最多等这么久
+                           # 就强制停桨，不能无限悬停耗光电量
 
 SEND_PERIOD = 0.05         # 20Hz 发送 hover setpoint，同 t4c/t4e
 STATUS_PRINT_PERIOD_S = 0.3    # 飞行全程打印一次 x/y/z 轨迹的间隔，方便复盘水平漂移
@@ -242,6 +247,37 @@ def main():
                     raise FlightAbort()
                 time.sleep(SEND_PERIOD)
 
+        def wait_for_touchdown(max_wait_s):
+            """下降斜坡结束时目标高度已经到 0，但实测 stateEstimate.z 有 0.1~0.2m 量级的滞后
+            （position_controller_pid.c 闭环响应 + EKF 滤波延迟），如果按固定时长悬停后就
+            无条件停桨，飞机往往还悬在半空几厘米到十几厘米——send_stop_setpoint 对应固件
+            crtp_commander_generic.c 里的 stopType，直接把 setpoint 清零、推力瞬间归零，
+            半空停桨就是自由落体摔下去，不是"落地"。这里改成持续发 LAND_HEIGHT_M 位置指令，
+            用最直接的地面测距 range.zrange（比融合后的 stateEstimate.z 少一层滤波延迟）
+            判断是否真的贴地：连续 TOUCHDOWN_CONFIRM_S 都低于 TOUCHDOWN_ZRANGE_MM 才认为
+            落地。max_wait_s 是兜底上限，避免测距异常时无限悬停耗电。"""
+            t0 = time.monotonic()
+            below_since = None
+            while time.monotonic() - t0 < max_wait_s:
+                current_target_h[0] = LAND_HEIGHT_M
+                cf.commander.send_position_setpoint(state["x0"], state["y0"], LAND_HEIGHT_M, state["yaw0"])
+                print_status(LAND_HEIGHT_M)
+                if not watchdog_ok():
+                    raise FlightAbort()
+
+                zrange = state["zrange_mm"]
+                now = time.monotonic()
+                if zrange is not None and zrange <= TOUCHDOWN_ZRANGE_MM:
+                    if below_since is None:
+                        below_since = now
+                    elif now - below_since >= TOUCHDOWN_CONFIRM_S:
+                        return
+                else:
+                    below_since = None
+                time.sleep(SEND_PERIOD)
+
+            print(f"警告：等待确认落地超过 {max_wait_s:.1f}s 上限，强制停桨。", flush=True)
+
         try:
             print(f"阶段1/3：起飞爬升到 {TARGET_HEIGHT_M:.2f}m（{TAKEOFF_TIME_S:.1f}s）...", flush=True)
             send_ramp(LIFTOFF_HEIGHT_M, TARGET_HEIGHT_M, TAKEOFF_TIME_S)
@@ -251,7 +287,7 @@ def main():
 
             print(f"阶段3/3：降落到地面（{LAND_TIME_S:.1f}s）...", flush=True)
             send_ramp(TARGET_HEIGHT_M, LAND_HEIGHT_M, LAND_TIME_S)
-            hold(LAND_HEIGHT_M, TOUCHDOWN_SETTLE_S)
+            wait_for_touchdown(TOUCHDOWN_MAX_WAIT_S)
 
         except (FlightAbort, KeyboardInterrupt):
             print(

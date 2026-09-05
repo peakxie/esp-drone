@@ -51,7 +51,9 @@ LAND_HEIGHT_M = 0.0
 TAKEOFF_TIME_S = 2.0
 HOVER_TIME_S = 1.0
 LAND_TIME_S = 2.0
-TOUCHDOWN_SETTLE_S = 0.5
+TOUCHDOWN_ZRANGE_MM = 60   # 判定"已经落地"的测距阈值，理由同 t5_hover_land.py
+TOUCHDOWN_CONFIRM_S = 0.15 # 连续这么久测距都在阈值以下才认为落地（防抖）
+TOUCHDOWN_MAX_WAIT_S = 2.0 # 兜底上限：等不到"确认落地"也最多等这么久就强制停桨
 
 SEND_PERIOD = 0.05
 STATUS_PRINT_PERIOD_S = 0.3
@@ -210,6 +212,35 @@ def main():
                     raise FlightAbort()
                 time.sleep(SEND_PERIOD)
 
+        def wait_for_touchdown(max_wait_s):
+            """理由同 t5_hover_land.py：降落斜坡结束后按固定时长悬停就无条件停桨，
+            实测 z 估计值滞后 target_h 有 0.1~0.2m（控制/滤波延迟），会导致停桨时飞机
+            实际还悬空好几厘米到十几厘米，桨一停就是自由落体摔地。改成持续发
+            LAND_HEIGHT_M 的 zdistance 指令，用最直接的地面测距 range.zrange 判断是否
+            真的贴地：连续 TOUCHDOWN_CONFIRM_S 都低于 TOUCHDOWN_ZRANGE_MM 才认为落地。
+            max_wait_s 是兜底上限，避免测距异常时无限悬停耗电。"""
+            t0 = time.monotonic()
+            below_since = None
+            while time.monotonic() - t0 < max_wait_s:
+                current_target_h[0] = LAND_HEIGHT_M
+                cf.commander.send_zdistance_setpoint(0.0, 0.0, 0.0, LAND_HEIGHT_M)
+                print_status(LAND_HEIGHT_M)
+                if not watchdog_ok():
+                    raise FlightAbort()
+
+                zrange = state["zrange_mm"]
+                now = time.monotonic()
+                if zrange is not None and zrange <= TOUCHDOWN_ZRANGE_MM:
+                    if below_since is None:
+                        below_since = now
+                    elif now - below_since >= TOUCHDOWN_CONFIRM_S:
+                        return
+                else:
+                    below_since = None
+                time.sleep(SEND_PERIOD)
+
+            print(f"警告：等待确认落地超过 {max_wait_s:.1f}s 上限，强制停桨。", flush=True)
+
         try:
             print(f"阶段1/3：起飞爬升到 {TARGET_HEIGHT_M:.2f}m（{TAKEOFF_TIME_S:.1f}s）...", flush=True)
             send_ramp(LIFTOFF_HEIGHT_M, TARGET_HEIGHT_M, TAKEOFF_TIME_S)
@@ -219,7 +250,7 @@ def main():
 
             print(f"阶段3/3：降落到地面（{LAND_TIME_S:.1f}s）...", flush=True)
             send_ramp(TARGET_HEIGHT_M, LAND_HEIGHT_M, LAND_TIME_S)
-            hold(LAND_HEIGHT_M, TOUCHDOWN_SETTLE_S)
+            wait_for_touchdown(TOUCHDOWN_MAX_WAIT_S)
 
         except (FlightAbort, KeyboardInterrupt):
             print(
