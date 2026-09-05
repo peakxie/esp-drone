@@ -64,6 +64,19 @@
 # （TOUCHDOWN_ZRANGE_MM 60->90mm，TOUCHDOWN_CONFIRM_S 0.15->0.3s，避免快速下降路过时
 # 误判），并把 THRUST_RAMP_DOWN_TIME_S 从 0.3s 拉长到 0.5s，让这段设计上接受的落差降得
 # 更柔和；顺带把 HOVER_TIME_S 从 1.0s 加到 3.0s。
+#
+# 2026-09 更新：加了逐帧强制打印后发现，上面那个"推力斜坡"(ramp_down_thrust) 才是真正的
+# 元凶，跟地面效应无关——追到固件才搞清楚：这个项目一检测到光流/测距 deck 在线，就会调用
+# sensors_mpu6050_hm5883L_ms5611.c 里的 setCommandermode(POSHOLD_MODE)，把
+# crtp_commander_rpyt.c 里的全局 altHoldMode/posHoldMode 都置成 true。而这两个标志只影响
+# send_setpoint()（ramp_down_thrust 用的就是这个接口）走的 legacy RPYT 解码器：一旦
+# altHoldMode=true，thrust 参数不再是原始推力，而是被重新解释成老式油门摇杆——
+# velocity.z = (rawThrust-32767)/32767，thrust>32767 是爬升、<32767 才是下降。我们的斜坡
+# 从 ~50000 降到 0，等于先命令"爬升 0.5m/s"，降到一半以下才突然变成"以最大 1m/s 下降"——
+# 这就是"落地又弹起、再重重摔下去"的真实原因，跟地面效应气垫完全无关（send_position_setpoint
+# 走的是另一个通道，不受这两个标志影响，之前排查气垫时的结论仍然成立）。现在触地判定已经能
+# 等到真正贴地（zrange 0~10mm），落差不到1cm，不再需要任何斜坡，直接删掉 ramp_down_thrust()，
+# 触地确认后照原来的方式直接调 send_stop_setpoint()。
 
 import time
 
@@ -113,13 +126,6 @@ RANGE_SANE_MAX_MM = 4000   # zrange 合理范围上限：VL53L1X 有效量程外
 
 VX_KI_OVERRIDE = 2.0   # velCtlPid.vxKi 默认 1.0，先保守翻倍——一次调太猛容易在闭环里振荡
 VY_KI_OVERRIDE = 2.0   # velCtlPid.vyKi 默认 1.0，同上
-
-THRUST_RAMP_DOWN_TIME_S = 0.5  # 停桨前，从实测 thrust 线性斜坡降到 0 的时长。
-                               # 2026-09：既然 6~9cm 的气垫压不穿，这一下的落差就是设计上
-                               # 接受的高度，把 0.3s 拉长到 0.5s 让这几厘米落得更柔和一点
-THRUST_RAMP_START_CAP = 50000  # 起点推力的 sanity 上限（满量程 65535），只是防止读到的那一帧
-                                # 恰好是脏数据/尖峰，不是悬停推力估计值——这台机还没标定过真实
-                                # 悬停推力，斜坡起点必须用当时实测值，不能瞎猜一个数
 
 
 class FlightAbort(Exception):
@@ -330,32 +336,6 @@ def main():
 
             print(f"警告：等待确认落地超过 {max_wait_s:.1f}s 上限，强制停桨。", flush=True)
 
-        def ramp_down_thrust(duration_s):
-            """停桨前的最后一段：把原始 thrust setpoint 从当时实测的 stabilizer.thrust
-            线性斜坡降到 0（roll/pitch/yawrate=0，同 t4b/t4c 用的 cf.commander.send_setpoint
-            接口），代替之前"直接调 send_stop_setpoint 瞬间归零"——那一刻控制器算出来的推力
-            大概率还不是 0，瞬间砍掉就是最后一小段自由落体的来源。这台机没标定过真实悬停推力，
-            起点必须用实测值，不能瞎猜。"""
-            start_thrust = state["thrust_est"]
-            if start_thrust is None or start_thrust <= 0:
-                print("警告：未获取到有效的 stabilizer.thrust 读数，跳过推力斜坡，直接停桨。", flush=True)
-                return
-            start_thrust = min(start_thrust, THRUST_RAMP_START_CAP)
-            print(f"推力斜坡：从当前 thrust≈{start_thrust:.0f} 平滑降到 0（{duration_s:.1f}s）...", flush=True)
-            t0 = time.monotonic()
-            try:
-                while True:
-                    elapsed = time.monotonic() - t0
-                    frac = min(1.0, elapsed / duration_s) if duration_s > 0 else 1.0
-                    thrust = start_thrust * (1.0 - frac)
-                    cf.commander.send_setpoint(0, 0, 0, int(thrust))
-                    print_status(0.0, force=True)  # 2026-09 诊断：这 duration_s 内发生了什么之前完全是黑盒
-                    if frac >= 1.0:
-                        break
-                    time.sleep(SEND_PERIOD)
-            except KeyboardInterrupt:
-                pass  # 已经在斜坡降推力了，再按一次 Ctrl+C 就直接跳到下面的硬停桨
-
         try:
             print(f"阶段1/3：起飞爬升到 {TARGET_HEIGHT_M:.2f}m（{TAKEOFF_TIME_S:.1f}s）...", flush=True)
             send_ramp(LIFTOFF_HEIGHT_M, TARGET_HEIGHT_M, TAKEOFF_TIME_S)
@@ -377,8 +357,6 @@ def main():
                 send_ramp(current_target_h[0], LAND_HEIGHT_M, EMERGENCY_LAND_TIME_S)
             except (FlightAbort, KeyboardInterrupt):
                 pass  # 已经在尽力下降了，watchdog 再触发也不再重入，直接走到下面的停桨
-
-        ramp_down_thrust(THRUST_RAMP_DOWN_TIME_S)
 
         print("停桨。", flush=True)
         for _ in range(15):
