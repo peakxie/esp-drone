@@ -113,13 +113,14 @@ void controllerPid(control_t *control, setpoint_t *setpoint,
                                         &control->pitch,
                                         &control->yaw);
 
-    // 原来这里有 control->yaw = -control->yaw，是初次移植带进来的原始代码，没有针对本板
-    // M1/M3 顺时针、M2/M4 逆时针这个真实电机转向验证过。结合角速度环 error=desired-measured
-    // 的符号（pid.c）和混控矩阵 m1/m3 +yaw、m2/m4 -yaw（power_distribution_stock.c），保留
-    // 这次取负会让 yaw 角速度环变成正反馈——t4e_yaw_response_check.py 实测已经坐实：手动往
-    // CCW 转机头时 cmd_yaw 变正、m1/m3(CW) 转速不断升高、m2/m4 逼近 0，加剧而不是纠正转动。
-    // 去掉这次取负后，cmd_yaw 会跟 attitudeControllerGetActuatorOutput 算出的值同号，让
-    // m1/m3 在 CCW 干扰下降速、m2/m4 升速，产生正确方向的顺时针纠正力矩。
+    // 原来这里有 control->yaw = -control->yaw，是初次移植带进来的原始代码。经
+    // t4e_yaw_response_check.py 实测验证后已去掉取负，使 cmd_yaw 与
+    // attitudeControllerGetActuatorOutput 算出的值同号，配合混控矩阵中"顺时针电机
+    // +yaw、逆时针电机 -yaw"的规则（该规则通过电机转向变化后已在
+    // power_distribution_stock.c 中随之互换，见其注释），构成正确的 yaw 负反馈。
+    // 注意：现在 M1/M3 为逆时针、M2/M4 为顺时针（四个电机转向已全部反转），与本注释
+    // 最初撰写时（M1/M3 顺时针、M2/M4 逆时针）相反；此处 cmd_yaw 的符号本身不受电机
+    // 转向影响，无需再改动，但电机反转后应重新用 t4e_yaw_response_check.py 上机验证。
 
     cmd_thrust = control->thrust;
     cmd_roll = control->roll;

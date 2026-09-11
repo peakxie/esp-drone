@@ -95,18 +95,22 @@ void powerDistribution(const control_t *control)
     // CONFIG_PITCH_DISTRIBUTION_INVERTED.
     p = -p;
   #endif
-    motorPower.m1 = limitThrust(control->thrust - r + p + control->yaw);
-    motorPower.m2 = limitThrust(control->thrust - r - p - control->yaw);
-    motorPower.m3 =  limitThrust(control->thrust + r - p + control->yaw);
-    motorPower.m4 =  limitThrust(control->thrust + r + p - control->yaw);
+    // M1/M3/M2/M4 电机转向已全部反转（M1/M3 由顺时针改为逆时针，M2/M4 由逆时针改为
+    // 顺时针，电机物理位置不变）。混控矩阵按"顺时针电机 +yaw、逆时针电机 -yaw"这个
+    // 经验证规则绑定（见 controller_pid.c 中取消 yaw 取负的说明），现在顺时针电机变成
+    // 了 M2/M4，因此把各电机的 yaw 符号整体互换，以保持 yaw 角速度环仍是负反馈。
+    motorPower.m1 = limitThrust(control->thrust - r + p - control->yaw);
+    motorPower.m2 = limitThrust(control->thrust - r - p + control->yaw);
+    motorPower.m3 =  limitThrust(control->thrust + r - p - control->yaw);
+    motorPower.m4 =  limitThrust(control->thrust + r + p + control->yaw);
   #else // QUAD_FORMATION_NORMAL
-    motorPower.m1 = limitThrust(control->thrust + control->pitch +
+    motorPower.m1 = limitThrust(control->thrust + control->pitch -
                                control->yaw);
-    motorPower.m2 = limitThrust(control->thrust - control->roll -
+    motorPower.m2 = limitThrust(control->thrust - control->roll +
                                control->yaw);
-    motorPower.m3 =  limitThrust(control->thrust - control->pitch +
+    motorPower.m3 =  limitThrust(control->thrust - control->pitch -
                                control->yaw);
-    motorPower.m4 =  limitThrust(control->thrust + control->roll -
+    motorPower.m4 =  limitThrust(control->thrust + control->roll +
                                control->yaw);
   #endif
 
