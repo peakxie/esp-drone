@@ -68,6 +68,11 @@ struct this_s {
 
   uint16_t thrustBase; // approximate throttle needed when in perfect hover. More weight/older battery can use a higher value
   uint16_t thrustMin;  // Minimum thrust value to output
+  uint16_t thrustMax;  // Maximum thrust value to output. Kept below UINT16_MAX so the mixer
+                        // (power_distribution_stock.c) always has headroom left to add/subtract
+                        // roll/pitch/yaw correction without silently clipping it against the
+                        // per-motor UINT16_MAX ceiling — saturating this common thrust term to
+                        // the ceiling has been observed to cause runaway yaw spin/drift in flight.
 };
 
 // Maximum roll/pitch angle permited
@@ -155,6 +160,7 @@ static struct this_s this = {
   .thrustBase = 24000,
   .thrustMin  = 5000,
 #endif
+  .thrustMax  = (uint16_t)(UINT16_MAX * 0.9f), // leave 10% of PWM range for mixer headroom
 
 };
 #endif
@@ -244,6 +250,19 @@ void velocityController(float* thrust, attitude_t *attitude, setpoint_t *setpoin
   if (*thrust < this.thrustMin) {
     *thrust = this.thrustMin;
   }
+  // Check for maximum thrust. Without this, a persistent height/velocity error
+  // (e.g. the drone can't keep up with the commanded climb) lets thrustRaw run
+  // up to its outputLimit and *thrust can exceed UINT16_MAX before it even
+  // reaches the mixer. power_distribution_stock.c clamps each motor's
+  // (thrust +/- roll/pitch/yaw) to UINT16_MAX *after* mixing, so once the
+  // common thrust term alone is at/above that ceiling, every motor is already
+  // maxed out and any correction that needs to *add* thrust on a motor gets
+  // silently clipped — the vehicle keeps yaw/roll/pitch authority to reduce a
+  // motor but not to increase one, which shows up as runaway one-directional
+  // spin/drift instead of a stable (if underpowered) hover.
+  if (*thrust > this.thrustMax) {
+    *thrust = this.thrustMax;
+  }
 }
 
 void positionControllerResetAllPID()
@@ -320,6 +339,7 @@ PARAM_ADD(PARAM_FLOAT, zKd, &this.pidZ.pid.kd)
 
 PARAM_ADD(PARAM_UINT16, thrustBase, &this.thrustBase)
 PARAM_ADD(PARAM_UINT16, thrustMin, &this.thrustMin)
+PARAM_ADD(PARAM_UINT16, thrustMax, &this.thrustMax)
 
 PARAM_ADD(PARAM_FLOAT, rpLimit,  &rpLimit)
 PARAM_ADD(PARAM_FLOAT, xyVelMax, &xyVelMax)
