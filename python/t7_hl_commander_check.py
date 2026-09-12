@@ -56,15 +56,38 @@ from config import URI, connect_with_timeout
 
 ESTIMATOR_NAMES = {0: "any", 1: "complementary", 2: "kalman"}
 
-TAKEOFF_HEIGHT_M = 0.3         # 起飞绝对高度，沿用 t5/t6 首次测试的保守高度
-DEFAULT_VELOCITY_MPS = 0.5     # PositionHlCommander 悬停/降落用的默认速度，不做覆盖
-# 首次实机测试暴露的问题：take_off() 用默认 0.5m/s 算出来的爬升时长只有 0.6s
-# （TAKEOFF_HEIGHT_M / DEFAULT_VELOCITY_MPS）。这架机器动力余量不够在 0.6s 内跟上这个
-# 高度指令——take_off() 返回时 zrange 几乎没有升高，thrust 却已经冲到 38737，随后又花了
-# 将近 3s thrust 才慢慢顶到 5.7 万+，期间 yaw 剧烈摆动（推力持续追不上高度指令导致高度环
-# 积分饱和，进而挤占姿态控制的推力余量）。单独放慢起飞速度、拉长爬升时间，给动力和姿态
-# 控制器留出跟踪轨迹的余量；降落沿用默认速度不受影响。
-TAKEOFF_VELOCITY_MPS = 0.15
+TAKEOFF_HEIGHT_M = 0.15        # 起飞绝对高度（第三次实机测试后从 0.3 下调，见下方注释）
+DEFAULT_VELOCITY_MPS = 0.5     # PositionHlCommander 构造时的默认速度；land() 显式传参覆盖，见下
+
+# 第三次实机测试（已确认动力偏弱，机体约 60g）暴露两个问题：
+#   1. 悬停期间 zrange 全程单调爬升、直到 3s 悬停窗口结束才刚摸到 0.3m 目标——真实爬升
+#      速度远跟不上指令，"悬停"实际上全程都在爬升，从未真正稳定在目标高度。把目标高度
+#      降到 0.15m（TAKEOFF_HEIGHT_M，见上），减少总爬升距离/时间需求。
+#   2. land() 时飞机仍处于爬升过渡态（高度环还没收敛），PositionHlCommander.land() 又是
+#      按 Python 侧假设的高度（不是实时测量值）/ 默认 0.5m/s 算出固定降落时长，对这台
+#      动力紧张的机器来说降落窗口太短、下降速度太快，表现为控制器来不及主动刹停、直接
+#      掉了下来。降落单独给一个远低于默认值的速度，拉长降落时长，留出刹停余量。
+LANDING_VELOCITY_MPS = 0.1
+
+# 第二次实机测试暴露的问题：take_off() 用默认 0.5m/s 算出来的爬升时长只有 0.6s
+# （height / velocity）。这架机器动力余量不够在 0.6s 内跟上这个高度指令，高度环因跟丢
+# 目标而把合力顶到 UINT16_MAX 附近，进而在混控里挤占了姿态修正的推力余量（固件侧已经
+# 加了 thrustMax=90% 上限保护，见 position_controller_pid.c）。单独放慢起飞速度、拉长
+# 爬升时间，给动力和控制器留出跟踪轨迹的余量。
+#
+# 第四次实机测试进一步定位：把爬升阶段的日志逐帧看下来，前 1.2~1.5s 电机已经在加推力、
+# 但 zrange 基本没有变化（跟地面读数在噪声范围内），只有最后一段时间才真正开始爬升——
+# 也就是说 take_off() 算出来的总时长里，有相当一部分是"电机从静止爬到能真正提供净升力
+# 之前"的死区（螺旋桨/电机需要时间克服自身惯性和静摩擦才能进入有效爬升，不是立刻就有
+# 净升力），不是这段时间飞机在"以更慢速度爬升"。如果只按目标高度/期望爬升速度算总时长
+# （原来的做法），死区会直接从爬升预算里扣掉，导致留给真实爬升的时间比预期短得多——这
+# 正是第三次测试里"悬停窗口结束才刚摸到目标高度"的原因之一。因此把总时长拆成两段显式
+# 相加：死区时间 + 真实爬升时间，而不是隐式地用一个"爬升速度"去掩盖这个死区。
+# PositionHlCommander.take_off() 只接受 (height, velocity)、内部按 height/velocity 算
+# 总时长，没有直接传总时长的接口，所以这里反过来用总时长换算出一个等效 velocity 传给它。
+TAKEOFF_SPOOLUP_TIME_S = 1.5   # 死区：电机加推力到真正开始爬升之前的时间，取自实测日志的上限
+TAKEOFF_CLIMB_TIME_S = 2.0     # 死区结束后，留给真实爬升到目标高度的时间
+TAKEOFF_VELOCITY_MPS = TAKEOFF_HEIGHT_M / (TAKEOFF_SPOOLUP_TIME_S + TAKEOFF_CLIMB_TIME_S)
 HOVER_TIME_S = 3.0             # 起飞完成后悬停时长
 
 LOG_WAIT_TIMEOUT_S = 2.0       # 起飞前等待第一帧遥测的超时
@@ -298,7 +321,7 @@ def main():
                 # 看门狗可能恰好在这一瞬间触发。这是有意接受的、经过收窄（emergency_stop
                 # 先置位再发包）的残余风险，不是遗漏。
                 print("命令 land：降落...", flush=True)
-                pc.land()
+                pc.land(velocity=LANDING_VELOCITY_MPS)
                 # pc.land() 内部 sleep(duration_s) 已经等完，此刻固件的规划器已经自己从
                 # LANDING 走回 IDLE（planner.c 的 plan_current_goal() 在 plan_is_finished()
                 # 之后自动切回 IDLE）。所以从这一行起，"起飞过"这个状态已经结束——如果接下来

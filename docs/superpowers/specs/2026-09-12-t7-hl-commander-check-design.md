@@ -38,11 +38,13 @@ pc = PositionHlCommander(cf, default_height=TAKEOFF_HEIGHT_M,
 pc.take_off(velocity=TAKEOFF_VELOCITY_MPS)  # 相当于原来 __enter__
 # ...悬停循环，看门狗可能在这期间 stop_event.set()...
 if not stop_event.is_set():
-    pc.land()  # 只有确实还没被看门狗停桨时才降落；已经 stop() 过就不再调 land()
+    pc.land(velocity=LANDING_VELOCITY_MPS)  # 只有确实还没被看门狗停桨时才降落；已经 stop() 过就不再调 land()
 ```
 
-- 起飞高度：`TAKEOFF_HEIGHT_M = 0.3`（沿用 t5/t6 首次测试的保守高度）。
-- **起飞速度（首次实机测试后修正）**：原计划用 `PositionHlCommander` 默认的 `0.5 m/s` 不做调优，但首次实机测试暴露这架机器动力余量不够在 `0.3m / 0.5m/s = 0.6s` 内跟上爬升指令——`take_off()` 返回时 zrange 几乎没有升高，thrust 却已冲到 38737，随后又花了近 3s thrust 才顶到 5.7 万+，期间 yaw 剧烈摆动（高度环因跟丢轨迹而积分饱和，挤占了姿态控制的推力余量）。因此单独引入 `TAKEOFF_VELOCITY_MPS = 0.15`，只用于 `pc.take_off(velocity=TAKEOFF_VELOCITY_MPS)`，把爬升时长拉长到 2.0s；降落速度仍用 `default_velocity`（`DEFAULT_VELOCITY_MPS = 0.5`）不受影响。
+- 起飞高度：`TAKEOFF_HEIGHT_M`，首次测试用 `0.3`（沿用 t5/t6 首次测试的保守高度），第三次实机测试后下调到 `0.15`（见下方"起飞高度/降落速度"条目）。
+- **起飞速度（第二次实机测试后修正）**：原计划用 `PositionHlCommander` 默认的 `0.5 m/s` 不做调优，但第二次实机测试暴露这架机器动力余量不够在 `0.3m / 0.5m/s = 0.6s` 内跟上爬升指令——`take_off()` 返回时 zrange 几乎没有升高，thrust 却已冲到 38737，随后又花了近 3s thrust 才顶到 UINT16_MAX 附近（高度环因跟丢轨迹而积分饱和，把合力顶穿了电机 PWM 量程,在混控里挤占了姿态修正的推力余量,固件侧已加 `thrustMax` 90% 上限保护,见 `position_controller_pid.c`）。
+- **起飞高度/降落速度（第三次实机测试后修正，已确认机体动力偏弱、约 60g）**：第三次测试暴露两个新问题——(1) 悬停期间 zrange 全程单调爬升，直到 3s 悬停窗口结束才刚摸到 0.3m 目标，真实爬升速度远跟不上指令,"悬停"实际全程都在爬升,从未真正稳定在目标高度；(2) `land()` 时飞机仍处于爬升过渡态（高度环还没收敛），而 `PositionHlCommander.land()` 是按 Python 侧假设的高度（不是实时测量值）除以速度算出固定降落时长，对这台动力紧张的机器来说下降窗口太短、速度太快，控制器来不及主动刹停，表现为从高空直接掉落。对应修正：`TAKEOFF_HEIGHT_M` 下调到 `0.15`（减少总爬升距离/时间需求）；新增 `LANDING_VELOCITY_MPS = 0.1`，`pc.land(velocity=LANDING_VELOCITY_MPS)` 单独放慢降落（不再用 `default_velocity` 的 `0.5 m/s`），拉长降落时长、留出刹停余量。
+- **起飞时长拆分为死区+爬升（第四次实机测试后修正）**：逐帧看第三次测试的爬升阶段日志，前 1.2~1.5s 电机已经在加推力但 zrange 基本没有变化（螺旋桨/电机需要时间克服自身惯性和静摩擦才能进入有效爬升），只有最后一段时间才真正开始爬升。之前用单一 `TAKEOFF_VELOCITY_MPS` 常量按 `height / velocity` 算总时长，死区会直接从爬升预算里扣掉，导致留给真实爬升的时间比预期短得多。因此改成显式的两段时间相加：`TAKEOFF_SPOOLUP_TIME_S = 1.5`（死区，取自实测日志上限）+ `TAKEOFF_CLIMB_TIME_S = 2.0`（死区结束后留给真实爬升的时间），`TAKEOFF_VELOCITY_MPS = TAKEOFF_HEIGHT_M / (TAKEOFF_SPOOLUP_TIME_S + TAKEOFF_CLIMB_TIME_S)` 反过来换算成 `PositionHlCommander.take_off()` 唯一接受的 `velocity` 参数（该 API 没有直接传总时长的接口）。
 - 悬停：`HOVER_TIME_S = 3.0`。
 - **起飞后自动校验（新增，最终评审 Important #4）**：`take_off()` 返回后，无论电机实际有没有转，Python 侧都会正常往下走——这正是背景第 2 点"静默失败"的同一类症状。`take_off()` 返回后必须检查 `state['zrange_mm']`/`state['z_est']` 相对起飞前的 `zrange0` 确实发生了预期方向的变化（`range.zrange` 是下视测距，离地爬升时读数会**变大**，不是变小——同 t5/t6 对 `zrange` 的用法），不满足就打印警告（不需要因此中止降落流程，但必须让操作者知道"可能没有真的离地"）。
 
