@@ -301,3 +301,6 @@ posHoldMode 控制流程分析
 ✻ Crunched for 4m 13s · done 18:03
 
 claude --resume d4700392-c115-45c9-90be-797f5fa41961
+
+
+export ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-5[1m]

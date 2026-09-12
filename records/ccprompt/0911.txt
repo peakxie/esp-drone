@@ -1,0 +1,33 @@
+m1由原来的顺时针转，改成逆时针转。m2 m3 m4都做了同样的变更。请修改固件
+
+● 现在四个电机都反转了方向（M1/M3 原来顺时针变逆时针，M2/M4
+  原来逆时针变顺时针），电机物理位置没变。混控矩阵里 yaw 项的正负号是按"顺时针电机给 +yaw，逆时针电机给
+  -yaw"这个经验证的规则绑定的（见 controller_pid.c:116-122 的注释），所以需要把 power_distribution_stock.c
+  里 m1..m4 的 yaw 符号整体互换，才能保持 yaw 负反馈正确、不产生之前那种"正反馈转飞"的问题。
+
+  Let me make the fix.
+
+Those diagnostics are pre-existing clangd/cross-compiler config noise (xtensa-specific flags clangd
+  doesn't understand), unrelated to this edit.
+
+  Changes made:
+
+  power_distribution_stock.c — swapped the yaw mixing sign for all four motors in both the QUAD_FORMATION_X
+  (active) and QUAD_FORMATION_NORMAL (dead-code fallback) branches: M1/M3 now get -yaw, M2/M4 now get +yaw
+  (previously the reverse). Roll/pitch terms are untouched since motor positions didn't change, only spin
+  direction.
+
+  controller_pid.c — updated the explanatory comment to reflect that M1/M3 are now the counter-clockwise
+  motors and M2/M4 are now clockwise (previously the opposite), and pointed to the sign swap in
+  power_distribution_stock.c that keeps the invariant intact. The cmd_yaw sign itself didn't need to
+  change.
+
+  Why the swap was necessary: the yaw mixer sign is bound to physical spin direction, not motor index —
+  "clockwise motor → +yaw, counter-clockwise motor → -yaw" is the empirically-verified rule (see the
+  original bug fix this repo already carries, which caused a positive-feedback spin-out when this was
+  wrong). Since you reversed all four motors, whichever motors used to be CW are now CCW and vice versa, so
+  the mixer signs must swap too — otherwise yaw control becomes positive feedback again.
+
+  Important: since real motor direction changed, please re-run the bench yaw-response test
+  (python/t4e_yaw_response_check.py, props off) before flying, to confirm yaw is negative feedback with the
+  new wiring.

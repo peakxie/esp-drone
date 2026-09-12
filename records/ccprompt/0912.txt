@@ -1,0 +1,441 @@
+1.分析固件，在定点模式的起飞，悬停，降落的过程
+2.分析固件，定点模式QMC5883L SPL06 的作用?
+3.参考@python/t5_hover_land.py 新实现一个脚本，一次连接可以发送多个命令，比如 takeoff landing 悬停 指定定点 定高等
+4.探索一下python控制高级命令
+5.中文回复
+
+3. 保持现状。看看另外我提的问题？                                                                        
+
+  Thought for 1m 29s (ctrl+o to expand)
+
+● 好，保持现状，不做合并/PR/清理。现在回答你另外提的问题。
+
+  1. 定点模式下起飞/悬停/降落的固件流程
+
+  这个项目里的"定点模式"（POSHOLD_MODE）本质是开机自检时的一次性选择，不是飞行中动态切换的。 调用链在
+  sensors_mpu6050_hm5883L_ms5611.c 的传感器初始化里：
+
+  sensorsInit()
+    → zRanger2Init()/zRanger2Test()      // 测距(VL53L1X)检测
+    → flowdeck2Init()/flowdeck2Test()    // 光流(PMW3901)检测
+         检测成功 → setCommandermode(POSHOLD_MODE)
+                      → altHoldMode=true; posHoldMode=true
+                      → registerRequiredEstimator(kalmanEstimator)
+         只有气压计、没光流 → setCommandermode(ALTHOLD_MODE)（退化成只定高）
+  → stabilizerInit() 读 requiredEstimator，真正启用 kalman 滤波器
+
+  所以"定点模式"能不能生效，取决于开机那一刻光流/测距 deck
+  是否被检测到；飞行途中不会因为传感器数据变好或变坏而动态升级/降级模式。
+
+  在这个前提下，起飞/悬停/降落这三个阶段，固件侧做的事其实完全一样——都是同一套串级 PID
+  在跟踪地面站/脚本发来的目标位置，区别只是目标值怎么变化：
+
+  - 外环位置 PID（position_controller_pid.c，pidX/pidY kp=1.9 ki=0.1，pidZ kp=1.6 ki=0.5）：只在
+    setpoint.mode.x/y/z == modeAbs 时生效，用"目标位置 − kalman 估计位置"算出一个目标速度。
+  - 内层速度 PID（pidVX/pidVY kp=25 ki=1.0，pidVZ kp=22 ki=15）：用"目标速度 − kalman 估计速度"算出
+    roll/pitch 姿态角和推力。
+  - 再往下交给姿态环（controller_pid.c）转成电机指令。
+
+  起飞：地面站/脚本把目标高度从接近 0
+  逐渐斜坡抬升到目标值（固件本身没有"自动起飞"这个动作——crtp_commander_high_level.c 里确实编译了
+  takeoff()/planner.c 那套自动轨迹规划，但这个项目的定点模式用的是另一条路径，起飞节奏完全由外部持续发送的
+  setpoint 决定）。
+
+  悬停：目标位置钉死不变，外环+内层两个 PID 持续把估计位置/速度往目标值上拉。
+
+  降落：目标高度斜坡降到 0；t5/t6 脚本踩出来的经验是——altHoldMode=true 时，固件的 legacy RPYT
+  解码器（crtp_commander_rpyt.c）会把 send_setpoint() 的 thrust 参数重新解释成"老式油门摇杆"（>32767
+  爬升、<32767
+  下降），所以千万不能用推力斜坡去停桨，否则会先命令"爬升"再突然"最大速度下降"，导致落地反弹；同时贴地会有
+  6~9cm 的地面效应气垫，Z 位置环压不穿，触地判定要用 range.zrange 原始读数而不是融合后的估计值。
+
+  2. QMC5883L 和 SPL06 在定点模式里的作用
+
+  气压计 SPL06：在 sensors_mpu6050_hm5883L_ms5611.c 里初始化，输出
+  sensorData.baro.asl（气压转海拔）。两个估计器都会用它：
+  - Complementary 估计器（position_estimator_altitude.c）：在 ALTHOLD_MODE（没光流 deck 的退化模式）下是 Z
+    方向唯一的高度观测源。
+  - Kalman 估计器（estimator_kalman.c）：作为高度观测融合进去，但在真正的 POSHOLD_MODE 下，更精确的
+    range.zrange（VL53L1X 测距）才是主力高度观测，气压计更多是背景/冗余参考——尤其室内近地飞行时，气流/桨叶
+    下洗会让局部气压产生噪声，测距的精度和响应都更好。
+
+  磁力计 QMC5883L——这里有个值得你知道的发现：它目前实际上没有参与姿态/航向闭环。搜了
+  estimator_complementary.c、sensfusion6.c、estimator_kalman.c
+  全部三个跟姿态估计相关的文件，都没有任何地方读取 sensorData.mag。它只是被 stabilizer.c 里的 LOG_ADD
+  暴露给地面站显示（x/y/z 磁场值），yaw 完全靠陀螺仪积分 +
+  Mahony/互补滤波算出来。也就是说：磁力计有没有检测成功、读数好不好，完全不影响 POSHOLD_MODE
+  的触发（触发只看光流+测距），飞行时也不参与任何闭环控制——它是"存在但没被消费"的原始数据。如果以后想做航向
+  漂移矫正，这是一个现成但还没接上的传感器。
+
+  3. Python 高级命令控制（cflib）
+
+  跟你们现在这套脚本（手写 ramp）平行的官方封装，分三层，越往下越"高层"但也越依赖固件配合：
+
+  类: MotionCommander（cflib.positioning.motion_commander）
+  底层机制: 内部还是周期性调用 send_hover_setpoint，起了个后台线程
+  特点: forward()/turn_left()/circle_left()
+  等距离/角度语义的阻塞方法；本质跟你们现在的接口同层，速度闭环、无绝对位置修正，帮不了漂移问题
+  ────────────────────────────────────────
+  类: PositionHlCommander（cflib.positioning.position_hl_commander）
+  底层机制: 真正转发给 HighLevelCommander（走独立 CRTP 端口 0x08，固件侧 crtp_commander_high_level.c
+  的轨迹规划器）
+  特点: take_off()/land()/go_to() 直接交给固件端插值/规划，Python 侧只需 sleep(duration) 等完成——是"少写
+  ramp 代码"这个诉求最贴近的官方方案
+  ────────────────────────────────────────
+  类: HighLevelCommander 本身
+  底层机制: 同上
+  特点: 额外支持 spiral()、start_trajectory()（预定义分段多项式轨迹）
+
+  关键限制：查了这个仓库，crtp_commander_high_level.c 确实编译进了 ESP-Drone 固件（826行，含
+  handleCommand()/planner），但从未做过飞行验证，而且固件的命令枚举只到 LAND_WITH_VELOCITY，比 cflib
+  新版少了 SPIRAL/GO_TO_2（linear 插值）/START_TRAJECTORY_2——这也是这次 t6 设计时特意不采用
+  HighLevelCommander 的原因，继续用你们已经验证过的 send_position_setpoint 路线更稳妥。
+
+  另外两个辅助工具：SyncCrazyflie（把异步连接包装成 with 阻塞式，比手写 connect_with_timeout
+  更省事）、cflib.utils.reset_estimator.reset_estimator(cf)（起飞前复位 kalman 估计器并等收敛，官方 example
+  常用）。
+
+  ---
+
+  t6_flight_sequence.py 的收尾状态：代码、测试（18/18）、逐任务 review、全量 review + 修复 +
+  复核全部完成，分支保持原样没合并。唯一还没做的是计划里的 Task
+  3——真机试飞验证，这一步需要你本人在现场操作（先跑最小计划 takeoff 0.3m/hover 2s/land，再验证 goto，再测
+  Ctrl+C 紧急下降），我不会也不应该代替你执行这一步。
+  
+  claude --resume f65f71f5-0c3c-491c-8c19-e3cfb6d140b9
+  
+  
+  Good — the firmware research turned up something critical that changes the design. Let me lay out the
+  full picture and a concrete plan.
+
+  Firmware facts (verified in source, not the earlier secondhand summary)
+
+  - crtp_commander_high_level.c: TAKEOFF_2(7)、LAND_2(8)、STOP(3)、GO_TO(4，旧版非
+    _2)都已实现。GO_TO_2(12)/START_TRAJECTORY_2 等新命令枚举里根本不存在——但因为固件上报的
+    PROTOCOL_VERSION=4（config.h:46），cflib 的 go_to() 会自动走旧的 COMMAND_GO_TO 分支，不会碰到不存在的
+    _2 命令。反正这次也不用 go_to，这条只是确认没有隐藏地雷。
+  - 关键前提，之前完全没注意到：commander.c:48 enableHighLevel 默认 false，且是一个运行时
+    param（commander.enHighLevel）。commanderGetSetpoint() 只有在这个 param 被设成 1 时才会把 setpoint
+    交给高层规划器，否则一直是 nullSetpoint（停桨态）。也就是说：不设这个 param，take_off()/land() 
+    发出去固件根本不理会，电机不会转，脚本还会以为自己在正常等
+    sleep——这是静默失败，不是危险失败，但必须在起飞前设置并回读确认，否则测试没有意义。
+  - commander.c:87：任何一次低层 send_position_setpoint（t5/t6 用的路线）都会强制把高层规划器打回
+    idle。所以这个新脚本必须是"纯高层"的，不能像 t6 那样混用低层 setpoint。
+  - x/y 位置估计：只有 kalman 估计器给的是真实值，complementary 估计器下 x/y 硬编码
+    0（position_estimator_altitude.c:106-108）。因为这次只测 take_off+land（不测
+    go_to），水平位置只是"悬停不动"，即使估计器不是 kalman，风险跟 t5/t6
+    已知的"缓慢漂移"警告一致，不是新风险。
+
+  提议的设计
+
+  脚本名：python/t7_hl_commander_check.py（延续 t0~t6 编号）
+
+  范围：单次连接，with PositionHlCommander(cf) as pc: 起飞到 0.3m → 悬停几秒 → 退出 with 自动 land()。不测
+  go_to。
+
+  起飞前（复用 t6 的 connect_with_timeout/read_current_estimator/range.zrange 合理性检查）新增一步：显式
+  cf.param.set_value('commander.enHighLevel', '1')，回读确认（用跟 read_current_estimator 一样的 param
+  回读模式），失败则拒绝起飞。
+
+  异常/超时处理（已确认走最简方案）：
+  - 用 with 保证任何异常/Ctrl+C 都会触发 land()（__exit__）。
+  - 额外起一个后台线程只做监控：日志新鲜度（同 t6 的 LOG_STALE_TIMEOUT_S）+
+    总时长硬上限（MAX_FLIGHT_TIME_S，比如 15s），触发时直接调
+    cf.high_level_commander.stop()（立即停桨，不是斜坡）。0.3m 高度下即使真触发，摔落风险可接受。
+  - 全程打印 range.zrange/stateEstimate.z 状态（复用 t6 的 print_status 思路），但只做展示，不参与控制。
+
+  明确不做的事：不测 go_to/spiral/轨迹；不混用低层 send_position_setpoint；不引入
+  cflib.utils.reset_estimator（依赖的 kalman.varPX 等虽然固件里存在，但这项目至今没验证过 kalman
+  是否真的在跑，引入一个新的未验证等待逻辑会增加本次测试的风险面，先复用 t6 已有的 read_current_estimator
+  警告即可）。
+
+  这个设计和上面几轮回答（真实起降、PositionHlCommander、只测
+  take_off+land、最简异常处理）一致吗？如果没问题我会写成 spec 文档存到 docs/superpowers/specs/，然后再进
+  writing-plans
+  
+  
+  The final review came back do not merge as-is — it found a real safety bug that I verified directly
+  against the firmware source, and it directly contradicts what I wrote into the approved design spec
+  myself.
+
+  Critical, independently confirmed in planner.c:
+  - plan_takeoff() (planner.c:138) refuses unless the planner is IDLE.
+  - plan_land() (planner.c:153) only refuses if already LANDING — it does not check for IDLE.
+  - stop() (plan_stop, planner.c:69-71) sets state to IDLE.
+
+  So calling land() after stop() is not the harmless no-op my design spec claimed
+  ("对已经停桨的飞机再发一次 land 命令是已知的、可接受的冗余动作...不会造成新的风险") — it reactivates the
+  planner from IDLE into LANDING, and position_controller_pid.c's thrustBase (documented as "should just
+  lift the drone") means the motors get near-hover thrust again for ~0.6–1s. This fires on two real paths
+  in the script as written:
+  - Watchdog aborts mid-hover → stop() cuts power → the with block's __exit__ then calls land() anyway →
+    motors re-arm on a drone that may already be down or tipped over.
+  - Ctrl+C mid-hover → __exit__ already lands correctly → the outer except fires again and sends a second
+    land()+stop() → same re-arm, for a full extra second, right as the operator (per the script's own
+    safety instructions) is standing by to catch the drone.
+
+  Important, also confirmed by reading the code:
+  - The emergency fallback (land() → sleep → stop()) has no guard — if land() itself raises (e.g. broken
+    link, the most likely trigger), stop() never runs and the exception escapes uncaught.
+  - The except (KeyboardInterrupt, Exception): block swallows the actual exception and never prints it — on
+    a first-ever flight of unverified firmware, that's the most important diagnostic information the
+    script could produce.
+  - No lock between the watchdog thread and main thread calling cf.high_level_commander — they can
+    interleave.
+
+  This is a genuine gap in my own design, not an implementer error — the plan text explicitly mandated the
+  "redundant land is harmless" behavior. Given it's a real physical-safety issue on an actual drone, I want
+  your sign-off before I dispatch a fix, rather than just patching it silently.
+  
+  
+  All review rounds are clean now. Let me summarize what happened before wrapping up the branch.
+
+  The subagent-driven-development workflow is done: both plan tasks implemented and approved, and the final
+  whole-branch review went through three rounds — each round's fix closed the named issue but exposed one
+  more edge of the same underlying hazard, until the third re-review came back clean with no further
+  findings. Net result: python/t7_hl_commander_check.py now exists, using cflib's PositionHlCommander to
+  test the ESP-Drone firmware's never-flown HighLevelCommander path (take off to 0.3m → hover 3s → land),
+  with:
+
+  - A required commander.enHighLevel=1 pre-flight gate (the firmware silently ignores high-level commands
+    without it).
+  - No with-statement auto-land — explicit take_off()/land() gated by a took_off flag that's cleared the
+    instant landing completes, because planner.c's plan_land() accepts re-entry from IDLE (only
+    plan_takeoff() guards on it) and would otherwise re-arm the motors near hover thrust.
+  - A background watchdog (log-staleness + hard time cap) that can only ever send stop(), never a ramp.
+  - A post-takeoff telemetry check so a silent failure (e.g. enHighLevel not actually taking effect) gets
+    reported instead of assumed.
+
+  Now finishing up the branch.
+  
+  
+  ● Understood — leaving everything as-is on pydrone-cc (no merge, no PR, no push). All 22 tests pass,
+  working tree is clean.
+
+  Summary of this session: python/t7_hl_commander_check.py now exists — a real-flight test of the ESP-Drone
+  firmware's never-flown HighLevelCommander path (take off to 0.3m → hover 3s → land, via cflib's
+  PositionHlCommander), plus its design spec, implementation plan, and unit tests. The final review went
+  through three rounds, each closing one more edge of the same hazard (land() sent to a planner already
+  back in IDLE re-arms the motors near hover thrust) until the third came back clean. The script is
+  code-complete and reviewed; the one thing nobody can automate is the actual physical flight test — that
+  still needs you on-site with the drone, low height, someone ready to cut power, per the script's own
+  header warning.
+  
+  
+  已连接。                                                                                                 
+  当前 stabilizer.estimator = 2 (kalman)                                                                   
+  已确认 commander.enHighLevel = 1。                                                                       
+  起飞前地面测距 = 27mm，commander.enHighLevel 已确认，开始起飞。                                          
+      z=0.026621926575899124  zrange=27mm  thrust=0.0  x=0.20575575530529022  y=-0.0424368642270565        
+  yaw=0.2789263427257538                                                                                   
+      z=0.0245682280510664  zrange=25mm  thrust=0.0  x=0.21155788004398346  y=-0.04277501255273819         
+  yaw=0.25549396872520447                                                                                  
+      z=0.026639355346560478  zrange=27mm  thrust=0.0  x=0.21309153735637665  y=-0.04341709613800049       
+  yaw=0.257144033908844                                                                                    
+      z=0.02450549229979515  zrange=25mm  thrust=0.0  x=0.21500614285469055  y=-0.04258101060986519        
+  yaw=0.24632211029529572                                                                                  
+      z=0.02400294505059719  zrange=25mm  thrust=38737.25390625  x=0.21308498084545135                     
+  y=-0.049452636390924454  yaw=0.0697547197341919                                                          
+  警告：起飞前后 zrange 27mm -> 0mm，没有观察到预期的升高（预期至少上升                                    
+  100mm）。飞机可能没有真的起飞（比如 commander.enHighLevel                                                
+  没有真正生效，这正是本脚本要抓的静默失败模式）。仍会继续走完悬停/降落流程，请现场确认飞机状态。          
+  悬停 3.0s...                                                                                             
+      z=0.0071095069870352745  zrange=0mm  thrust=46168.36328125  x=0.20190832018852234                    
+  y=-0.04515508934855461  yaw=-0.3882996737957001                                                          
+      z=0.056438837200403214  zrange=63mm  thrust=44663.515625  x=0.2174910008907318                       
+  y=-0.05365762487053871  yaw=-1.7383034229278564                                                          
+      z=0.08646393567323685  zrange=88mm  thrust=49567.5  x=0.21727705001831055  y=-0.08378936350345612    
+  yaw=-0.4758039116859436                                                                                  
+      z=0.03874019905924797  zrange=36mm  thrust=54512.73046875  x=0.19234803318977356                     
+  y=-0.048658568412065506  yaw=0.3789355754852295                                                          
+      z=0.10290579497814178  zrange=97mm  thrust=49649.30078125  x=0.1715746372938156                      
+  y=-0.055901311337947845  yaw=-1.301157832145691959  yaw=-0.140242338180542                               
+      z=0.10942091792821884  zrange=106mm  thrust=56650.0859375  x=0.14216557145118713                     
+  y=-0.05317093804478645  yaw=-0.038432661443948746                                                        
+      z=0.1281615048646927  zrange=128mm  thrust=57055.83203125  x=0.13149721920490265                     
+  y=-0.04659567400813103  yaw=0.21014189720153809                                                          
+      z=0.1561511754989624  zrange=154mm  thrust=57681.46484375  x=0.1322912573814392                      
+  y=-0.04355046898126602  yaw=-0.0495036318898201                                                          
+  命令 land：降落...                                                                                       
+      z=0.2032482773065567  zrange=197mm  thrust=57320.75  x=0.12838058173656464                           
+  y=-0.045682091265916824yaw=0.3080633580684662                                                            
+      z=0.23670680820941925  zrange=235mm  thrust=54176.046875  x=0.12612003087997437                      
+  y=-0.041541293263435364  yaw=0.3450983762741089                                                          
+  飞行结束（已降落）。                                                                                     
+                                                                                                           
+  ----分析下这个过程，最后直接掉下来了                                                                     
+
+  Thought for 26s (ctrl+o to expand)
+
+● Skill(superpowers:systematic-debugging)
+  ⎿  Successfully loaded skill
+
+  Thought for 10s (ctrl+o to expand)
+
+● Bash(git log --oneline -20 -- . | head -30 && echo "---" && find . -iname "*t7*" -not -path
+      "*/node_modules/*" 2>/dev/null)
+  ⎿  cf33b11 docs: sync t7 spec with took_off clear-after-land semantics
+     9e2eb6b fix: clear took_off after successful land() in t7, closing third re-arm door
+     4e0ae7b fix: narrow residual land()-after-stop() race in t7, gate emergency land on took_off
+     … +24 lines (ctrl+o to expand)
+
+  Thought for 2m 44s, searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● 时间线拆解
+
+  起飞前（thrust=0，zrange 25-27mm）：地面静止，一切正常。
+
+  take_off() 调用期间：thrust 从 0 冲到 38737（约 59% 满量程），但同一时刻 z_est≈0.024m、zrange≈25mm ——
+  跟地面时几乎没有变化。take_off() 返回瞬间读到的 zrange_after_takeoff 是 0mm（触发脚本自带的警告）。
+
+  "悬停"阶段（脚本仍继续走完流程）：
+  zrange: 0 → 63 → 88 → 36 → 97 → 106 → 128 → 154 (mm)
+  thrust: 46168 → 44663 → 49567 → 54512 → 49649 → 56650 → 57055 → 57681
+  yaw:    -0.39 → -1.74 → -0.48 → 0.38 → -1.30 → -0.04 → 0.21 → -0.05 (rad)
+  land() 阶段：zrange 继续上升到 197mm、235mm，随后日志中断，飞机"直接掉下来"。
+
+  关键判读
+
+  1. commander.enHighLevel 没有静默失效 —— 这正是本脚本设计要抓的失败模式，可以排除：thrust 从 0 一路爬升到
+     5.7万+，说明高层规划器确实在发力，姿态/推力控制器确实在响应命令。
+  2. thrust 持续爬升但高度不涨，是积分饱和（integrator
+     windup）的典型信号：控制器认为"没到目标高度（0.3m）"，就一直加推力，但实际测出来的高度就是不涨——这通常
+     意味着飞机没有保持水平，推力没有转化为垂直升力（倾覆/侧翻/被卡住时最常见）。
+  3. yaw 在 300ms 间隔里从 -1.74rad 摆到 +0.38rad（约120°摆幅，折合角速度 >400°/s），远超正常悬停时
+     yaw-hold 该有的幅度（起飞前 yaw 只有 0.25-0.27rad，高层命令的目标 yaw 是 0，只需修正约15°）。这种量级
+     的摆动不是"估计器漂移"能解释的，更像飞机在物理上打转/侧翻/在地面磕碰弹跳（zrange 0→63→88→36→97…这种非
+     单调的忽高忽低，也很像贴着地面弹跳时测距忽而对地、忽而对着倾斜姿态下的空气或障碍物）。
+  4. land() 期间 zrange 不降反升（197→235mm），说明此时飞机的真实状态和"降落轨迹"完全脱节——很可能这时飞机已
+     经处于失控的翻滚/上扬状态，而不是在按 land() 规划的斜坡下降。PositionHlCommander.land() 是按固定时长（
+     height/velocity≈0.6s）阻塞发送轨迹的，跟真实状态没有闭环反馈；这段固定时长跑完之后，脚本紧接着调用
+     stop() 立即切断推力（t7 的既有安全设计——不管当时真实姿态/高度如何，land()返回后必定
+     stop()）。如果这时飞机因为失控实际处于较高/侧翻的状态，stop()
+     一断电就会直接摔下来——这跟你观察到的"最后直接掉下来"是吻合的。
+
+  结论（置信度分层）
+
+  - 可以确认：这不是"高层命令没生效"的静默失败，是飞机在飞行/姿态控制层面失控了。
+  - 较有把握的假设：起飞瞬间就没有建立起稳定的水平姿态（侧翻/磕碰/弹跳),导致后续推力越加越大也无法真正爬升
+    ，yaw 剧烈摆动是这个失控过程的表现,而不是根因本身。
+  - 无法从这份日志单独判定的（需要更多证据）：这是crtp_commander_high_level.c/planner.c
+    这条从未做过实机验证的固件路径本身的轨迹生成/控制增益问题，还是纯硬件问题（桨叶/电机/地面不平/电池电压
+    不足导致推力权限不够、机身重心偏）。这两类原因在这份日志（只有
+    zrange/z/x/y/yaw/thrust）里表现相似，区分需要：
+    - 现场目视/录像复盘起飞瞬间到底发生了什么（侧翻？弹跳？某个电机没转?）
+    - 或者加测 stabilizer.roll/pitch、gyro.*、每个电机的
+      PWM（motor.m1~m4）来看是姿态先失控还是某个电机响应异常。
+
+  如果你想继续查，我建议先看现场当时的实际画面/记忆（有没有看到飞机侧翻或磕到东西），如果没有目视线索，再考
+  虑给 t7 加一版 stabilizer.roll/pitch + 电机 PWM 的日志变量重新试一次，这样能把"固件轨迹生成 bug" vs
+  "硬件/姿态失控"这两个假设分开。要不要我先去翻一下 crtp_commander_high_level.c/planner.c 里 takeoff
+  轨迹生成那一段，看看有没有明显可疑的地方？
+  
+  
+  改动已完成：
+
+  - python/t7_hl_commander_check.py：新增 TAKEOFF_VELOCITY_MPS = 
+    0.15，pc.take_off(velocity=TAKEOFF_VELOCITY_MPS) 单独放慢起飞（0.3m 爬升从 0.6s 拉长到
+    2.0s），降落仍用默认 0.5 m/s 不受影响，并加了注释说明依据。
+  - 同步更新了 docs/superpowers/specs/2026-09-12-t7-hl-commander-check-design.md
+    里"起飞/降落速度"那条设计决策。
+
+  之前 grep 过 test_t7_hl_commander_check.py，里面没有硬编码具体速度/时长数值，不受这次改动影响。本来想跑一
+  下单测确认，但当前 Bash 分类器暂时不可用（"claude-sonnet-5 temporarily unavailable"），没能执行
+  pytest——麻烦你本地跑一下 python3 -m pytest python/test_t7_hl_commander_check.py -q 确认，或者我稍后重试。
+
+  这次只调了起飞速度，没动高度/悬停时长；如果现场再测一次还是爬不到位，大概率就不只是"时间不够"，而是最大推
+  力本身余量不足（比如低电量、桨/电机磨损），到时候可以看当时 thrust 有没有顶到接近 65535 满量程来判断。
+  
+  claude --resume b1f728f0-145e-4f8d-b3a1-ab9d1bcfa992
+  
+  
+  当前 stabilizer.estimator = 2 (kalman)
+已确认 commander.enHighLevel = 1。
+起飞前地面测距 = 23mm，commander.enHighLevel 已确认，开始起飞。
+    z=0.02198951132595539  zrange=24mm  thrust=0.0  x=0.1643543243408203  y=0.17217499017715454  yaw=-0.710966169834137
+    z=0.02392767369747162  zrange=25mm  thrust=0.0  x=0.16196508705615997  y=0.16984809935092926  yaw=-0.6864505410194397
+    z=0.022767284885048866  zrange=23mm  thrust=0.0  x=0.16241978108882904  y=0.16926050186157227  yaw=-0.6604491472244263
+    z=0.021855637431144714  zrange=21mm  thrust=0.0  x=0.16183707118034363  y=0.16623912751674652  yaw=-0.6375346779823303
+    z=0.02042616903781891  zrange=23mm  thrust=34774.26953125  x=0.16235433518886566  y=0.16697537899017334  yaw=-0.43700075149536133
+    z=0.022609589621424675  zrange=23mm  thrust=35620.80859375  x=0.16453881561756134  y=0.16275553405284882  yaw=-1.7567695379257202
+    z=0.022134529426693916  zrange=24mm  thrust=39628.2265625  x=0.16751821339130402  y=0.16423168778419495  yaw=-2.074049949645996
+    z=0.015863189473748207  zrange=15mm  thrust=44412.39453125  x=0.1271040439605713  y=0.14535942673683167  yaw=-1.3828542232513428
+    z=0.003384791314601898  zrange=7mm  thrust=48799.22265625  x=0.1688293069601059  y=0.19553035497665405  yaw=0.07920639216899872
+    z=0.041941024363040924  zrange=44mm  thrust=50464.30078125  x=0.15479245781898499  y=0.14540740847587585  yaw=-0.0167207270860672
+警告：起飞前后 zrange 23mm -> 44mm，没有观察到预期的升高（预期至少上升 100mm）。飞机可能没有真的起飞（比如 commander.enHighLevel 没有真正生效，这正是本脚本要抓的静默失败模式）。仍会继续走完悬停/降落流程，请现场确认飞机状态。
+悬停 3.0s...
+    z=0.04672371596097946  zrange=43mm  thrust=53507.05859375  x=0.13602185249328613  y=0.15259863436222076  yaw=0.1381436288356781
+    z=0.048543352633714676  zrange=49mm  thrust=53913.27734375  x=0.12443862855434418  y=0.18564684689044952  yaw=0.015753747895359993
+    z=0.11228951066732407  zrange=113mm  thrust=53587.69921875  x=0.11664111912250519  y=0.16911116242408752  yaw=0.4198327660560608
+    z=0.1015562042593956  zrange=98mm  thrust=59204.25  x=0.10415185242891312  y=0.15672750771045685  yaw=0.5947605967521667
+    z=0.10477066040039062  zrange=107mm  thrust=61897.6875  x=0.09321983903646469  y=0.16137883067131042 yaw=1.5146828889846802
+    z=0.10756010562181473  zrange=110mm  thrust=64918.0234375  x=0.058148059993982315  y=0.18976782262325287  yaw=2.274031639099121
+    z=0.1001560166478157  zrange=103mm  thrust=66767.0  x=-0.00817187037318945  y=0.24083548784255981  yaw=3.1385562419891357
+    z=0.11286144703626633  zrange=112mm  thrust=66767.0  x=-0.05925644561648369  y=0.2750798463821411  yaw=2.7513177394866943
+    z=0.10165175050497055  zrange=103mm  thrust=66767.0  x=-0.0750294104218483  y=0.3041267991065979  yaw=2.405094861984253
+命令 land：降落...
+    z=0.12043348699808121  zrange=120mm  thrust=66767.0  x=-0.08023805171251297  y=0.31677013635635376  yaw=-0.7984735369682312
+飞行结束（已降落）。
+
+----新的测试数据(观察到的现象，飞起一段，稳住，然后乱飞一洗，然后掉地上了)，请分析
+
+这次数据比上次更能说明问题——而且直接说明上次"放慢起飞速度"的修改没有解决根本问题（悬停阶段照样炸了），需
+  要往回退一步，重新定位根因。
+
+  这次日志的关键信号
+
+  1. thrust 持续单调爬升到 66767，且连续 3 帧完全一样（66767.0 / 66767.0 /
+     66767.0）——这是打满上限的典型特征，不是正常控制量。
+  2. 同一时间窗口内 yaw 持续单向旋转：0.14 → 0.02 → 0.42 → 0.59 → 1.51 → 2.27 → 3.14(≈π) → 2.75 → 2.41
+     rad——这不是噪声抖动，是转了小半圈到大半圈的持续自转。
+  3. x/y 位置同时持续单向漂移：x 从 0.136 一路掉到 -0.075（漂了 ~21cm），y 从 0.153 涨到 0.304（漂了
+     ~15cm）。
+  4. 这些现象跟 thrust 打满同步发生——thrust 一旦封顶，姿态就立刻失控旋转+漂移。
+  5. 跟上一次（0.5m/s 起飞速度）相比，这次是
+     0.15m/s（3.3倍慢），日志显示确实多撑了一小段"稳住"的时间（悬停前两帧 thrust ~53500、yaw 接近
+     0），但最终还是复现了同一种失控模式——只是推迟了发作时间，没有消除。这说明"起飞太快/时间不够"顶多是次要
+     因素，不是根因。
+
+  顺着代码查到的机制
+
+  components/core/crazyflie/modules/src/position_controller_pid.c:225,242-246：
+  this.pidVZ.pid.outputLimit = (UINT16_MAX / 2 / thrustScale);
+  ...
+  *thrust = thrustRaw*thrustScale + this.thrustBase;
+  if (*thrust < this.thrustMin) { *thrust = this.thrustMin; }
+  这里只做了下限（thrustMin）保护，没有上限保护。
+  高度/速度环一旦跟丢目标（不管是真的够不着高度，还是估计器被姿态污染导致误以为高度不够），thrustRaw 会顶到
+  outputLimit，算出来的合力 thrust 可以远超 65535（日志里看到的 66767 就是证据——这是 16 位电机 PWM
+  的量程上限）。
+
+  components/core/crazyflie/modules/src/power_distribution_stock.c:77,102-105：
+  #define limitThrust(VAL) limitUint16(VAL)
+  motorPower.m1 = limitThrust(control->thrust - r + p - control->yaw);
+  motorPower.m2 = limitThrust(control->thrust - r - p + control->yaw);
+  ...
+  每个电机是"合力 ± 姿态修正量"算完之后才统一夹到 [0, 65535]。当 control->thrust 本身就已经 ≥ 65535
+  时，任何"需要加大某个电机推力"的姿态修正都会被直接吃掉（该电机反正已经封顶），只有"减小某个电机"的修正还
+  有效——也就是说一旦总推力打满，姿态环对"需要增推力那一侧"完全失去控制权限,只能单向减推力去纠偏。这跟观测到
+  的"持续单向自转 +
+  持续单向漂移"（而不是来回抖动）完全吻合：控制器在拼命想修正,但只有半条命,修正不回来,只能眼看着越转越大。
+
+  结论
+
+  - 这不只是"起飞爬升太快"的问题（已经验证：放慢 3.3 倍依然复现）。
+  - 是高度/速度环的合力输出没有上限保护，一旦跟丢目标就会把总推力顶穿电机 PWM
+    量程，进而在混控环节吃掉姿态修正权限，导致失控自转+漂移，最终"乱飞一洗然后掉地上"。
+  - 至于"为什么高度/速度环会跟丢目标"，还有两种可能，需要你帮忙判断：
+    - 真实动力不足（螺旋桨/电机磨损、电池电压低、机身变重）——这种情况下就算修好上限保护，飞机大概率也只是"
+      推力打满但飞不到 0.3m"，不会失控自转，但也起不来。
+    - z 估计被姿态污染——一旦有轻微倾斜，下视测距（zrange）测的不再是真实高度，kalman 估计的 z
+      偏低，高度环误以为还没到目标继续加推力，形成恶性循环（哪怕真实动力够）。
+
+  这两种情况都会被"合力无上限保护"这个代码缺口放大成同一种炸机模式，但对应的修复方向不同（前者要降起飞高度/
+  检查硬件动力，后者是估计器/控制器的问题，光调 Python 参数解决不了）。
+
+  需要你决定的地方
+
+  这次涉及的是 position_controller_pid.c/power_distribution_stock.c——t5/t6/t7 共用的核心飞控代码，不是 t7
+  脚本本身的问题，改动面和风险都比上次大很多，我不想擅自动。想听听你的判断：
+  
+  claude --resume b1f728f0-145e-4f8d-b3a1-ab9d1bcfa992
