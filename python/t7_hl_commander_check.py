@@ -19,15 +19,24 @@
 #
 # 安全模型（跟 t5/t6 的"每帧插断斜坡"本质不同——PositionHlCommander.take_off()/land() 是阻塞调用，
 # 轨迹插值完全在固件规划器里完成，Python 侧没有逐帧介入点）：
-#   - 用 with PositionHlCommander(...) 语法：正常悬停结束、悬停中抛异常、Ctrl+C，__exit__ 都会
-#     调一次 land()（land() 内部会再调 stop() 停桨）。
-#   - __enter__（也就是 take_off()）执行期间发生的 Ctrl+C/异常，__exit__ 不会被调用（Python 的
-#     with 语义：__enter__ 抛异常时不会进入 __exit__），所以额外用 try/except 包住整个 with 块，
-#     异常时直接调 cf.high_level_commander.land()+stop() 兜底。
+#   - 不使用 with PositionHlCommander(...) 语法：固件的 planner.c 里 plan_land() 只拒绝已经在
+#     LANDING 状态的重入，不拒绝从 IDLE（也就是 stop() 之后）重新进入——也就是说 stop() 之后
+#     再调一次 land() 不是无害的冗余动作，会让电机重新获得接近悬停的推力。用 with 语法会导致
+#     __exit__ 在看门狗已经 stop() 过之后还无条件再调一次 land()，正好踩中这个坑。改成显式调用
+#     pc.take_off()/pc.land()，land() 前先检查 stop_event 有没有被看门狗设置过，设置过就跳过。
+#   - take_off()/悬停期间发生的 Ctrl+C/异常，统一用 try/except 兜底：打印真实异常
+#     （{exc!r}，不是固定文案），如果 stop_event 还没被设置就尝试一次 land()+sleep，
+#     无论是否成功，最后都无条件调一次 stop()（同 t6 的 stop_motors 兜底思路——stop() 是
+#     全程唯一保证"最终一定会停桨"的调用，前面任何步骤失败都不能跳过它）。
 #   - 后台看门狗线程：日志新鲜度（LOG_STALE_TIMEOUT_S）+ 总时长硬上限（MAX_FLIGHT_TIME_S），
 #     触发时直接调用 cf.high_level_commander.stop()（立即停桨，不是斜坡——PositionHlCommander
 #     不提供"从任意状态平滑降落"的原语，且 HighLevelCommander.go_to()/land() 的文档明确警告过
 #     不要叠加/打断正在执行的轨迹）。起飞高度只有 0.3m，直接停桨掉落的风险可接受。
+#   - hl_lock 只包住看门狗和异常兜底里直接发的 cf.high_level_commander.stop()/land() 裸调用，
+#     不包住 pc.take_off()/pc.land()（也不包住任何 time.sleep()）——这两个调用内部把"发包"
+#     和"sleep(duration_s)"揉在一起，锁住整个调用会让看门狗在起降的几百毫秒里完全打不出
+#     stop()，等于看门狗在最需要它的窗口失效。真正防止"stop() 之后又发 land()"的机制是
+#     stop_event 门控，不是这个锁；锁只是缩小两个裸调用互相打断的更小残余风险。
 #
 # 已知行为差异（跟 t5/t6 不同，不是 bug）：cflib 的 HighLevelCommander.takeoff()/land() 默认把
 # yaw 目标钉在绝对 0 弧度（yaw=0.0, useCurrentYaw=False），而不是像 t5/t6 那样保持起飞时的
