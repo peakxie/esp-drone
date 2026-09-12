@@ -138,5 +138,283 @@ def validate_flight_plan(plan, max_xy_offset_m=MAX_XY_OFFSET_M, max_height_m=MAX
     return errors
 
 
+def read_current_estimator(cf, timeout_s=2.0):
+    """读取 stabilizer.estimator 参数，返回当前值（1=complementary, 2=kalman），超时返回 None。"""
+    import threading
+
+    got_value = threading.Event()
+    holder = {"value": None}
+
+    def estimator_cb(_name, value):
+        holder["value"] = int(value)
+        got_value.set()
+
+    cf.param.add_update_callback(group="stabilizer", name="estimator", cb=estimator_cb)
+    cf.param.request_param_update("stabilizer.estimator")
+    got_value.wait(timeout=timeout_s)
+
+    if holder["value"] is None:
+        print("警告：读取 stabilizer.estimator 超时，未确认当前估计器。", flush=True)
+    else:
+        label = ESTIMATOR_NAMES.get(holder["value"], "unknown")
+        print(f"当前 stabilizer.estimator = {holder['value']} ({label})", flush=True)
+
+    return holder["value"]
+
+
+def main():
+    # cflib 只在这里 import：让本模块（尤其是 validate_flight_plan）在没有装 cflib 的机器上
+    # 也能被 import 和单测，只有真正执行 main() 飞行时才需要 cflib。
+    import cflib.crtp
+    from cflib.crazyflie import Crazyflie
+    from cflib.crazyflie.log import LogConfig
+
+    errors = validate_flight_plan(FLIGHT_PLAN)
+    if errors:
+        print("命令列表校验失败，拒绝执行：", flush=True)
+        for err in errors:
+            print(f"  - {err}", flush=True)
+        return
+
+    cflib.crtp.init_drivers()
+
+    cf = Crazyflie()
+    if not connect_with_timeout(cf, URI):
+        return
+
+    state = {
+        "zrange_mm": None,
+        "last_log_t": None,
+        "z_est": None,
+        "x_est": None,
+        "y_est": None,
+        "yaw_est": None,
+        "thrust_est": None,
+        "x0": None,
+        "y0": None,
+        "yaw0": None,
+    }
+
+    def aux_cb(_timestamp, data, _logconf):
+        state["zrange_mm"] = data["range.zrange"]
+        state["z_est"] = data["stateEstimate.z"]
+        state["x_est"] = data["stateEstimate.x"]
+        state["y_est"] = data["stateEstimate.y"]
+        state["yaw_est"] = data["stabilizer.yaw"]
+        state["thrust_est"] = data["stabilizer.thrust"]
+        if state["x0"] is None:
+            state["x0"] = state["x_est"]
+            state["y0"] = state["y_est"]
+            state["yaw0"] = state["yaw_est"]
+        state["last_log_t"] = time.monotonic()
+
+    aux_lg = LogConfig(name="aux", period_in_ms=50)
+    aux_lg.add_variable("range.zrange", "uint16_t")
+    aux_lg.add_variable("stateEstimate.z", "float")
+    aux_lg.add_variable("stateEstimate.x", "float")
+    aux_lg.add_variable("stateEstimate.y", "float")
+    aux_lg.add_variable("stabilizer.yaw", "float")
+    aux_lg.add_variable("stabilizer.thrust", "float")
+    cf.log.add_config(aux_lg)
+    aux_lg.data_received_cb.add_callback(aux_cb)
+    aux_lg.start()
+
+    try:
+        estimator = read_current_estimator(cf)
+        if estimator != 2:
+            print(
+                "警告：当前不是 kalman 估计器——没有检测到光流 deck，或者 "
+                "CONFIG_SENSORS_ENABLE_DECK 没有开。定高仍会依赖测距/气压工作，但没有水平位置"
+                "修正，飞机可能会缓慢漂移，请留意周围净空。",
+                flush=True,
+            )
+
+        cf.param.set_value("velCtlPid.vxKi", str(VX_KI_OVERRIDE))
+        cf.param.set_value("velCtlPid.vyKi", str(VY_KI_OVERRIDE))
+        time.sleep(0.2)
+        print(
+            f"已将 velCtlPid.vxKi/vyKi 覆盖为 {VX_KI_OVERRIDE}/{VY_KI_OVERRIDE}（默认 1.0，"
+            "断电重启会恢复默认）。",
+            flush=True,
+        )
+
+        deadline = time.monotonic() + LOG_WAIT_TIMEOUT_S
+        while state["last_log_t"] is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if state["last_log_t"] is None:
+            print("错误：等不到 range.zrange/stateEstimate.z 日志，遥测未连通，放弃起飞。", flush=True)
+            return
+
+        zrange0 = state["zrange_mm"]
+        if zrange0 is None or zrange0 > RANGE_SANE_MAX_MM:
+            print(
+                f"错误：起飞前 range.zrange={zrange0}mm 超出合理范围（上限 {RANGE_SANE_MAX_MM}mm），"
+                "怀疑测距传感器读数异常，放弃起飞。"
+                " 请确认飞机放在平整地面、传感器朝下且未被遮挡。",
+                flush=True,
+            )
+            return
+
+        print(f"起飞前地面测距 = {zrange0}mm，遥测正常，开始执行 {len(FLIGHT_PLAN)} 条命令。", flush=True)
+
+        flight_deadline = time.monotonic() + MAX_FLIGHT_TIME_S
+        current_target = {"dx": 0.0, "dy": 0.0, "h": 0.0}
+        last_status_print = [0.0]
+
+        def watchdog_ok():
+            if time.monotonic() > flight_deadline:
+                print("警告：飞行总时长超过硬上限，强制转入紧急下降。", flush=True)
+                return False
+            if state["last_log_t"] is None or (time.monotonic() - state["last_log_t"]) > LOG_STALE_TIMEOUT_S:
+                print("警告：高度日志已停止刷新，链路/主控可能异常，强制转入紧急下降。", flush=True)
+                return False
+            return True
+
+        def print_status(force=False):
+            now = time.monotonic()
+            if not force and now - last_status_print[0] < STATUS_PRINT_PERIOD_S:
+                return
+            last_status_print[0] = now
+            x0, y0 = state["x0"], state["y0"]
+            dx = (state["x_est"] - x0) if (x0 is not None and state["x_est"] is not None) else None
+            dy = (state["y_est"] - y0) if (y0 is not None and state["y_est"] is not None) else None
+            print(
+                f"    target=(dx={current_target['dx']:.2f}, dy={current_target['dy']:.2f}, "
+                f"h={current_target['h']:.2f})  z={state['z_est']}  zrange={state['zrange_mm']}mm  "
+                f"thrust={state['thrust_est']}  x={state['x_est']}(drift={dx})  y={state['y_est']}(drift={dy})",
+                flush=True,
+            )
+
+        def send_target():
+            cf.commander.send_position_setpoint(
+                state["x0"] + current_target["dx"],
+                state["y0"] + current_target["dy"],
+                current_target["h"],
+                state["yaw0"],
+            )
+
+        def ramp_to(dx, dy, h, duration_s):
+            """把目标从 current_target 的当前值线性斜坡过渡到 (dx, dy, h)，全程以
+            SEND_PERIOD 周期发送 send_position_setpoint。takeoff/goto/land/紧急下降
+            全部复用这一个函数（同 t5_hover_land.py 的 send_ramp，泛化到三个轴）。"""
+            start_dx, start_dy, start_h = current_target["dx"], current_target["dy"], current_target["h"]
+            t0 = time.monotonic()
+            while True:
+                now = time.monotonic()
+                elapsed = now - t0
+                frac = min(1.0, elapsed / duration_s) if duration_s > 0 else 1.0
+                current_target["dx"] = start_dx + (dx - start_dx) * frac
+                current_target["dy"] = start_dy + (dy - start_dy) * frac
+                current_target["h"] = start_h + (h - start_h) * frac
+
+                send_target()
+                print_status()
+
+                if not watchdog_ok():
+                    raise FlightAbort()
+
+                if frac >= 1.0:
+                    break
+                time.sleep(SEND_PERIOD)
+
+        def hold(duration_s):
+            t0 = time.monotonic()
+            while time.monotonic() - t0 < duration_s:
+                send_target()
+                print_status()
+                if not watchdog_ok():
+                    raise FlightAbort()
+                time.sleep(SEND_PERIOD)
+
+        def wait_for_touchdown(max_wait_s):
+            """持续发送 LAND_HEIGHT_M 目标，用 range.zrange（比融合后的 stateEstimate.z 少一层
+            滤波延迟）判断是否已经稳定卡进地面效应气垫：连续 TOUCHDOWN_CONFIRM_S 都低于
+            TOUCHDOWN_ZRANGE_MM 才认为可以停桨（同 t5_hover_land.py 的实测结论）。"""
+            current_target["h"] = LAND_HEIGHT_M
+            t0 = time.monotonic()
+            below_since = None
+            while time.monotonic() - t0 < max_wait_s:
+                send_target()
+                zrange = state["zrange_mm"]
+                close_to_ground = zrange is not None and zrange <= CLOSE_TO_GROUND_LOG_ZRANGE_MM
+                print_status(force=close_to_ground)
+                if not watchdog_ok():
+                    raise FlightAbort()
+
+                now = time.monotonic()
+                if zrange is not None and zrange <= TOUCHDOWN_ZRANGE_MM:
+                    if below_since is None:
+                        below_since = now
+                    elif now - below_since >= TOUCHDOWN_CONFIRM_S:
+                        return
+                else:
+                    below_since = None
+                time.sleep(SEND_PERIOD)
+
+            print(f"警告：等待确认落地超过 {max_wait_s:.1f}s 上限，强制停桨。", flush=True)
+
+        def stop_motors():
+            print("停桨。", flush=True)
+            for _ in range(15):
+                cf.commander.send_stop_setpoint()
+                time.sleep(0.02)
+
+        def cmd_takeoff(height_m, duration_s=TAKEOFF_TIME_S):
+            print(f"命令 takeoff：爬升到 {height_m:.2f}m（{duration_s:.1f}s）...", flush=True)
+            current_target["dx"] = 0.0
+            current_target["dy"] = 0.0
+            current_target["h"] = LIFTOFF_HEIGHT_M
+            ramp_to(0.0, 0.0, height_m, duration_s)
+
+        def cmd_hover(duration_s):
+            print(f"命令 hover：悬停 {duration_s:.1f}s...", flush=True)
+            hold(duration_s)
+
+        def cmd_goto(dx, dy, h, duration_s):
+            print(f"命令 goto：过渡到 dx={dx:.2f} dy={dy:.2f} h={h:.2f}（{duration_s:.1f}s）...", flush=True)
+            ramp_to(dx, dy, h, duration_s)
+
+        def cmd_land(duration_s=LAND_TIME_S):
+            print(f"命令 land：降落（{duration_s:.1f}s）...", flush=True)
+            ramp_to(current_target["dx"], current_target["dy"], LAND_HEIGHT_M, duration_s)
+            wait_for_touchdown(TOUCHDOWN_MAX_WAIT_S)
+            stop_motors()
+
+        command_handlers = {
+            "takeoff": cmd_takeoff,
+            "hover": cmd_hover,
+            "goto": cmd_goto,
+            "land": cmd_land,
+        }
+
+        executed_land = False
+        try:
+            for name, *args in FLIGHT_PLAN:
+                command_handlers[name](*args)
+                if name == "land":
+                    executed_land = True
+
+            if not executed_land:
+                print("命令列表未以 land 结尾，自动补一次降落。", flush=True)
+                cmd_land()
+
+        except (FlightAbort, KeyboardInterrupt):
+            print(
+                f"触发紧急下降：从当前目标 dx={current_target['dx']:.2f} dy={current_target['dy']:.2f} "
+                f"h={current_target['h']:.2f} 快速降到地面（{EMERGENCY_LAND_TIME_S:.1f}s）...",
+                flush=True,
+            )
+            try:
+                ramp_to(current_target["dx"], current_target["dy"], LAND_HEIGHT_M, EMERGENCY_LAND_TIME_S)
+            except (FlightAbort, KeyboardInterrupt):
+                pass  # 已经在尽力下降了，watchdog 再触发也不再重入，直接走到下面的停桨
+            stop_motors()
+
+        print("飞行结束。", flush=True)
+    finally:
+        aux_lg.stop()
+        cf.close_link()
+
+
 if __name__ == "__main__":
-    pass
+    main()
