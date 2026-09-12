@@ -44,8 +44,16 @@ if not stop_event.is_set():
 - 起飞高度：`TAKEOFF_HEIGHT_M`，首次测试用 `0.3`（沿用 t5/t6 首次测试的保守高度），第三次实机测试后下调到 `0.15`（见下方"起飞高度/降落速度"条目）。
 - **起飞速度（第二次实机测试后修正）**：原计划用 `PositionHlCommander` 默认的 `0.5 m/s` 不做调优，但第二次实机测试暴露这架机器动力余量不够在 `0.3m / 0.5m/s = 0.6s` 内跟上爬升指令——`take_off()` 返回时 zrange 几乎没有升高，thrust 却已冲到 38737，随后又花了近 3s thrust 才顶到 UINT16_MAX 附近（高度环因跟丢轨迹而积分饱和，把合力顶穿了电机 PWM 量程,在混控里挤占了姿态修正的推力余量,固件侧已加 `thrustMax` 90% 上限保护,见 `position_controller_pid.c`）。
 - **起飞高度/降落速度（第三次实机测试后修正，已确认机体动力偏弱、约 60g）**：第三次测试暴露两个新问题——(1) 悬停期间 zrange 全程单调爬升，直到 3s 悬停窗口结束才刚摸到 0.3m 目标，真实爬升速度远跟不上指令,"悬停"实际全程都在爬升,从未真正稳定在目标高度；(2) `land()` 时飞机仍处于爬升过渡态（高度环还没收敛），而 `PositionHlCommander.land()` 是按 Python 侧假设的高度（不是实时测量值）除以速度算出固定降落时长，对这台动力紧张的机器来说下降窗口太短、速度太快，控制器来不及主动刹停，表现为从高空直接掉落。对应修正：`TAKEOFF_HEIGHT_M` 下调到 `0.15`（减少总爬升距离/时间需求）；新增 `LANDING_VELOCITY_MPS = 0.1`，`pc.land(velocity=LANDING_VELOCITY_MPS)` 单独放慢降落（不再用 `default_velocity` 的 `0.5 m/s`），拉长降落时长、留出刹停余量。
-- **起飞时长拆分为死区+爬升（第四次实机测试后修正）**：逐帧看第三次测试的爬升阶段日志，前 1.2~1.5s 电机已经在加推力但 zrange 基本没有变化（螺旋桨/电机需要时间克服自身惯性和静摩擦才能进入有效爬升），只有最后一段时间才真正开始爬升。之前用单一 `TAKEOFF_VELOCITY_MPS` 常量按 `height / velocity` 算总时长，死区会直接从爬升预算里扣掉，导致留给真实爬升的时间比预期短得多。因此改成显式的两段时间相加：`TAKEOFF_SPOOLUP_TIME_S = 1.5`（死区，取自实测日志上限）+ `TAKEOFF_CLIMB_TIME_S = 2.0`（死区结束后留给真实爬升的时间），`TAKEOFF_VELOCITY_MPS = TAKEOFF_HEIGHT_M / (TAKEOFF_SPOOLUP_TIME_S + TAKEOFF_CLIMB_TIME_S)` 反过来换算成 `PositionHlCommander.take_off()` 唯一接受的 `velocity` 参数（该 API 没有直接传总时长的接口）。
-- 悬停：`HOVER_TIME_S = 3.0`。
+- **起飞时长拆分为死区+爬升的猜想已被第四次测试证伪，改回单一速度**：曾怀疑第三次测试爬升段前 1.2~1.5s 没有高度变化是"电机克服惯性/静摩擦"的死区，于是把总时长拆成 `TAKEOFF_SPOOLUP_TIME_S`（死区）+ `TAKEOFF_CLIMB_TIME_S`（真实爬升）两段相加、换算出一个更小的等效速度。第四次测试（`TAKEOFF_HEIGHT_M=0.15`、总时长拉到 3.5s）结果是**整个起飞窗口 zrange 完全没有离开地面噪声范围**，返回时反而更低；take_off() 一结束、目标高度定死不再前移，zrange 立刻在同样的 thrust 水平上开始稳定爬升——说明问题不是"时长不够"，是反过来：结合 `position_controller_pid.c:212-214` 的 `positionController()`
+  ```c
+  if (setpoint->mode.z == modeAbs) {
+    setpoint->velocity.z = runPid(state->position.z, &this.pidZ, setpoint->position.z, DT);
+  }
+  ```
+  高层规划器（`crtp_commander_high_level.c:311-331`）算出的速度前馈 `ev.vel.z` 会被这一行覆盖，z 方向完全靠"当前高度 vs 规划器目标高度"的纯位置误差 PID（`kp=1.6, ki=0.5`）驱动，规划器算好的"这一时刻该多快"完全没用上——轨迹时长越长、越平缓，每一时刻的瞬时误差就越小，PID 越不会使劲，thrust 顶不上去；只有 take_off() 结束、目标不再前移，误差才积累到足够大，PID 才真正发力。因此撤回死区拆分，`TAKEOFF_VELOCITY_MPS` 改回单一固定值 `0.15`（配合 `TAKEOFF_HEIGHT_M=0.15`，时长 1.0s），这是第三次测试里验证过表现明显更好的设置（当时 0.3m 目标、2.0s 时长，起飞阶段本身就有 23mm→61mm 的爬升）。
+- 悬停：改成 `HOVER_SETTLE_*` 三个常量控制的收敛等待，见下方"悬停改为收敛等待"条目，不再是固定 `HOVER_TIME_S`。
+- **thrustBase 前馈基准调高（第四次实机测试后新增）**：`position_controller_pid.c` 里 `posCtlPid.thrustBase`（高度环前馈基准，注释原话"thrustBase should just lift the drone"）本来就是留给"更重机身/更旧电池"调的参数，但编译进固件的默认值（34000~42000，取决于板子分支）明显低于这架机器实测的真实爬升推力（日志里稳定爬升时 thrust 落在 45000~55000 区间）。基准偏低意味着控制器每次都要靠位置误差慢慢积分才能顶到有效推力。起飞前用跟 `commander.enHighLevel` 一样的 `set_and_verify_param` 把它临时调到 `THRUST_BASE_OVERRIDE = 45000`（运行时 PARAM，断电重启恢复默认值，不是永久改动）；设置失败只降级为警告，不像 `enHighLevel` 那样拒绝起飞——thrustBase 调不上去不是电机不响应的静默失败模式，只是响应更慢。
+- **悬停改为收敛等待（第四次实机测试后修正）**：原来的固定 `HOVER_TIME_S` 睡眠会在飞机还没到目标高度、或者还处于爬升过渡态时就无条件调用 `land()`——第三次测试里这正是"高空直接掉落"的诱因之一（`land()` 是按*已到达目标高度*的假设算固定降落时长）。改成轮询 `zrange`，进入目标高度 `±HOVER_SETTLE_TOLERANCE_MM`（30mm）容差并稳定 `HOVER_SETTLE_DWELL_S`（0.5s）才认为真正悬停住、再进入降落；最长等待 `HOVER_SETTLE_MAX_WAIT_S`（6.0s）兜底，超时也会继续走降落流程，只是打印警告，不无限等下去（`stop_event` 触发时同样立即退出等待，不会误报这个警告）。
 - **起飞后自动校验（新增，最终评审 Important #4）**：`take_off()` 返回后，无论电机实际有没有转，Python 侧都会正常往下走——这正是背景第 2 点"静默失败"的同一类症状。`take_off()` 返回后必须检查 `state['zrange_mm']`/`state['z_est']` 相对起飞前的 `zrange0` 确实发生了预期方向的变化（`range.zrange` 是下视测距，离地爬升时读数会**变大**，不是变小——同 t5/t6 对 `zrange` 的用法），不满足就打印警告（不需要因此中止降落流程，但必须让操作者知道"可能没有真的离地"）。
 
 ## 起飞前检查（连接后、进入 `with PositionHlCommander` 之前）

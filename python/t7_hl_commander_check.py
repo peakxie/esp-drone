@@ -75,20 +75,44 @@ LANDING_VELOCITY_MPS = 0.1
 # 加了 thrustMax=90% 上限保护，见 position_controller_pid.c）。单独放慢起飞速度、拉长
 # 爬升时间，给动力和控制器留出跟踪轨迹的余量。
 #
-# 第四次实机测试进一步定位：把爬升阶段的日志逐帧看下来，前 1.2~1.5s 电机已经在加推力、
-# 但 zrange 基本没有变化（跟地面读数在噪声范围内），只有最后一段时间才真正开始爬升——
-# 也就是说 take_off() 算出来的总时长里，有相当一部分是"电机从静止爬到能真正提供净升力
-# 之前"的死区（螺旋桨/电机需要时间克服自身惯性和静摩擦才能进入有效爬升，不是立刻就有
-# 净升力），不是这段时间飞机在"以更慢速度爬升"。如果只按目标高度/期望爬升速度算总时长
-# （原来的做法），死区会直接从爬升预算里扣掉，导致留给真实爬升的时间比预期短得多——这
-# 正是第三次测试里"悬停窗口结束才刚摸到目标高度"的原因之一。因此把总时长拆成两段显式
-# 相加：死区时间 + 真实爬升时间，而不是隐式地用一个"爬升速度"去掩盖这个死区。
-# PositionHlCommander.take_off() 只接受 (height, velocity)、内部按 height/velocity 算
-# 总时长，没有直接传总时长的接口，所以这里反过来用总时长换算出一个等效 velocity 传给它。
-TAKEOFF_SPOOLUP_TIME_S = 1.5   # 死区：电机加推力到真正开始爬升之前的时间，取自实测日志的上限
-TAKEOFF_CLIMB_TIME_S = 2.0     # 死区结束后，留给真实爬升到目标高度的时间
-TAKEOFF_VELOCITY_MPS = TAKEOFF_HEIGHT_M / (TAKEOFF_SPOOLUP_TIME_S + TAKEOFF_CLIMB_TIME_S)
-HOVER_TIME_S = 3.0             # 起飞完成后悬停时长
+# 第四次实机测试证伪了上面这个"死区"猜想，并结合固件代码定位到真正的原因，见下：
+# 把 TAKEOFF_HEIGHT_M 下调到 0.15 之后，本来想按"死区 1.5s + 真实爬升 2.0s"给起飞更长的
+# 总时长（3.5s），结果整个 3.5s 起飞窗口里 zrange 完全没有离开地面噪声范围，take_off()
+# 返回时反而比起飞前更低；一旦 take_off() 返回、目标高度不再按轨迹爬升而是定死在 0.15m，
+# zrange 立刻在同样的 thrust 水平上开始稳定爬升。这说明问题不是"电机需要更多时间/时长
+# 不够"，而是反过来——时长越长，规划轨迹每一时刻的目标位置离飞机当前实际位置就越近，
+# 喂给高度环的位置误差就越小，控制器算出来的爬升速度指令也越小，thrust 顶不上去；只有
+# take_off() 结束、目标位置固定不再前移之后，误差才积累到足够大，PID 才真正发力爬升。
+# 固件证据（position_controller_pid.c:212-214 的 positionController()）：
+#   if (setpoint->mode.z == modeAbs) {
+#     setpoint->velocity.z = runPid(state->position.z, &this.pidZ, setpoint->position.z, DT);
+#   }
+# 高层规划器（crtp_commander_high_level.c:311-331）算出的速度前馈 ev.vel.z 会被这一行
+# 覆盖掉，z 方向完全靠"当前高度 vs 规划器给的目标高度"过一个纯位置误差 PID（kp=1.6,
+# ki=0.5），规划器算好的"这一时刻该多快"完全没用上——轨迹越平缓（时长越长），这个瞬时
+# 误差就越小，PID 越不会使劲。因此撤回上面的死区拆分，起飞速度改回第三次测试里验证过、
+# 表现明显更好的固定值（0.3m 目标高度、2.0s 时长时起飞阶段本身就能看到 23mm->61mm 的
+# 爬升，比这次 3.5s 版本好得多）。
+TAKEOFF_VELOCITY_MPS = 0.15
+
+# 第四次实机测试还发现：固件默认的 posCtlPid.thrustBase（高度环前馈基准，见
+# position_controller_pid.c 里"thrustBase should just lift the drone"的注释，本来就是留给
+# "更重机身/更旧电池"调的参数）明显低于这架机器实测的真实爬升推力（日志里稳定爬升时
+# thrust 落在 45000~55000 区间）。基准值偏低意味着控制器每次都要靠位置误差慢慢积分才能
+# 顶到有效推力，起飞响应更慢、更依赖 hover 阶段的误差累积。这里在起飞前把它临时调高，
+# 跟 commander.enHighLevel 一样用 set_and_verify_param 设置+回读确认；这是运行时 PARAM，
+# 断电重启会恢复固件编译进去的默认值，不是永久改动。设置失败只降级为警告（不像
+# enHighLevel 失败那样直接拒绝起飞）——thrustBase 调不上去，飞机大概率还是能飞，只是
+# 响应更慢，不是电机完全不响应的静默失败模式。
+THRUST_BASE_OVERRIDE = 45000   # 取实测爬升区间（45000~55000）的下限，留出 PID 向上调的余量
+
+# 悬停不再是固定睡 HOVER_SETTLE_MAX_WAIT_S 秒后无条件降落——第三次测试暴露过 land() 时
+# 飞机仍处于爬升过渡态、高度环还没收敛就被打断降落，表现为直接掉落。改成轮询 zrange，
+# 进入目标高度容差范围并稳定 HOVER_SETTLE_DWELL_S 才认为真的悬停住了，最长等待
+# HOVER_SETTLE_MAX_WAIT_S 兜底（超时也会继续走降落，只是打印警告，不无限等下去）。
+HOVER_SETTLE_TOLERANCE_MM = 30  # 目标高度容差
+HOVER_SETTLE_DWELL_S = 0.5      # 进入容差范围后要持续这么久才算稳定，避免单帧噪声凑巧命中
+HOVER_SETTLE_MAX_WAIT_S = 6.0   # 等待收敛的最长时间
 
 LOG_WAIT_TIMEOUT_S = 2.0       # 起飞前等待第一帧遥测的超时
 LOG_STALE_TIMEOUT_S = 0.3      # 看门狗：日志新鲜度阈值
@@ -233,6 +257,14 @@ def main():
             )
             return
 
+        if not set_and_verify_param(cf, "posCtlPid", "thrustBase", THRUST_BASE_OVERRIDE, timeout_s=PARAM_SET_TIMEOUT_S):
+            print(
+                "警告：posCtlPid.thrustBase 设置/回读失败，继续用固件编译进去的默认值起飞——"
+                "这个值大概率明显低于这架机器的真实悬停推力，预期起飞/爬升响应会更慢，"
+                "不是电机完全不响应的静默失败模式，不因此中止起飞。",
+                flush=True,
+            )
+
         print(f"起飞前地面测距 = {zrange0}mm，commander.enHighLevel 已确认，开始起飞。", flush=True)
 
         hl_lock = threading.Lock()
@@ -302,10 +334,34 @@ def main():
             else:
                 print(f"已确认离地：zrange {zrange0}mm -> {zrange_after_takeoff}mm。", flush=True)
 
-            print(f"悬停 {HOVER_TIME_S:.1f}s...", flush=True)
+            target_zrange_mm = zrange0 + int(round(TAKEOFF_HEIGHT_M * 1000))
+            print(
+                f"悬停：等待 zrange 稳定进入目标 {target_zrange_mm}mm 附近（容差 "
+                f"±{HOVER_SETTLE_TOLERANCE_MM}mm），最长等待 {HOVER_SETTLE_MAX_WAIT_S:.1f}s...",
+                flush=True,
+            )
             t0 = time.monotonic()
-            while time.monotonic() - t0 < HOVER_TIME_S and not stop_event.is_set():
+            settled_since = None
+            while time.monotonic() - t0 < HOVER_SETTLE_MAX_WAIT_S and not stop_event.is_set():
+                zr = state["zrange_mm"]
+                if zr is not None and abs(zr - target_zrange_mm) <= HOVER_SETTLE_TOLERANCE_MM:
+                    if settled_since is None:
+                        settled_since = time.monotonic()
+                    elif time.monotonic() - settled_since >= HOVER_SETTLE_DWELL_S:
+                        print(f"已稳定在目标高度附近（zrange={zr}mm），结束悬停等待。", flush=True)
+                        break
+                else:
+                    settled_since = None
                 time.sleep(0.1)
+            else:
+                if not stop_event.is_set():
+                    print(
+                        f"警告：等待 {HOVER_SETTLE_MAX_WAIT_S:.1f}s 后仍未稳定在目标高度附近"
+                        f"（当前 zrange={state['zrange_mm']}mm，目标 {target_zrange_mm}mm），"
+                        "仍会继续走降落流程——land() 是按假设已到达目标高度算的固定降落时长，"
+                        "如果实际还没到/还在剧烈变化，这个假设就是错的，请现场确认飞机状态。",
+                        flush=True,
+                    )
 
             if stop_event.is_set():
                 print(
