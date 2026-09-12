@@ -57,7 +57,14 @@ from config import URI, connect_with_timeout
 ESTIMATOR_NAMES = {0: "any", 1: "complementary", 2: "kalman"}
 
 TAKEOFF_HEIGHT_M = 0.3         # 起飞绝对高度，沿用 t5/t6 首次测试的保守高度
-DEFAULT_VELOCITY_MPS = 0.5     # PositionHlCommander 的默认起降速度，不做覆盖
+DEFAULT_VELOCITY_MPS = 0.5     # PositionHlCommander 悬停/降落用的默认速度，不做覆盖
+# 首次实机测试暴露的问题：take_off() 用默认 0.5m/s 算出来的爬升时长只有 0.6s
+# （TAKEOFF_HEIGHT_M / DEFAULT_VELOCITY_MPS）。这架机器动力余量不够在 0.6s 内跟上这个
+# 高度指令——take_off() 返回时 zrange 几乎没有升高，thrust 却已经冲到 38737，随后又花了
+# 将近 3s thrust 才慢慢顶到 5.7 万+，期间 yaw 剧烈摆动（推力持续追不上高度指令导致高度环
+# 积分饱和，进而挤占姿态控制的推力余量）。单独放慢起飞速度、拉长爬升时间，给动力和姿态
+# 控制器留出跟踪轨迹的余量；降落沿用默认速度不受影响。
+TAKEOFF_VELOCITY_MPS = 0.15
 HOVER_TIME_S = 3.0             # 起飞完成后悬停时长
 
 LOG_WAIT_TIMEOUT_S = 2.0       # 起飞前等待第一帧遥测的超时
@@ -253,7 +260,7 @@ def main():
                 default_height=TAKEOFF_HEIGHT_M,
                 default_velocity=DEFAULT_VELOCITY_MPS,
             )
-            pc.take_off()
+            pc.take_off(velocity=TAKEOFF_VELOCITY_MPS)
             took_off = True
 
             zrange_after_takeoff = state["zrange_mm"]
