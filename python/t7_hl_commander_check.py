@@ -25,7 +25,10 @@
 #     __exit__ 在看门狗已经 stop() 过之后还无条件再调一次 land()，正好踩中这个坑。改成显式调用
 #     pc.take_off()/pc.land()，land() 前先检查 stop_event 有没有被看门狗设置过，设置过就跳过。
 #   - take_off()/悬停期间发生的 Ctrl+C/异常，统一用 try/except 兜底：打印真实异常
-#     （{exc!r}，不是固定文案），如果 stop_event 还没被设置就尝试一次 land()+sleep，
+#     （{exc!r}，不是固定文案），如果 took_off 仍为 True（飞机被认为还在空中）且 stop_event
+#     还没被设置就尝试一次 land()+sleep——只看 stop_event 不够：take_off() 本身抛异常时飞机
+#     可能还在 IDLE，land() 从 IDLE 一样会被 planner.c 接受并重新给电机推力；pc.land() 成功
+#     返回之后 took_off 也会被清回 False，理由相同（详见 took_off 定义处的注释）。
 #     无论是否成功，最后都无条件调一次 stop()（同 t6 的 stop_motors 兜底思路——stop() 是
 #     全程唯一保证"最终一定会停桨"的调用，前面任何步骤失败都不能跳过它）。
 #   - 后台看门狗线程：日志新鲜度（LOG_STALE_TIMEOUT_S）+ 总时长硬上限（MAX_FLIGHT_TIME_S），
@@ -240,8 +243,11 @@ def main():
         watchdog_thread = threading.Thread(target=watchdog_loop, daemon=True)
         watchdog_thread.start()
 
-        took_off = False  # 定义在 try 之外：即使 PositionHlCommander(...) 构造或 take_off() 本身
-        try:               # 抛异常，except 分支也能安全读到这个变量，判断到底有没有真的起飞过。
+        # took_off 定义在 try 之外：即使 PositionHlCommander(...) 构造或 take_off() 本身抛异常，
+        # except 分支也能安全读到这个变量。它标记的是"现在飞机是不是应该被当成在空中"，不是
+        # "曾经起飞过"——pc.land() 成功返回、飞机已经落地之后会被清回 False，见下面。
+        took_off = False
+        try:
             pc = PositionHlCommander(
                 cf,
                 default_height=TAKEOFF_HEIGHT_M,
@@ -286,15 +292,23 @@ def main():
                 # 先置位再发包）的残余风险，不是遗漏。
                 print("命令 land：降落...", flush=True)
                 pc.land()
+                # pc.land() 内部 sleep(duration_s) 已经等完，此刻固件的规划器已经自己从
+                # LANDING 走回 IDLE（planner.c 的 plan_current_goal() 在 plan_is_finished()
+                # 之后自动切回 IDLE）。所以从这一行起，"起飞过"这个状态已经结束——如果接下来
+                # 的 stop() 发送或下面的 print 抛异常（比如链路在这时断开），下面 except 分支
+                # 绝不能再把这当成"飞机还在空中，需要紧急 land()"，否则又是从 IDLE 重新
+                # 上电的同一个问题。必须在这里立刻清掉 took_off，不能等到 finally。
+                took_off = False
                 with hl_lock:
                     cf.high_level_commander.stop()  # land() 之后再补一次 stop() 总是安全的
                 print("飞行结束（已降落）。", flush=True)
         except (KeyboardInterrupt, Exception) as exc:
             print(f"触发紧急处理：{exc!r}", flush=True)
             try:
-                # 只有确认真的起飞过（took_off）且看门狗没有停桨过，才尝试 land()——
-                # take_off() 本身抛异常时飞机可能还在 IDLE 状态，land() 从 IDLE 一样会被
-                # planner.c 接受并重新给电机推力，跟"stop() 之后再 land()"是同一类问题。
+                # 只有 took_off 仍为 True（飞机被认为还在空中）且看门狗没有停桨过，才尝试
+                # land()——take_off() 本身抛异常时飞机可能还在 IDLE 状态，land() 从 IDLE 一样
+                # 会被 planner.c 接受并重新给电机推力，跟"stop() 之后再 land()"是同一类问题；
+                # pc.land() 成功返回之后 took_off 也会被清回 False（见上面），同一个理由。
                 if took_off and not stop_event.is_set():
                     with hl_lock:
                         cf.high_level_commander.land(LAND_HEIGHT_M, EMERGENCY_LAND_TIME_S)
