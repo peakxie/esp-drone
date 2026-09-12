@@ -209,9 +209,14 @@ def main():
 
         def emergency_stop(reason):
             print(reason, flush=True)
+            # 先设 stop_event 再发 stop()：如果反过来，主线程可能在 stop() 已经发出、
+            # stop_event 还没置位的这一瞬间读到"未触发"，进而调用 pc.land()——land() 在
+            # stop() 之后会让电机重新获得推力（见下面 land 分支的注释）。先置位能让主线程
+            # 尽早看到，缩小这个窗口（pc.land() 本身不能加锁，见下方注释，所以这个窗口没法
+            # 完全消除，只能尽量缩小）。
+            stop_event.set()
             with hl_lock:
                 cf.high_level_commander.stop()
-            stop_event.set()
 
         def watchdog_loop():
             while not stop_event.is_set():
@@ -235,13 +240,15 @@ def main():
         watchdog_thread = threading.Thread(target=watchdog_loop, daemon=True)
         watchdog_thread.start()
 
-        try:
+        took_off = False  # 定义在 try 之外：即使 PositionHlCommander(...) 构造或 take_off() 本身
+        try:               # 抛异常，except 分支也能安全读到这个变量，判断到底有没有真的起飞过。
             pc = PositionHlCommander(
                 cf,
                 default_height=TAKEOFF_HEIGHT_M,
                 default_velocity=DEFAULT_VELOCITY_MPS,
             )
             pc.take_off()
+            took_off = True
 
             zrange_after_takeoff = state["zrange_mm"]
             if (
@@ -272,13 +279,23 @@ def main():
                     flush=True,
                 )
             else:
+                # pc.land() 内部把发包和 sleep(duration_s) 揉在一起，不能像裸调用那样用
+                # hl_lock 包住（否则看门狗在整条降落斜坡期间都打不出 stop()）。这意味着从
+                # 上面的 stop_event 检查到这里调用 pc.land()，仍有一个极窄的竞争窗口——
+                # 看门狗可能恰好在这一瞬间触发。这是有意接受的、经过收窄（emergency_stop
+                # 先置位再发包）的残余风险，不是遗漏。
                 print("命令 land：降落...", flush=True)
                 pc.land()
+                with hl_lock:
+                    cf.high_level_commander.stop()  # land() 之后再补一次 stop() 总是安全的
                 print("飞行结束（已降落）。", flush=True)
         except (KeyboardInterrupt, Exception) as exc:
             print(f"触发紧急处理：{exc!r}", flush=True)
             try:
-                if not stop_event.is_set():
+                # 只有确认真的起飞过（took_off）且看门狗没有停桨过，才尝试 land()——
+                # take_off() 本身抛异常时飞机可能还在 IDLE 状态，land() 从 IDLE 一样会被
+                # planner.c 接受并重新给电机推力，跟"stop() 之后再 land()"是同一类问题。
+                if took_off and not stop_event.is_set():
                     with hl_lock:
                         cf.high_level_commander.land(LAND_HEIGHT_M, EMERGENCY_LAND_TIME_S)
                     time.sleep(EMERGENCY_LAND_TIME_S)
