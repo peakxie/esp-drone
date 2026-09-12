@@ -110,5 +110,152 @@ def set_and_verify_param(cf, group, name, value, timeout_s=PARAM_SET_TIMEOUT_S):
     return True
 
 
+def main():
+    # cflib 只在这里 import：让本模块的纯逻辑函数（set_and_verify_param、read_current_estimator）
+    # 在没有装 cflib 的机器上也能被 import 和单测。
+    import cflib.crtp
+    from cflib.crazyflie import Crazyflie
+    from cflib.crazyflie.log import LogConfig
+    from cflib.positioning.position_hl_commander import PositionHlCommander
+
+    cflib.crtp.init_drivers()
+
+    cf = Crazyflie()
+    if not connect_with_timeout(cf, URI):
+        return
+
+    state = {
+        "zrange_mm": None,
+        "last_log_t": None,
+        "z_est": None,
+        "x_est": None,
+        "y_est": None,
+        "yaw_est": None,
+        "thrust_est": None,
+    }
+
+    def aux_cb(_timestamp, data, _logconf):
+        state["zrange_mm"] = data["range.zrange"]
+        state["z_est"] = data["stateEstimate.z"]
+        state["x_est"] = data["stateEstimate.x"]
+        state["y_est"] = data["stateEstimate.y"]
+        state["yaw_est"] = data["stabilizer.yaw"]
+        state["thrust_est"] = data["stabilizer.thrust"]
+        state["last_log_t"] = time.monotonic()
+
+    aux_lg = LogConfig(name="aux", period_in_ms=50)
+    aux_lg.add_variable("range.zrange", "uint16_t")
+    aux_lg.add_variable("stateEstimate.z", "float")
+    aux_lg.add_variable("stateEstimate.x", "float")
+    aux_lg.add_variable("stateEstimate.y", "float")
+    aux_lg.add_variable("stabilizer.yaw", "float")
+    aux_lg.add_variable("stabilizer.thrust", "float")
+    cf.log.add_config(aux_lg)
+    aux_lg.data_received_cb.add_callback(aux_cb)
+    aux_lg.start()
+
+    try:
+        estimator = read_current_estimator(cf)
+        if estimator != 2:
+            print(
+                "警告：当前不是 kalman 估计器——没有检测到光流 deck，或者 "
+                "CONFIG_SENSORS_ENABLE_DECK 没有开。本次只测垂直起降，没有水平位置修正时"
+                "飞机可能会缓慢漂移，请留意周围净空。",
+                flush=True,
+            )
+
+        deadline = time.monotonic() + LOG_WAIT_TIMEOUT_S
+        while state["last_log_t"] is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if state["last_log_t"] is None:
+            print("错误：等不到 range.zrange/stateEstimate.z 日志，遥测未连通，放弃起飞。", flush=True)
+            return
+
+        zrange0 = state["zrange_mm"]
+        if zrange0 is None or zrange0 > RANGE_SANE_MAX_MM:
+            print(
+                f"错误：起飞前 range.zrange={zrange0}mm 超出合理范围（上限 {RANGE_SANE_MAX_MM}mm），"
+                "怀疑测距传感器读数异常，放弃起飞。"
+                " 请确认飞机放在平整地面、传感器朝下且未被遮挡。",
+                flush=True,
+            )
+            return
+
+        if not set_and_verify_param(cf, "commander", "enHighLevel", 1, timeout_s=PARAM_SET_TIMEOUT_S):
+            print(
+                "错误：commander.enHighLevel 设置/回读失败，拒绝起飞——高层命令固件端不会被"
+                "处理（commander.c 的 commanderGetSetpoint() 只有这个 param 为真时才会把 setpoint "
+                "交给高层规划器）。",
+                flush=True,
+            )
+            return
+
+        print(f"起飞前地面测距 = {zrange0}mm，commander.enHighLevel 已确认，开始起飞。", flush=True)
+
+        stop_event = threading.Event()
+        flight_deadline = time.monotonic() + MAX_FLIGHT_TIME_S
+        last_status_print = [0.0]
+
+        def watchdog_loop():
+            while not stop_event.is_set():
+                now = time.monotonic()
+                if now > flight_deadline:
+                    print("警告：飞行总时长超过硬上限，触发立即停桨。", flush=True)
+                    cf.high_level_commander.stop()
+                    stop_event.set()
+                    break
+                if state["last_log_t"] is None or (now - state["last_log_t"]) > LOG_STALE_TIMEOUT_S:
+                    print("警告：高度日志已停止刷新，链路/主控可能异常，触发立即停桨。", flush=True)
+                    cf.high_level_commander.stop()
+                    stop_event.set()
+                    break
+                if now - last_status_print[0] >= STATUS_PRINT_PERIOD_S:
+                    last_status_print[0] = now
+                    print(
+                        f"    z={state['z_est']}  zrange={state['zrange_mm']}mm  "
+                        f"thrust={state['thrust_est']}  x={state['x_est']}  y={state['y_est']}  "
+                        f"yaw={state['yaw_est']}",
+                        flush=True,
+                    )
+                time.sleep(0.05)
+
+        watchdog_thread = threading.Thread(target=watchdog_loop, daemon=True)
+        watchdog_thread.start()
+
+        try:
+            with PositionHlCommander(
+                cf,
+                default_height=TAKEOFF_HEIGHT_M,
+                default_velocity=DEFAULT_VELOCITY_MPS,
+            ):
+                print(f"已起飞到 {TAKEOFF_HEIGHT_M:.2f}m，悬停 {HOVER_TIME_S:.1f}s...", flush=True)
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < HOVER_TIME_S and not stop_event.is_set():
+                    time.sleep(0.1)
+            # 注意：如果看门狗线程在悬停期间已经调用过 stop()，上面 with 块退出时 __exit__
+            # 仍会调用一次 land()——对已经停桨的飞机再发一次 land 命令是已知的、可接受的
+            # 冗余动作（land() 内部只是发 LAND_2 + 再次 stop()），不会造成新的风险。
+            print("飞行结束（已降落）。", flush=True)
+        except (KeyboardInterrupt, Exception):
+            # __enter__（也就是 take_off()）执行期间的异常/Ctrl+C 不会触发
+            # PositionHlCommander.__exit__（Python 的 with 语义：__enter__ 抛异常时不会进入
+            # __exit__），这里手动兜底一次 land+stop。悬停期间的异常/Ctrl+C 已经在上面的
+            # with 块里被 __exit__ 处理过，这里再兜底一次 stop() 也是安全的。
+            print(
+                f"触发紧急处理：向固件发送 land+stop（{EMERGENCY_LAND_TIME_S:.1f}s）...",
+                flush=True,
+            )
+            cf.high_level_commander.land(LAND_HEIGHT_M, EMERGENCY_LAND_TIME_S)
+            time.sleep(EMERGENCY_LAND_TIME_S)
+            cf.high_level_commander.stop()
+        finally:
+            stop_event.set()
+            watchdog_thread.join(timeout=1.0)
+
+    finally:
+        aux_lg.stop()
+        cf.close_link()
+
+
 if __name__ == "__main__":
-    pass  # main() 由 Task 2 补上
+    main()
