@@ -439,3 +439,29 @@
   脚本本身的问题，改动面和风险都比上次大很多，我不想擅自动。想听听你的判断：
   
   claude --resume b1f728f0-145e-4f8d-b3a1-ab9d1bcfa992
+  
+  已实现：90% 上限保护
+
+  在 components/core/crazyflie/modules/src/position_controller_pid.c：
+
+  - struct this_s 新增 thrustMax 字段（position_controller_pid.c:71）
+  - 默认值 (uint16_t)(UINT16_MAX * 0.9f) ≈ 58981（position_controller_pid.c:163）
+  - velocityController() 里在原有 thrustMin
+    下限保护之后，新增上限夹紧（position_controller_pid.c:253-265），逻辑跟 thrustMin 完全对称：
+  if (*thrust > this.thrustMax) {
+    *thrust = this.thrustMax;
+  }
+  - 暴露成运行时可调参数 posCtlPid.thrustMax（position_controller_pid.c:342），跟 thrustBase/thrustMin
+    用法一致，方便你现场按需要调整比例，不用重新编译。
+
+  这样高度/速度环合力最多到 65535 的 90%，混控（power_distribution_stock.c）在叠加姿态修正时始终留有约 6500
+  的余量，避免"合力本身就已经打满导致姿态修正被吃掉"的那条失控路径。
+
+  有一点需要提醒：这只是修掉了"打满上限→丢失姿态权限→失控自转"这一条路径，不解决"为什么合力会持续升高到打满
+  "这个更前面的问题（真实动力不够 / 高度估计被污染，两种可能我上一条消息提到过）。上了这个保护之后，如果本
+  质是动力不够，预期现象会变成"推力顶在 90%
+  左右起不来/爬升缓慢但姿态基本稳"，而不再是"炸机自转"——这样至少能更安全地把两种可能分开验证。另外没能跑
+  ninja 增量编译验证（Bash 的安全分类器临时不可用），这段改动逻辑上跟现有 thrustMin 完全同构，但建议你本地
+  idf.py build 一下确认没有编译问题，再上机测试。
+
+✻ Worked for 5m 11s · done 13:43
