@@ -61,7 +61,7 @@ if not stop_event.is_set():
 
 `PositionHlCommander.take_off()`/`land()` 是阻塞调用，内部只是根据"距离/速度"算一个 `duration_s` 然后 `time.sleep()`，实际的轨迹插值完全在固件端的规划器里完成——Python 侧没有 t5/t6 那种"每帧发送、每帧检查看门狗"的介入点。因此安全模型改成：
 
-1. **正常/异常路径统一走"stop_event 门控的 land"，不是"with 自动 land"（最终评审后修正）**：不用 `with`，显式调用 `pc.take_off()`；悬停循环结束后，只有 `stop_event` 没被设置（即看门狗没有介入过）才调用 `pc.land()`——已经被看门狗 `stop()` 过的飞行阶段绝不再调 `land()`（背景第 5 点）。这个"检查 `stop_event` → 调用 `pc.land()`"之间仍有一个极窄的竞争窗口（`pc.land()` 不能加锁，见第 4 点），属于有意接受、已收窄（见下一条）的残余风险，不是这次修复要彻底消灭的目标。`emergency_stop()`（看门狗触发时调用）内部**先 `stop_event.set()` 再发 `stop()`**，不是反过来——这样主线程能尽早看到标志位，缩小上面那个窗口。紧急处理路径（第 2 点）额外用一个 `took_off` 标志门控：只有确认真的调用过 `pc.take_off()` 才尝试紧急 `land()`，因为 `take_off()` 本身抛异常时飞机可能还停在 `IDLE`，从 `IDLE` 调 `land()` 是同一类"重新上电"问题（背景第 5 点），不是只有"`stop()` 之后"才会踩到。
+1. **正常/异常路径统一走"stop_event 门控的 land"，不是"with 自动 land"（最终评审后修正）**：不用 `with`，显式调用 `pc.take_off()`；悬停循环结束后，只有 `stop_event` 没被设置（即看门狗没有介入过）才调用 `pc.land()`——已经被看门狗 `stop()` 过的飞行阶段绝不再调 `land()`（背景第 5 点）。这个"检查 `stop_event` → 调用 `pc.land()`"之间仍有一个极窄的竞争窗口（`pc.land()` 不能加锁，见第 4 点），属于有意接受、已收窄（见下一条）的残余风险，不是这次修复要彻底消灭的目标。`emergency_stop()`（看门狗触发时调用）内部**先 `stop_event.set()` 再发 `stop()`**，不是反过来——这样主线程能尽早看到标志位，缩小上面那个窗口。紧急处理路径（第 2 点）额外用一个 `took_off` 标志门控，且这个标志不是"曾经调用过 `pc.take_off()`"，而是"现在飞机是不是应该被当成还在空中"：`pc.take_off()` 成功返回后置 `True`，`pc.land()` 成功返回后立刻清回 `False`（在任何后续可能抛异常的语句之前）。原因是同一类"重新上电"问题在两处都会踩到——`take_off()` 本身抛异常时飞机可能还停在 `IDLE`；`land()` 成功返回后，固件规划器已经自己从 `LANDING` 走回 `IDLE`（`plan_current_goal()` 在 `plan_is_finished()` 之后自动切回），这之后如果 `stop()` 发送或紧跟着的打印抛异常，`took_off` 必须已经是 `False`，否则紧急处理会把刚落地的飞机又送一次 `land()`，从 `IDLE` 重新给电机推力（背景第 5 点，最终评审第三轮发现的残余漏洞）。
 2. **`__enter__`/`take_off()` 期间以及悬停期间的异常/Ctrl+C，统一走同一个 nested try/except 兜底（复用 t6 已验证的模式）**：
    ```python
    try:
@@ -69,7 +69,7 @@ if not stop_event.is_set():
    except (KeyboardInterrupt, Exception) as exc:
        print(f"触发紧急处理：{exc!r}", flush=True)  # 必须打印真实异常，不能只打印固定文案
        try:
-           if not stop_event.is_set():
+           if took_off and not stop_event.is_set():
                with hl_lock:
                    cf.high_level_commander.land(LAND_HEIGHT_M, EMERGENCY_LAND_TIME_S)
                time.sleep(EMERGENCY_LAND_TIME_S)
