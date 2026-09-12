@@ -57,6 +57,7 @@ EMERGENCY_LAND_TIME_S = 1.0    # __enter__（take_off）期间异常时，兜底
 LAND_HEIGHT_M = 0.0
 
 RANGE_SANE_MAX_MM = 4000       # 起飞前地面测距合理性上限，不设下限（同 t5/t6）
+MIN_TAKEOFF_ZRANGE_RISE_MM = 100  # 起飞后 zrange 至少要比起飞前升高这么多，才认为真的离地了
 
 
 def read_current_estimator(cf, timeout_s=2.0):
@@ -192,22 +193,25 @@ def main():
 
         print(f"起飞前地面测距 = {zrange0}mm，commander.enHighLevel 已确认，开始起飞。", flush=True)
 
+        hl_lock = threading.Lock()
         stop_event = threading.Event()
         flight_deadline = time.monotonic() + MAX_FLIGHT_TIME_S
         last_status_print = [0.0]
+
+        def emergency_stop(reason):
+            print(reason, flush=True)
+            with hl_lock:
+                cf.high_level_commander.stop()
+            stop_event.set()
 
         def watchdog_loop():
             while not stop_event.is_set():
                 now = time.monotonic()
                 if now > flight_deadline:
-                    print("警告：飞行总时长超过硬上限，触发立即停桨。", flush=True)
-                    cf.high_level_commander.stop()
-                    stop_event.set()
+                    emergency_stop("警告：飞行总时长超过硬上限，触发立即停桨。")
                     break
                 if state["last_log_t"] is None or (now - state["last_log_t"]) > LOG_STALE_TIMEOUT_S:
-                    print("警告：高度日志已停止刷新，链路/主控可能异常，触发立即停桨。", flush=True)
-                    cf.high_level_commander.stop()
-                    stop_event.set()
+                    emergency_stop("警告：高度日志已停止刷新，链路/主控可能异常，触发立即停桨。")
                     break
                 if now - last_status_print[0] >= STATUS_PRINT_PERIOD_S:
                     last_status_print[0] = now
@@ -223,31 +227,57 @@ def main():
         watchdog_thread.start()
 
         try:
-            with PositionHlCommander(
+            pc = PositionHlCommander(
                 cf,
                 default_height=TAKEOFF_HEIGHT_M,
                 default_velocity=DEFAULT_VELOCITY_MPS,
-            ):
-                print(f"已起飞到 {TAKEOFF_HEIGHT_M:.2f}m，悬停 {HOVER_TIME_S:.1f}s...", flush=True)
-                t0 = time.monotonic()
-                while time.monotonic() - t0 < HOVER_TIME_S and not stop_event.is_set():
-                    time.sleep(0.1)
-            # 注意：如果看门狗线程在悬停期间已经调用过 stop()，上面 with 块退出时 __exit__
-            # 仍会调用一次 land()——对已经停桨的飞机再发一次 land 命令是已知的、可接受的
-            # 冗余动作（land() 内部只是发 LAND_2 + 再次 stop()），不会造成新的风险。
-            print("飞行结束（已降落）。", flush=True)
-        except (KeyboardInterrupt, Exception):
-            # __enter__（也就是 take_off()）执行期间的异常/Ctrl+C 不会触发
-            # PositionHlCommander.__exit__（Python 的 with 语义：__enter__ 抛异常时不会进入
-            # __exit__），这里手动兜底一次 land+stop。悬停期间的异常/Ctrl+C 已经在上面的
-            # with 块里被 __exit__ 处理过，这里再兜底一次 stop() 也是安全的。
-            print(
-                f"触发紧急处理：向固件发送 land+stop（{EMERGENCY_LAND_TIME_S:.1f}s）...",
-                flush=True,
             )
-            cf.high_level_commander.land(LAND_HEIGHT_M, EMERGENCY_LAND_TIME_S)
-            time.sleep(EMERGENCY_LAND_TIME_S)
-            cf.high_level_commander.stop()
+            pc.take_off()
+
+            zrange_after_takeoff = state["zrange_mm"]
+            if (
+                zrange_after_takeoff is None
+                or zrange0 is None
+                or zrange_after_takeoff < zrange0 + MIN_TAKEOFF_ZRANGE_RISE_MM
+            ):
+                print(
+                    f"警告：起飞前后 zrange {zrange0}mm -> {zrange_after_takeoff}mm，没有观察到"
+                    f"预期的升高（预期至少上升 {MIN_TAKEOFF_ZRANGE_RISE_MM}mm）。飞机可能没有真的"
+                    "起飞（比如 commander.enHighLevel 没有真正生效，这正是本脚本要抓的静默失败"
+                    "模式）。仍会继续走完悬停/降落流程，请现场确认飞机状态。",
+                    flush=True,
+                )
+            else:
+                print(f"已确认离地：zrange {zrange0}mm -> {zrange_after_takeoff}mm。", flush=True)
+
+            print(f"悬停 {HOVER_TIME_S:.1f}s...", flush=True)
+            t0 = time.monotonic()
+            while time.monotonic() - t0 < HOVER_TIME_S and not stop_event.is_set():
+                time.sleep(0.1)
+
+            if stop_event.is_set():
+                print(
+                    "看门狗已经触发过停桨，跳过 land()——在这份固件上，land() 在 stop() 之后"
+                    "不是无害的冗余动作，会让电机重新获得接近悬停的推力（planner.c 的 "
+                    "plan_land() 只拒绝已经在 LANDING 状态的重入，不拒绝从 IDLE 重新进入）。",
+                    flush=True,
+                )
+            else:
+                print("命令 land：降落...", flush=True)
+                pc.land()
+                print("飞行结束（已降落）。", flush=True)
+        except (KeyboardInterrupt, Exception) as exc:
+            print(f"触发紧急处理：{exc!r}", flush=True)
+            try:
+                if not stop_event.is_set():
+                    with hl_lock:
+                        cf.high_level_commander.land(LAND_HEIGHT_M, EMERGENCY_LAND_TIME_S)
+                    time.sleep(EMERGENCY_LAND_TIME_S)
+            except (KeyboardInterrupt, Exception):
+                pass  # land 本身失败也不再重入，直接走到下面的停桨
+            with hl_lock:
+                cf.high_level_commander.stop()
+            stop_event.set()
         finally:
             stop_event.set()
             watchdog_thread.join(timeout=1.0)
