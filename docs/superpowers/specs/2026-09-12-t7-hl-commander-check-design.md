@@ -70,11 +70,14 @@ if not stop_event.is_set():
        print(f"触发紧急处理：{exc!r}", flush=True)  # 必须打印真实异常，不能只打印固定文案
        try:
            if not stop_event.is_set():
-               cf.high_level_commander.land(LAND_HEIGHT_M, EMERGENCY_LAND_TIME_S)
+               with hl_lock:
+                   cf.high_level_commander.land(LAND_HEIGHT_M, EMERGENCY_LAND_TIME_S)
                time.sleep(EMERGENCY_LAND_TIME_S)
        except (KeyboardInterrupt, Exception):
            pass  # land 本身失败也不再重入，直接走到下面的停桨（同 t6 的 stop_motors 兜底）
-       cf.high_level_commander.stop()
+       with hl_lock:
+           cf.high_level_commander.stop()
+       stop_event.set()
    ```
    `stop()` 放在最外层、没有任何可能跳过它的路径——这是唯一保证"无论前面发生什么，最终都会停桨"的调用，同 t6 `stop_motors()` 放在 `finally`/兜底末尾的思路。
 3. **后台监控线程（只读监控 + 单一兜底动作）**：独立线程周期检查：
@@ -83,7 +86,9 @@ if not stop_event.is_set():
    - 触发以上任一条件时，直接调用 `cf.high_level_commander.stop()`——这是固件里的立即停桨命令（`COMMAND_STOP`），不是斜坡下降。因为本次起飞高度只有 0.3m，直接停桨掉落的风险可接受；`PositionHlCommander` 本身不提供"从任意状态平滑降落"的原语，强行模拟斜坡反而会跟固件规划器已经在执行的轨迹冲突（`HighLevelCommander.go_to()` 文档里明确警告过"避免重叠的 go_to 命令"，`land()`/`takeoff()` 同理）。
    - 监控线程只做展示 + 这一个兜底动作，不做更复杂的重试/斜坡逻辑——复杂度留给以后如果这条路径证明可靠再迭代。
    - **触发后仍继续打印状态，不要提前 `break` 掉打印循环**：紧急处理期间的遥测正是事后排查最需要的数据。
-4. **互斥锁（新增，最终评审 Important #5）**：看门狗线程和主线程都会调用 `cf.high_level_commander.*`，两者之间没有互斥会导致命令乱序发出（比如看门狗的 `stop()` 恰好和主线程紧急处理里的 `land()` 交错）。用一个 `threading.Lock()` 包住所有对 `cf.high_level_commander` 的调用，看门狗触发前重新确认一次 `stop_event` 还没被设置。
+4. **互斥锁的范围要限定在"实际发包"那一刻，不能把 `pc.take_off()`/`pc.land()` 整个调用都锁住（新增，最终评审 Important #5，实现时的重要澄清）**：`PositionHlCommander.take_off()`/`land()` 内部把"发包"和"`time.sleep(duration_s)`"揉在一次调用里——如果拿锁包住整个调用，看门狗线程在这几百毫秒的爬升/下降期间会因为抢不到锁而完全打不出 `stop()`，等于看门狗在恰恰最需要它介入的窗口失效。因此：
+   - 看门狗的 `stop()` 和紧急处理路径里直接调用的 `cf.high_level_commander.land()`/`stop()`（这两处都是我们自己写的、瞬时返回的裸调用）用 `threading.Lock()` 互斥，看门狗触发前重新确认一次 `stop_event` 还没被设置。
+   - `pc.take_off()`/`pc.land()` 本身不加锁——真正杜绝"`stop()` 之后又发 `land()`"这个危险场景的机制是 1 点里的 `stop_event` 门控（发 `land()` 前检查 `stop_event`），不是互斥锁；锁只是缩小"两个裸调用互相打断"这一更小的残余风险，不是本设计防止重新上电的主要手段。
 5. **状态打印**：监控线程里按 `STATUS_PRINT_PERIOD_S`（建议默认 0.3s，同 t6）节流打印 `range.zrange`/`stateEstimate.z`，跟 t6 的 `print_status` 一样，纯展示不参与控制。
 
 ## 内部架构
