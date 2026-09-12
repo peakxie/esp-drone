@@ -27,6 +27,14 @@
 #     不会尝试连接/起飞。
 #
 # 首次测试建议：室内、地面平整、四周留够 1m 净空、旁边有人随时准备断电。
+#
+# 重要：本脚本本身尚未做过实机飞行验证（对应实现计划里的 Task 3 尚未执行）。上面列的安全
+# 约定是从 t5_hover_land.py 继承并泛化的，那些具体机制（看门狗、触地判定、紧急下降节奏）
+# 已经过 t5 的多次实机验证，但 t6 把它们接到新代码路径上这件事本身还没有飞过。
+# 另外，goto 命令里的非零 dx/dy（水平方向移动）是本项目第一次真正尝试主动的水平位置指令
+# ——t5_hover_land.py 出于保守考虑，全程把 x/y 钉死在起飞点不变，从未真正指挥飞机水平移动。
+# 首次测试请先用只含 takeoff/hover/land、不含 goto 的最小 FLIGHT_PLAN（同下面 Task 3 Step 1
+# 的建议），确认基本行为正常后再逐步加入 goto。
 
 import time
 
@@ -84,9 +92,13 @@ class FlightAbort(Exception):
     """内部信号：立即停止当前阶段，转入紧急下降。"""
 
 
-def validate_flight_plan(plan, max_xy_offset_m=MAX_XY_OFFSET_M, max_height_m=MAX_HEIGHT_M):
+def validate_flight_plan(plan, max_xy_offset_m=MAX_XY_OFFSET_M, max_height_m=MAX_HEIGHT_M, max_flight_time_s=MAX_FLIGHT_TIME_S):
     """对命令列表做连接前的纯本地校验（不依赖飞机/cflib），返回错误信息列表；
-    空列表表示合法。第一条命令必须是 takeoff，否则后续命令的前提条件不成立。"""
+    空列表表示合法。第一条命令必须是 takeoff，否则后续命令的前提条件不成立。
+    除了逐条检查参数是否合法，还检查整体"形状"：只能有一次 takeoff（在第一条）、
+    land 只能出现一次且必须是最后一条、命令列表的最坏情况总耗时不能超过
+    MAX_FLIGHT_TIME_S——这三条都是运行时 main() 隐含假设的前提条件，必须在
+    连接飞机之前就拒绝违反它们的计划，而不是等到飞到一半才出问题。"""
     errors = []
     if not plan:
         errors.append("命令列表为空，至少需要一条 takeoff 命令。")
@@ -96,6 +108,10 @@ def validate_flight_plan(plan, max_xy_offset_m=MAX_XY_OFFSET_M, max_height_m=MAX
     first_name = first_entry[0] if isinstance(first_entry, tuple) and len(first_entry) > 0 else None
     if first_name != "takeoff":
         errors.append(f"第一条命令必须是 takeoff，实际是 {first_entry!r}。")
+
+    takeoff_count = 0
+    land_indices = []
+    total_duration_s = 0.0
 
     for idx, entry in enumerate(plan):
         if not isinstance(entry, tuple) or len(entry) == 0:
@@ -114,11 +130,14 @@ def validate_flight_plan(plan, max_xy_offset_m=MAX_XY_OFFSET_M, max_height_m=MAX
             continue
 
         if name == "takeoff":
+            takeoff_count += 1
             height_m = args[0]
             if not (0.0 < height_m <= max_height_m):
                 errors.append(f"第 {idx} 条 takeoff 高度 {height_m} 超出合理范围 (0, {max_height_m}]m：{entry!r}")
-            if len(args) == 2 and args[1] <= 0:
-                errors.append(f"第 {idx} 条 takeoff duration_s={args[1]} 必须 > 0：{entry!r}")
+            duration_s = args[1] if len(args) == 2 else TAKEOFF_TIME_S
+            if duration_s <= 0:
+                errors.append(f"第 {idx} 条 takeoff duration_s={duration_s} 必须 > 0：{entry!r}")
+            total_duration_s += duration_s
         elif name == "goto":
             dx, dy, h, duration_s = args
             if abs(dx) > max_xy_offset_m or abs(dy) > max_xy_offset_m:
@@ -127,13 +146,35 @@ def validate_flight_plan(plan, max_xy_offset_m=MAX_XY_OFFSET_M, max_height_m=MAX
                 errors.append(f"第 {idx} 条 goto 高度 h={h} 超出 [0, {max_height_m}]m 范围：{entry!r}")
             if duration_s <= 0:
                 errors.append(f"第 {idx} 条 goto duration_s={duration_s} 必须 > 0：{entry!r}")
+            total_duration_s += duration_s
         elif name == "hover":
             (duration_s,) = args
             if duration_s <= 0:
                 errors.append(f"第 {idx} 条 hover duration_s={duration_s} 必须 > 0：{entry!r}")
+            total_duration_s += duration_s
         elif name == "land":
-            if args and args[0] <= 0:
-                errors.append(f"第 {idx} 条 land duration_s={args[0]} 必须 > 0：{entry!r}")
+            land_indices.append(idx)
+            duration_s = args[0] if args else LAND_TIME_S
+            if duration_s <= 0:
+                errors.append(f"第 {idx} 条 land duration_s={duration_s} 必须 > 0：{entry!r}")
+            total_duration_s += duration_s + TOUCHDOWN_MAX_WAIT_S
+
+    if takeoff_count > 1:
+        errors.append(f"命令列表里出现了 {takeoff_count} 次 takeoff，只能有一次（且必须是第一条）：{plan!r}")
+
+    if len(land_indices) > 1:
+        errors.append(f"命令列表里出现了 {len(land_indices)} 次 land，最多只能有一次，且必须是最后一条：{plan!r}")
+    elif land_indices and land_indices[-1] != len(plan) - 1:
+        errors.append(f"land 命令（第 {land_indices[-1]} 条）后面还有其他命令，land 只能是最后一条：{plan!r}")
+
+    if not land_indices:
+        total_duration_s += LAND_TIME_S + TOUCHDOWN_MAX_WAIT_S  # 没写 land 会被 main() 自动补一次，也要算进预算
+
+    if total_duration_s > max_flight_time_s:
+        errors.append(
+            f"命令列表预计总耗时 {total_duration_s:.1f}s（含 land 触地确认的最坏情况等待）超过 "
+            f"max_flight_time_s={max_flight_time_s:.1f}s，请精简命令或调大 MAX_FLIGHT_TIME_S：{plan!r}"
+        )
 
     return errors
 
@@ -398,16 +439,21 @@ def main():
                 print("命令列表未以 land 结尾，自动补一次降落。", flush=True)
                 cmd_land()
 
-        except (FlightAbort, KeyboardInterrupt):
+        except (KeyboardInterrupt, Exception):
             print(
                 f"触发紧急下降：从当前目标 dx={current_target['dx']:.2f} dy={current_target['dy']:.2f} "
                 f"h={current_target['h']:.2f} 快速降到地面（{EMERGENCY_LAND_TIME_S:.1f}s）...",
                 flush=True,
             )
+            # 紧急下降给自己单独续一段时间预算：如果刚才是 MAX_FLIGHT_TIME_S 到期触发的中止，
+            # flight_deadline 是一个已经过去的固定时间点，不重新往后推的话 watchdog_ok() 在紧急
+            # 斜坡的第一帧就会再次判定超时，导致下面的 ramp_to 立刻又被打断——紧急下降会退化
+            # 成跟直接停桨一样的瞬间掉高度，而不是期望中的连续斜坡下降。
+            flight_deadline = time.monotonic() + EMERGENCY_LAND_TIME_S
             try:
                 ramp_to(current_target["dx"], current_target["dy"], LAND_HEIGHT_M, EMERGENCY_LAND_TIME_S)
-            except (FlightAbort, KeyboardInterrupt):
-                pass  # 已经在尽力下降了，watchdog 再触发也不再重入，直接走到下面的停桨
+            except (KeyboardInterrupt, Exception):
+                pass  # 已经在尽力下降了，任何异常都不再重入，直接走到下面的停桨
             stop_motors()
 
         print("飞行结束。", flush=True)

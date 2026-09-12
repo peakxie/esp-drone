@@ -66,6 +66,32 @@ class ValidateFlightPlanTests(unittest.TestCase):
         errors = validate_flight_plan(plan)
         self.assertTrue(any("land duration_s=" in e for e in errors))
 
+    def test_multiple_takeoff_returns_error(self):
+        plan = [("takeoff", 0.3), ("goto", 0.1, 0.0, 0.3, 1.0), ("takeoff", 0.4), ("land",)]
+        errors = validate_flight_plan(plan)
+        self.assertTrue(any("出现了 2 次 takeoff" in e for e in errors))
+
+    def test_land_not_terminal_returns_error(self):
+        plan = [("takeoff", 0.3), ("land",), ("hover", 1.0)]
+        errors = validate_flight_plan(plan)
+        self.assertTrue(any("land 只能是最后一条" in e for e in errors))
+
+    def test_multiple_land_returns_error(self):
+        plan = [("takeoff", 0.3), ("land",), ("land",)]
+        errors = validate_flight_plan(plan)
+        self.assertTrue(any("出现了 2 次 land" in e for e in errors))
+
+    def test_total_duration_exceeds_max_flight_time_returns_error(self):
+        plan = [("takeoff", 0.3), ("hover", 40.0), ("land",)]
+        errors = validate_flight_plan(plan)
+        self.assertTrue(any("超过" in e and "max_flight_time_s" in e for e in errors))
+
+    def test_total_duration_within_budget_including_auto_appended_land(self):
+        # 没写 land，预算里要把 main() 自动补的一次 land（含最坏情况触地等待）算进去
+        plan = [("takeoff", 0.3), ("hover", 1.0)]
+        errors = validate_flight_plan(plan)
+        self.assertEqual(errors, [])
+
 
 if __name__ == "__main__":
     unittest.main()
