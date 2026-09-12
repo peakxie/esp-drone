@@ -12,6 +12,7 @@
 2. **必须的前提 param（关键新发现）**：`commander.c:48` 定义 `static bool enableHighLevel = false`，对外暴露为运行时 param `commander.enHighLevel`。`commanderGetSetpoint()`（`commander.c:104-116`）只有在这个 param 为真时才会把 setpoint 交给 `crtpCommanderHighLevelGetSetpoint()`；否则（包括默认状态）setpoint 恒为 `nullSetpoint`（停桨态）。也就是说**不显式把这个 param 设成 1，`take_off()`/`land()` 命令会被固件静默忽略，电机不会响应，Python 侧的 `time.sleep(duration_s)` 还是会正常走完**——这是一个静默失败模式，必须在起飞前设置并回读确认。
 3. `commander.c:80-88`：任何一次低层 setpoint（`send_position_setpoint`）入队都会强制调用 `crtpCommanderHighLevelStop()`，把高层规划器打回 idle。因此本脚本必须是纯高层命令路径，不能像 t6 那样混用低层 setpoint 发送。
 4. x/y 位置估计只有在 kalman 估计器下才是真实值；默认的 complementary 估计器下 `position_estimator_altitude.c` 把 x/y 硬编码为 0（`position_estimator_altitude.c:106-108`）。本脚本只测垂直的 `take_off`/`land`（不测 `go_to`），水平方向的风险等同于 t5/t6 已知的"非 kalman 时缓慢漂移"警告，不是新增风险。
+5. **`land()` 在 `stop()` 之后不是无害的冗余动作（安全模型的修正，来自实现完成后的最终评审，最终评审时逐行核对了 `planner.c`）**：`planner.c` 的规划器状态机里，`plan_takeoff()`（`planner.c:138`）会检查 `state != TRAJECTORY_STATE_IDLE` 就拒绝执行，但 `plan_land()`（`planner.c:153`）只检查 `state == TRAJECTORY_STATE_LANDING` 才拒绝——从 `TRAJECTORY_STATE_IDLE`（也就是 `plan_stop()` 停桨后的状态，`planner.c:69-71`）调用 `land()` 完全会被接受，规划器会重新规划一条轨迹并把状态切回 `LANDING`（活跃状态）。`position_controller_pid.c` 的 `thrustBase`（注释明确写"should just lift the drone"）意味着这条重新激活的轨迹会让电机重新获得接近悬停的推力，不是"发了也没用的空指令"。**结论：任何已经调用过 `stop()` 的飞行阶段之后，绝对不能再无条件调用 `land()`。** 本文档最初的"安全模型"一节曾经错误地断言这种冗余调用无害，已在下面的安全模型一节纠正。
 
 ## 目标
 
@@ -29,17 +30,21 @@
 
 ## 命令流程
 
+**修正（最终评审后）：不使用 `with PositionHlCommander(...)` 语法。** 最初设计用 `with` 让 `__exit__` 自动兜底调用 `land()`，但这意味着"任何时候退出 with 块都会再发一次 `land()`"，包括看门狗已经调用过 `stop()` 之后——而背景第 5 点已经证实这不是无害冗余，会重新让电机获得推力。改成显式调用，用 `stop_event` 门控是否还要发 `land()`：
+
 ```python
-with PositionHlCommander(cf, default_height=TAKEOFF_HEIGHT_M,
-                          default_velocity=DEFAULT_VELOCITY_MPS) as pc:
-    # __enter__ 已经执行 take_off()
-    time.sleep(HOVER_TIME_S)
-    # __exit__（正常退出或异常/Ctrl+C）自动执行 land()
+pc = PositionHlCommander(cf, default_height=TAKEOFF_HEIGHT_M,
+                          default_velocity=DEFAULT_VELOCITY_MPS)
+pc.take_off()  # 相当于原来 __enter__
+# ...悬停循环，看门狗可能在这期间 stop_event.set()...
+if not stop_event.is_set():
+    pc.land()  # 只有确实还没被看门狗停桨时才降落；已经 stop() 过就不再调 land()
 ```
 
 - 起飞高度：`TAKEOFF_HEIGHT_M = 0.3`（沿用 t5/t6 首次测试的保守高度）。
 - 起飞/降落速度：用 `PositionHlCommander` 默认的 `0.5 m/s`（`default_velocity`），不额外调整——先确认基本行为，不追求速度调优。
-- 悬停：`HOVER_TIME_S = 3.0`，退出 with 块自动降落停桨（`PositionHlCommander.land()` 内部已经调用 `stop()`）。
+- 悬停：`HOVER_TIME_S = 3.0`。
+- **起飞后自动校验（新增，最终评审 Important #4）**：`take_off()` 返回后，无论电机实际有没有转，Python 侧都会正常往下走——这正是背景第 2 点"静默失败"的同一类症状。`take_off()` 返回后必须检查 `state['zrange_mm']`/`state['z_est']` 相对起飞前的 `zrange0` 确实发生了预期方向的变化（测距值明显变小），不满足就打印警告（不需要因此中止降落流程，但必须让操作者知道"可能没有真的离地"）。
 
 ## 起飞前检查（连接后、进入 `with PositionHlCommander` 之前）
 
@@ -56,26 +61,43 @@ with PositionHlCommander(cf, default_height=TAKEOFF_HEIGHT_M,
 
 `PositionHlCommander.take_off()`/`land()` 是阻塞调用，内部只是根据"距离/速度"算一个 `duration_s` 然后 `time.sleep()`，实际的轨迹插值完全在固件端的规划器里完成——Python 侧没有 t5/t6 那种"每帧发送、每帧检查看门狗"的介入点。因此安全模型改成：
 
-1. **正常/异常路径统一走 `land()`**：用 `with PositionHlCommander(...) as pc:` 语法，`__exit__` 保证无论是正常执行完、悬停时抛异常，还是 Ctrl+C（`KeyboardInterrupt`），都会调用一次 `land()`（内部再调 `stop()` 停桨）。
-2. **后台监控线程（只读监控 + 单一兜底动作）**：独立线程周期检查：
+1. **正常/异常路径统一走"stop_event 门控的 land"，不是"with 自动 land"（最终评审后修正）**：不用 `with`，显式调用 `pc.take_off()`；悬停循环结束后，只有 `stop_event` 没被设置（即看门狗没有介入过）才调用 `pc.land()`——已经被看门狗 `stop()` 过的飞行阶段绝不再调 `land()`（背景第 5 点）。
+2. **`__enter__`/`take_off()` 期间以及悬停期间的异常/Ctrl+C，统一走同一个 nested try/except 兜底（复用 t6 已验证的模式）**：
+   ```python
+   try:
+       ...
+   except (KeyboardInterrupt, Exception) as exc:
+       print(f"触发紧急处理：{exc!r}", flush=True)  # 必须打印真实异常，不能只打印固定文案
+       try:
+           if not stop_event.is_set():
+               cf.high_level_commander.land(LAND_HEIGHT_M, EMERGENCY_LAND_TIME_S)
+               time.sleep(EMERGENCY_LAND_TIME_S)
+       except (KeyboardInterrupt, Exception):
+           pass  # land 本身失败也不再重入，直接走到下面的停桨（同 t6 的 stop_motors 兜底）
+       cf.high_level_commander.stop()
+   ```
+   `stop()` 放在最外层、没有任何可能跳过它的路径——这是唯一保证"无论前面发生什么，最终都会停桨"的调用，同 t6 `stop_motors()` 放在 `finally`/兜底末尾的思路。
+3. **后台监控线程（只读监控 + 单一兜底动作）**：独立线程周期检查：
    - 日志新鲜度：超过 `LOG_STALE_TIMEOUT_S`（建议默认 0.3s，同 t6）没收到新的 `aux_lg` 帧，判定链路/主控异常。
    - 总时长硬上限：超过 `MAX_FLIGHT_TIME_S`（建议默认 15.0s，覆盖起飞+悬停+降落全过程：`0.3m / 0.5m/s` 起降各约 0.6s + 3s 悬停，留足余量）。
    - 触发以上任一条件时，直接调用 `cf.high_level_commander.stop()`——这是固件里的立即停桨命令（`COMMAND_STOP`），不是斜坡下降。因为本次起飞高度只有 0.3m，直接停桨掉落的风险可接受；`PositionHlCommander` 本身不提供"从任意状态平滑降落"的原语，强行模拟斜坡反而会跟固件规划器已经在执行的轨迹冲突（`HighLevelCommander.go_to()` 文档里明确警告过"避免重叠的 go_to 命令"，`land()`/`takeoff()` 同理）。
    - 监控线程只做展示 + 这一个兜底动作，不做更复杂的重试/斜坡逻辑——复杂度留给以后如果这条路径证明可靠再迭代。
-3. **状态打印**：监控线程里按 `STATUS_PRINT_PERIOD_S`（建议默认 0.3s，同 t6）节流打印 `range.zrange`/`stateEstimate.z`，跟 t6 的 `print_status` 一样，纯展示不参与控制。
+   - **触发后仍继续打印状态，不要提前 `break` 掉打印循环**：紧急处理期间的遥测正是事后排查最需要的数据。
+4. **互斥锁（新增，最终评审 Important #5）**：看门狗线程和主线程都会调用 `cf.high_level_commander.*`，两者之间没有互斥会导致命令乱序发出（比如看门狗的 `stop()` 恰好和主线程紧急处理里的 `land()` 交错）。用一个 `threading.Lock()` 包住所有对 `cf.high_level_commander` 的调用，看门狗触发前重新确认一次 `stop_event` 还没被设置。
+5. **状态打印**：监控线程里按 `STATUS_PRINT_PERIOD_S`（建议默认 0.3s，同 t6）节流打印 `range.zrange`/`stateEstimate.z`，跟 t6 的 `print_status` 一样，纯展示不参与控制。
 
 ## 内部架构
 
 - `set_and_verify_param(cf, group, name, value, timeout_s)`：通用的"设置 param + 回调确认新值"辅助函数，`read_current_estimator()`（只读版本）和新增的 `commander.enHighLevel` 设置共用这个模式，避免重复。
-- 后台监控线程封装成一个 `Watchdog` 类或简单函数 + `threading.Thread(daemon=True)`，构造时传入 `cf`、`state` 字典引用、`stop_event`，`main()` 退出前 `stop_event.set()` 并 `join()`。
-- `main()` 结构：cflib 只在 `main()` 内 import（跟 t6 一致，模块本身不强依赖 cflib）→ 建链 → 起飞前检查 → 启动监控线程 → `with PositionHlCommander(...) as pc: time.sleep(HOVER_TIME_S)` → 停监控线程 → `close_link()`。
+- 后台监控线程封装成一个 `Watchdog` 类或简单函数 + `threading.Thread(daemon=True)`，构造时传入 `cf`、`state` 字典引用、`stop_event`、包住 `high_level_commander` 调用的 `threading.Lock`，`main()` 退出前 `stop_event.set()` 并 `join()`。
+- `main()` 结构：cflib 只在 `main()` 内 import（跟 t6 一致，模块本身不强依赖 cflib）→ 建链 → 起飞前检查 → 启动监控线程 → 显式 `pc.take_off()`（不用 `with`）→ 起飞后校验 zrange/z_est 变化 → 悬停循环 → `stop_event` 没被设置才 `pc.land()` → 停监控线程 → `close_link()`。异常路径见"安全模型"第 2 点的 nested try/except。
 - `config.py`（`URI`、`connect_with_timeout`）不改动，直接复用。
 
 ## 验证方式
 
 这是真实起降的飞控测试脚本，无法用单元测试验证飞行安全性。验证方式：
 1. 静态可测的部分：`set_and_verify_param` 的参数校验逻辑（比如非法 group/name/超时行为）可以脱离飞机做单测，同 `test_t6_flight_sequence.py` 的思路。
-2. 实机测试：室内、地面平整、四周留够 1m 净空、旁边有人随时准备断电/接住飞机。先确认 `commander.enHighLevel` 回读成功，再观察 `take_off()` 是否真的爬升到 0.3m（而不是静默停在地面——这正是背景里发现的静默失败模式），悬停 3s 是否稳定，`land()` 是否正常降落停桨。
+2. 实机测试：室内、地面平整、四周留够 1m 净空、旁边有人随时准备断电/接住飞机。先确认 `commander.enHighLevel` 回读成功，再观察起飞后自动校验是否确认了 zrange/z_est 的变化（而不是静默停在地面——这正是背景里发现的静默失败模式），悬停 3s 是否稳定，`land()` 是否正常降落停桨。
 
 ## 重要提示（写入脚本头部注释）
 
