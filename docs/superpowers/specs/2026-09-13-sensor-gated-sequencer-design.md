@@ -32,7 +32,7 @@
 
 新增独立模块 `components/core/crazyflie/modules/{interface,src}/sequencer.h/.c`：
 
-- **专职 FreeRTOS 任务** `sequencerTask`：`SEQ_START` 之后开始运行，按固定周期（20ms，接近 VL53L1 驱动自身 25ms 的刷新节奏）醒来一次，读取 `rangeGet(rangeDown)`，推进当前步骤的斜坡/`stable_hold`/`timeout` 状态机，把算出的 setpoint（`x=0,y=0,yaw=0` 固定 + 动态 `z`）写入一个互斥锁保护的共享结构。`state==IDLE` 时任务阻塞在通知上，不空转。
+- **专职 FreeRTOS 任务** `sequencerTask`：固定周期（20ms，接近 VL53L1 驱动自身 25ms 的刷新节奏）醒来一次；`state==IDLE` 时本 tick 直接跳过（`continue`），不推进状态机——实现上选择了轮询而不是阻塞在任务通知上：一次错过的通知会让任务永久卡死，轮询没有这个风险，20ms 周期下的 CPU 开销可忽略。`SEQ_START` 之后开始推进当前步骤的斜坡/`stable_hold`/`timeout` 状态机，读取 `rangeGet(rangeDown)` 做完成判定，把算出的 setpoint（`x=0,y=0,yaw=0` 固定 + 动态 `z`）写入 `commandedZM`。落地实现没有用互斥量：`state`/`currentStepIdx`/`currentStepType`/`commandedZM`/`stepCount` 都是 `volatile`，靠 `sequencerTick()` 里对 `stepBuffer[currentStepIdx]` 解引用前的 `currentStepIdx < stepCount` 边界检查防止跨任务写入的不一致组合导致越界读，理由和边界见 `sequencer.c` 顶部注释，不要"修"成加锁。
 - **CRTP 入口复用现有端口**：`crtp_commander_high_level.c` 的 `enum TrajectoryCommand_e` 追加新 opcode，`handleCommand()` 分发给 `sequencer.c` 暴露的函数；现有 `takeoff2`/`land2`/`go_to`/`planner.c` 代码不改动。
 - **两个必要的钩子**：
   1. `crtpCommanderHighLevelGetSetpoint()`：先检查 sequencer 是否 active，是则从共享结构拷贝 setpoint 返回，否则走原有 `plan_current_goal()` 分支。
@@ -47,7 +47,7 @@
 
 本机已安装 PMW3901 光流模块，Kalman 估计器下 x/y 是真实的光流闭环，不是纯加速度计双积分——上述"偏离会被纠正"对本机成立。yaw 目前是纯陀螺积分（无磁力计融合，见第 8 节），几秒量级的序列里陀螺漂移可忽略，闭环同样有意义。
 
-只有 `TAKEOFF_SENSOR` 起始 z 需要读取一次当前实际高度，直接从 `crtpCommanderHighLevelGetSetpoint(setpoint, state)` 传入的 `state` 参数读 `state->position.z`，不引入新的共享状态。
+只有 `TAKEOFF_SENSOR` 起始 z 需要读取一次当前实际高度，读的是融合位置估计 `state->position.z`（跟 `position_controller_pid.c` 的 PID 同一个坐标系），不是 `rangeGet()` 这种传感器原始读数（零点是地板，坐标系不一样，两者不一致会让 PID 追着错误的绝对高度跑）。`state->position.z` 由 `crtpCommanderHighLevelGetSetpoint()` 每次被调用时（不管序列是否已经在跑）转告给 sequencer 缓存；`SEQ_START` 在这个缓存从未被写过之前会拒绝（`ENOEXEC`），不会用静态初值 0.0 当真实起点。完成判定（`stable_hold`/触地）仍然只认 `rangeGet(rangeDown)` 原始值，两个坐标系的分工不能混。
 
 ## 5. 线协议
 
@@ -82,7 +82,8 @@
 - **`SEQ_START` 校验**（仿照 `t6_flight_sequence.py` 的 `validate_flight_plan` 思路，固件侧硬校验，不信任 Python 预校验）：缓冲区非空；最后一步必须是 `LAND_SENSOR`；`plan_is_stopped(&planner)==true`；否则拒绝，返回 `ENOEXEC`。
 - **`SEQ_ADD_STEP` 校验**：`state!=IDLE`、缓冲区已满、`step_type` 未知/是 `GOTO_SENSOR`、或参数越界（`target_m` 不在 `(0, 2.0]`m、`stable_hold_s<0`、`timeout_s<=stable_hold_s`、`hold_time_s<=0`、`duration_s<=0`）都直接拒绝，不进缓冲区。
 - **`SEQ_CANCEL` 校验**：`state!=RUNNING` 时视为 no-op（已经在 `LANDING`/`IDLE` 不重复触发）。
-- **传感器读数容错**：若 `rangeGet(rangeDown)` 原始值 `> seq.rangeSaneMaxMm`（默认 4000mm，对应 VL53L1 datasheet 有效上限），本 tick 视为"不可信"，既不计入 `stable_hold`/触地的连续计时，也不重置已累积的计时——只是跳过这一帧，靠 `timeout`/`landMaxWaitS` 兜底，不会因为偶发野值直接判失败。
+- **传感器读数容错**：若 `rangeGet(rangeDown)` 原始值 `> seq.rangeSaneMaxMm`（默认 4000mm，对应 VL53L1 datasheet 有效上限）或读数已超过 `seq.rangeStaleMs`（默认 150ms，约等于 VL53L1 驱动自身 25ms 刷新周期的 6 倍）未更新（`rangeGetLastUpdateTick(rangeDown)` 判断，见 `range.c` 新增的时间戳接口），本 tick 视为"不可信"。跟最初设想不同的是：不可信的这一帧会**重置**已累积的 `stable_hold`/触地连续计时（而不是跳过不计），这是实现阶段发现的更安全的选择——野值/传感器冻结时更难被误判为"确认"，最坏情况是多等一会儿、靠 `timeout`/`landMaxWaitS` 兜底切电机，不会因为偶发或持续的坏读数直接判定"完成"。
+- **传感器冻结（VL53L1 卡死在某个旧值上）**：`rangeGetLastUpdateTick()` 记录每次 `rangeSet()` 调用时的 `xTaskGetTickCount()`；`TAKEOFF_SENSOR`/`LAND_SENSOR` 每 tick 都拿它跟当前 tick 比较，超过 `seq.rangeStaleMs` 就当作"这一帧不可信"（见上一条）。传感器彻底不更新（比如 I2C 失败）时，这个判断会一直失败，`TAKEOFF_SENSOR` 永远无法确认 → `timeout_s` 到 → 转入 `LANDING` → `landMaxWaitS` 到 → 强制切电机——退化成一次受控的中止降落，不是无限爬升或误判触地。
 
 ## 7. 可调参数与遥测
 
@@ -97,6 +98,7 @@
 | `seq.landMaxWaitS` | 5.0 | `t6` `TOUCHDOWN_MAX_WAIT_S` |
 | `seq.cancelLandDurationS` | 2.0 | 对齐用户给出的示例 `Seq[5]: LAND, ..., duration=2.0s` |
 | `seq.rangeSaneMaxMm` | 4000 | VL53L1 datasheet 有效量程上限，与现有 Python 脚本 `RANGE_SANE_MAX_MM` 一致 |
+| `seq.rangeStaleMs` | 150 | VL53L1 驱动自身 25ms 刷新周期的约 6 倍，见第 6 节"传感器冻结" |
 
 `LOG_GROUP_START(seq)`：`state`（0=IDLE/1=RUNNING/2=LANDING）、`stepIdx`（uint8，IDLE 时为 0xFF）、`stepType`、`elapsedMs`（当前步骤已耗时，用于跟 `timeout`/`stable_hold` 对照）。
 
@@ -112,14 +114,24 @@
 新增 `python/t8_sensor_sequence_check.py`，沿用 `t6`/`t7` 的约定：
 
 - 连接、读取并确认 `commander.enHighLevel`；确认当前 `stabilizer.estimator`（本机装了光流，期望是 kalman=2，非 2 则警告但不阻止）。
+- 起飞前校验地面 `range.zrange` 读数在合理范围内（`RANGE_SANE_MAX_MM=4000`），跟 `t5`/`t6`/`t7` 的既有约定一致，超出范围直接拒绝执行，不上传/不启动。
 - cflib 不认识新 opcode，手工构造 `CRTPPacket` 发送 `SEQ_CLEAR`/`SEQ_ADD_STEP`×N/`SEQ_START`。
+- `SEQ_START` 发出后短时间内（0.5s）轮询 `seq.state` 确认序列真的离开了 `IDLE`——固件的校验规则（第 6 节）随时可能拒绝启动，不确认这一步会把"被拒绝"和"正在正常执行"混淆，一直等到总时长硬上限才会发现异常。
 - 订阅 `range.zrange`、`stateEstimate.x/y/z`、`seq.state/stepIdx/stepType/elapsedMs` 日志，按 t6/t7 的节流方式打印进度。
 - 独立的 Python 侧看门狗（日志新鲜度 + 总时长硬上限）：触发时发送现有 `COMMAND_STOP`（急停）——固件自主执行不代表放弃这层兜底，双保险，与 t5/t6/t7 一致。
 - 默认序列即最小三步：`TAKEOFF_SENSOR(target=0.3, stable_hold=0.5, timeout=3.0) → DELAY(hold_time=1.0) → LAND_SENSOR(target=0, duration=2.0)`。
 - `Ctrl+C` 优先发 `SEQ_CANCEL`，如果发送本身失败再退化为 `STOP`。
 
-## 10. 未决风险 / 留给实现计划细化的点
+## 10. 已解决的未决问题 / 仍然留存的已知局限
+
+实现阶段（含最终整体 review 的两轮修复）已经解决了原先记录的未决项：
+
+- **加锁方式**：最终选择不加互斥量，全部靠 `volatile` + 边界检查（见第 3 节），不是关中断拷贝，也不是互斥量。
+- **传感器容错**：新增了 `rangeGetLastUpdateTick()`/`seq.rangeStaleMs`（见第 6 节），覆盖了最初只考虑量程上限、没考虑传感器冻结的疏漏。
+- **z 坐标系**：`TAKEOFF_SENSOR` 起始点最终确认必须用 `state->position.z`（融合估计），不能用传感器原始值——这是整体 review 阶段发现并纠正的一处实现偏差（`sequencerTellStateZ()` 机制），已经反映在第 4 节。
+
+仍然留存、本次未处理、留给后续实机试飞或后续任务的已知局限：
 
 - `seq.touchdownMm` 默认 80mm 是经验估计，未在本机实测验证，预计首次试飞后需要调整（同 t5/t6/t7 的调参历史）。
-- `sequencerTask` 与 `crtpCommanderHighLevelTask`/stabilizer 任务之间的共享结构加锁方式（互斥量 vs 关中断拷贝）留给实现计划里具体定夺，需评估 20ms 任务周期下的锁竞争开销。
-- CRTP 命令的具体 C 结构体/`ENOEXEC` 错误码到 Python 侧的呈现方式（当前只有一个整数 ack）留给实现计划细化，是否需要更细的错误码枚举。
+- CRTP 命令的具体错误码到 Python 侧的呈现方式仍然只有一个整数 ack（`ENOEXEC` 或 0），没有更细的错误码枚举——够用但不够诊断友好，如果后续调试频繁卡在"为什么被拒绝"，值得考虑扩展。
+- `sequencerTellStateZ()` 缓存的 `state->position.z` 本身没有新鲜度检查（不像 `rangeGet(rangeDown)` 那样有 `seq.rangeStaleMs`）：如果客户端在设置 `commander.enHighLevel=1` 之后、`SEQ_START` 之前又混入了低层 setpoint 流，`commander.c` 的 2 秒 watchdog 门槛会让这个缓存长达 2 秒不更新，但 `stateZKnown` 仍然读 `true`。当前 `t8` 脚本的调用方式不会触发这个路径（全程不发低层 setpoint），暂不需要处理，但如果以后有代码路径会这样混用，需要给这个缓存也加一个时间戳。

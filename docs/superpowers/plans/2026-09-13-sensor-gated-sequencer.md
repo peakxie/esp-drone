@@ -1470,7 +1470,7 @@ Expected: 编译成功，无 `sequencer.c`/`crtp_commander_high_level.c` 相关�
 idf.py flash monitor
 ```
 
-用 `cfclient` 或 Python 连接后确认能看到 `seq` PARAM 组（`seq.takeoffVelMps` 等 7 个参数）和 `seq` LOG 组（`seq.state`/`seq.stepIdx`/`seq.stepType`/`seq.elapsedMs`）。
+用 `cfclient` 或 Python 连接后确认能看到 `seq` PARAM 组（`seq.takeoffVelMps` 等 8 个参数，含最终 review 阶段新增的 `seq.rangeStaleMs`）和 `seq` LOG 组（`seq.state`/`seq.stepIdx`/`seq.stepType`/`seq.elapsedMs`）。
 
 - [ ] **Step 3: 地面（不通电机）协议冒烟测试**
 
