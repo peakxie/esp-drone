@@ -1,0 +1,439 @@
+1.本固件中增加一个能力，发送一条指令：类似如下，本次支持的命令先完成TAKEOFF_SENSOR，DELAY，LAND三个
+Seq[0]: TAKEOFF_SENSOR, target=0.3m, stable_hold=0.5s, timeout=3.0s
+Seq[1]: DELAY, hold_time=1.0s
+Seq[2]: GOTO_SENSOR, offset_x=0.5, offset_y=0, z=0.3, tol_xy=0.05, tol_z=0.03, stable_hold=0.3s, timeout=4.0s
+Seq[3]: DELAY, hold_time=3.0s
+Seq[4]: GOTO_SENSOR, offset_x=0, offset_y=0, z=0.3, tol_xy=0.05, tol_z=0.03, stable_hold=0.3s, timeout=4.0s
+Seq[5]: LAND, target=0, duration=2.0s
+2.可以取消这个指令 cancel（功能取消1指令，执行LAND）
+3.可以急停 stop(功能取消1指令，关闭电机即急停)
+4.TAKEOFF_SENSOR跟原来的takeoff的差异，使用VL53L1测量值或基于该传感器滤波后的估计值，跟设定目标比较，来确定takeoff完成。
+5.LAND跟原来land的差异，根据VL53L1测量值或基于该传感器滤波后的估计值，作为落地的确定，然后关闭电机，表示land完成。
+6.注意VL53L1的有效测量值为40mm-4000mm，实际测试放在地上时25mm可以测量出来
+7.目前使用的python控制在python目录
+
+Good, that resolves the two open policy questions. Now let me lay out the design based on what I found in
+  the codebase.
+
+  Key finding informing this design: this repo has already extensively flight-tested the theory here. The
+  existing crtp_commander_high_level.c "planner" path (used for the old takeoff/land/goto CRTP commands)
+  has never been flight-validated — all real flights use a low-level ramp-to-setpoint approach streamed
+  from Python (t5/t6/t7), because the z-axis PID in position_controller_pid.c ignores the planner's
+  velocity feedforward anyway, and the planner's time-based "done" signal repeatedly caused
+  premature-landing bugs. So building your new sensor-gated steps on top of that same untested planner
+  would inherit its problems.
+
+  Recommended architecture: a new, small, self-contained module (sequencer.c/.h) that:
+  - Reuses the existing high-level commander plumbing already wired into commander.c (the
+    commander.enHighLevel gate, the CRTP_PORT_SETPOINT_HL port, and the fact that any low-level setpoint
+    packet or STOP already forces the high-level path to idle → zero thrust). This gives us the
+    emergency-stop and "low-level always wins" safety invariants for free.
+  - Does not touch planner.c/pptraj (the polynomial trajectory engine). Instead it implements its own tiny
+    linear ramp + sensor-supervision state machine — mirroring the exact pattern already proven safe in
+    t5_hover_land.py/t6_flight_sequence.py, just moved on-board instead of streamed from the PC at 20Hz.
+  - crtp_commander_high_level.c's handleCommand() gets new opcodes that dispatch into sequencer.c;
+    crtpCommanderHighLevelGetSetpoint() checks "is a sequence active?" and if so delegates to the sequencer
+    instead of the old planner (old takeoff/land/goto commands remain untouched, fully backward
+    compatible).
+
+  Does this "new isolated module, not touching the untested planner" direction make sense before I detail
+  the wire protocol and state machine?
+  
+  不，新建指令在固件中专门的线程处理执行，不要用python不停发送命令方式。而TAKEOFF_SENSOR这类命令，独立实
+  现。
+  "position_controller_pid.c 中的 Z 轴 PID 本就会忽略 planner 的速度前馈（velocity feedforward），且 planner 基于时间的“完成（done）”信号曾反复导致提前降落（premature-landing）的 Bug"
+---解释下这个问题，讨论下这种bug如何修复？
+
+这个 bug 到底是怎么回事 
+
+  这实际上是两个独立问题叠加,缺一不可才会造成"提前降落"这类事故:
+
+  问题1:z 轴根本没有前馈,是纯反馈闭环
+
+  position_controller_pid.c:218-219:
+  if (setpoint->mode.z == modeAbs) {
+      setpoint->velocity.z = runPid(state->position.z, &this.pidZ, setpoint->position.z, DT);
+  }
+  这一行是覆盖而不是叠加——planner 算出来的
+  ev.vel.z(轨迹在当前时刻"应该"有多快)被直接丢弃,唯一起作用的是当前高度 vs 目标高度这一个位置误差过的
+  P(I)D。正确的轨迹跟踪架构应该是 feedforward + feedback(ev.vel.z + runPid(...)),现在这里只有 feedback。
+
+  后果:如果 planner 给的是一条很平滑、很慢的爬升斜坡(比如 3.5s 爬到
+  0.3m),那么在斜坡的每一时刻,"目标位置"本身移动得很慢,离飞机当前实际位置就很近——位置误差因此一直很小,PID
+  算出来的速度指令/推力修正也一直很小,飞机实际上几乎不动。真实证据来自 t7_hl_commander_check.py
+  里记录的第四次实机测试:把爬升时间从 2.0s 拉长到 3.5s(想让爬升更"温柔"),结果整个 3.5s 窗口里 zrange
+  完全没离开地面噪声——直到 take_off() 返回、目标高度不再前移、固定死在终点,误差才终于攒够大小,PID
+  才真正发力爬升。也就是说:轨迹越平滑/越"安全",z 轴实际动得越少,这跟直觉正好相反,根源就是这个丢前馈的 bug。
+
+  问题2:"完成"信号是纯时钟,不看物理状态
+
+  无论是固件 planner 的 plan_is_finished(t),还是 Python 侧 land()/take_off() 内部的
+  time.sleep(duration_s),判断"到了"的唯一依据是——时间到了,而不是"传感器说到了"。t5_hover_land.py
+  里记录的实测结论说得很直接:降落斜坡结束时,stateEstimate.z 滞后目标高度还有
+  0.1~0.2m(控制+滤波延迟),如果这时候直接停桨,飞机实际还悬空好几厘米到十几厘米,桨一停就是自由落体摔地——这就
+  是"提前降落"的直接机制。反过来对起飞也成立:duration
+  到了就认为"起飞完成",但配合问题1,真实高度可能压根没离地。
+
+  两个问题叠加:planner
+  让实际状态和计划状态本来就会脱节(问题1),而完成判定又完全不检查这个脱节有多大(问题2)——所以无论怎么调
+  duration/velocity 参数,这类 bug 都在等着复现,这也是 t5/t6/t7
+  反复踩坑、最后都退回"轮询实测距离确认"这条路的原因。
+
+  怎么修
+
+  两条路,建议只走第一条,第二条记为独立事项:
+
+  1. (已经是本次方案的方向)完成信号跟"计划状态"解耦,只认物理测量——stable_hold 内连续达标才算完成,timeout
+     只是安全兜底(到点还没达标就转入 LAND/急停这类安全动作),不是"默认成功"。这样不管底层控制律准不准,凡是命
+     令了"这一步应该结束"的地方,都必须等传感器认账,才不会依赖对 duration/velocity
+     猜得准不准。这也是为什么应该用 VL53L1 原始 range.zrange(mm,滞后最小)而不是融合后的 stateEstimate.z
+     做这个判据——后者本身就带着上面说的 0.1~0.2m 滞后。
+  2. (不建议现在做,单独记一笔)修 position_controller_pid.c 的前馈缺失,把 setpoint->velocity.z = ev.vel.z +
+     runPid(...) 改成叠加而不是覆盖。这会让现有的 takeoff2/land2/goto(我们这次不碰的老命令)轨迹跟踪表现好转
+     ,但这是共享控制环代码,影响所有飞行模式,需要独立验证,不应该顺带塞进这次的 TAKEOFF_SENSOR/LAND
+     里——而且就算前馈修好了,任何控制律都消不掉电池电压、机身差异这类真实扰动,传感器兜底判据仍然是必须的。所
+     以这次方案已经绕开了这个 bug,不依赖修复它。
+
+  回到架构:专职线程
+
+  同意——固件里跑一个**专职任务(dedicated FreeRTOS task)**执行序列,而不是把这套状态机塞进
+  crtpCommanderHighLevelGetSetpoint()(那是被 stabilizer 控制环每个 tick
+  同步调用的热路径,不适合放状态机推进逻辑)。具体设计成这样,确认一下方向对不对:
+
+  - 新增 sequencerTask:序列 START 后开始运行,自己按固定周期(比如 20ms,跟 zRanger2Task 的 25ms
+    传感器刷新节奏匹配)醒来一次,读
+    rangeGet(rangeDown)、推进当前步骤的斜坡/stable_hold/timeout状态机,把算出来的 pos/yaw(仅 z
+    变化)写进一个互斥锁保护的共享结构。
+  - crtpCommanderHighLevelGetSetpoint()(仍然是 stabilizer
+    热路径调用)只做一件事:如果序列处于运行/降落中,直接从这个共享结构里拷贝最新 setpoint 出来;否则走原来的
+    planner 分支(老命令不受影响)。
+  - CRTP 命令(ADD_STEP/START/CANCEL,STOP 复用现有 opcode)仍在已有的 crtpCommanderHighLevelTask
+    里接收,只是改成"写共享状态/发通知"给 sequencerTask,不在 CRTP 任务里直接跑状态机。
+
+  这样从连接上传序列、START 之后,飞机全程自主执行,Python 只需要监控日志、必要时发一次
+  cancel/stop,不需要持续发包驱动——这点跟你说的"不要用 python
+  不停发送命令"是一致的。这个任务划分对吗?确认后我继续把线协议(每步 30 字节的编码)、状态机细节、参数和
+  Python 验证脚本范围过一遍。
+
+✻ Brewed for 2m 42s · done 12:53
+
+❯ 这个任务划分对。1. (已经是本次方案的方向)完成信号跟"计划状态"解耦,只认物理测量--走这条路修               
+
+  Thought for 1m 28s (ctrl+o to expand)
+
+● Good — sticking to option 1 only, no changes to the shared position controller. Here's the rest of the
+  design.
+
+  线协议(复用现有 CRTP_PORT_SETPOINT_HL,crtp_commander_high_level.c 的 enum TrajectoryCommand_e 追加新 
+  opcode)
+
+  ┌──────────────────────┬─────────────────────────────────┬──────────────────────────────────────────┐
+  │        opcode        │              载荷               │                   说明                   │
+  ├──────────────────────┼─────────────────────────────────┼──────────────────────────────────────────┤
+  │ COMMAND_SEQ_CLEAR =  │ 无                              │ 清空步骤缓冲区(count=0)。仅 state==IDLE  │
+  │ 11                   │                                 │ 时有效                                   │
+  ├──────────────────────┼─────────────────────────────────┼──────────────────────────────────────────┤
+  │                      │ uint8_t step_type + float       │                                          │
+  │ COMMAND_SEQ_ADD_STEP │ params[7](28字节)=29字节,加     │ 追加一步。仅 IDLE 时有效,缓冲区上限 16   │
+  │  = 12                │ 1字节 opcode 正好 30 =          │ 步                                       │
+  │                      │ CRTP_MAX_DATA_SIZE              │                                          │
+  ├──────────────────────┼─────────────────────────────────┼──────────────────────────────────────────┤
+  │ COMMAND_SEQ_START =  │ 无                              │ 校验通过后启动,记录起始 x0/y0/yaw0,通知  │
+  │ 13                   │                                 │ sequencerTask 开始跑第 0 步              │
+  ├──────────────────────┼─────────────────────────────────┼──────────────────────────────────────────┤
+  │ COMMAND_SEQ_CANCEL = │                                 │ 仅 RUNNING 时有效;放弃当前步骤,合成一个  │
+  │  14                  │ 无                              │ LAND 步(target=0,                        │
+  │                      │                                 │ duration=seq.cancelLandDurationS)执行    │
+  ├──────────────────────┼─────────────────────────────────┼──────────────────────────────────────────┤
+  │ 复用现有             │ 无                              │ 急停:清空序列到 IDLE + 原有              │
+  │ COMMAND_STOP = 3     │                                 │ plan_stop()。见下面 IsStopped() 的修改   │
+  └──────────────────────┴─────────────────────────────────┴──────────────────────────────────────────┘
+
+  step_type(params[] 语义):
+  0 = TAKEOFF_SENSOR : params[0]=target_m, params[1]=stable_hold_s, params[2]=timeout_s
+  1 = DELAY           : params[0]=hold_time_s
+  2 = LAND            : params[0]=target_m, params[1]=duration_s
+  3 = GOTO_SENSOR(预留,本次拒绝上传,返回 ENOEXEC)
+  params[7] 的宽度是按 GOTO_SENSOR 未来需要的 7 个
+  float(offset_x/offset_y/z/tol_xy/tol_z/stable_hold/timeout)预留的,这样以后加它不用改协议格式。
+
+  状态机
+
+  sequencerTask 状态:IDLE / RUNNING(执行 steps[idx])/ LANDING(降落中,LAND 步和 cancel/timeout
+  触发的中止降落走同一套子状态机)。
+
+  - TAKEOFF_SENSOR:z 以 seq.takeoffVelMps 匀速斜坡爬向 target_m,x/y/yaw 钉在 x0/y0/yaw0。每 tick 读
+    rangeGet(rangeDown)(原始 mm),在 ±seq.tolTakeoffMm 容差内连续保持 stable_hold_s 才算完成、进入下一步。若
+    timeout_s 到仍未确认 → 整个序列转 LANDING(你已确认的策略,不是"当作完成继续走")。
+  - DELAY:setpoint 钉死不变,hold_time_s 到即进入下一步,不涉及传感器。
+  - LAND(无论是序列里正常的一步,还是 cancel/timeout 触发的):按 duration_s 斜坡降到
+    target_m(通常 0),同时持续拿原始 mm 值判断触地——连续 seq.touchdownConfirmS 都 ≤ seq.touchdownMm
+    才确认触地;斜坡走完后如果还没确认,继续等,直到 seq.landMaxWaitS 硬上限强制切电机。确认触地或硬上限到达 →
+    切电机、整个序列回 IDLE。这一步是终态,不管是自己序列里的 LAND 还是被 cancel/timeout 顶上来的
+    LAND,结果一致。
+  - START 校验:缓冲区非空、最后一步必须是 LAND(仿照 t6_flight_sequence.py 的
+    validate_flight_plan),否则拒绝启动。ADD_STEP 参数越界(target_m 超范围、timeout_s <=
+    stable_hold_s、duration_s<=0 等)直接拒绝,不进缓冲区。
+
+  一个必须改的细节:crtpCommanderHighLevelIsStopped() 目前只看 plan_is_stopped(&planner)。STOP
+  复用的急停要生效,得让它变成 plan_is_stopped(&planner) && sequencerIsIdle()——否则序列 RUNNING 时收到
+  STOP,commander.c 不会把 setpoint 清零,达不到"立即断电"的效果。
+
+  参数(新 PARAM_GROUP_START(seq))与遥测(新 LOG_GROUP_START(seq))
+
+  参数默认值直接抄这个机体已经调出来的经验值(t7 的
+  TAKEOFF_VELOCITY_MPS=0.15、HOVER_SETTLE_TOLERANCE_MM=30,t6 的
+  TOUCHDOWN_ZRANGE_MM=90/TOUCHDOWN_MAX_WAIT_S=5.0),运行时可调:seq.takeoffVelMps、seq.tolTakeoffMm、seq.touc
+  hdownMm、seq.touchdownConfirmS、seq.landMaxWaitS、seq.cancelLandDurationS、seq.rangeSaneMaxMm(默认
+  4000,超过视为"这一帧测距不可信",不计入 stable_hold 累计,也不重置——只是跳过,靠 timeout 兜底)。
+
+  遥测:seq.state(0=IDLE/1=RUNNING/2=LANDING)、seq.stepIdx、seq.stepType、seq.elapsedMs——给 Python
+  验证脚本轮询进度用。
+
+  Python 验证脚本(新建,python/t8_sensor_sequence_check.py)
+
+  沿用 t6/t7 的套路:连接→确认 commander.enHighLevel→（cflib 不认识新 opcode，手工拼 CRTPPacket 发
+  SEQ_CLEAR/SEQ_ADD_STEP×N/SEQ_START）→订阅 range.zrange/stateEstimate.*/seq.* 日志轮询打印进度→Python
+  侧仍保留一个独立看门狗(日志新鲜度+总时长硬上限),触发时发 STOP(现有 COMMAND_STOP)——固件自主执行不代表
+  Python 不设兜底,双保险。默认序列就是你要的最小三步:TAKEOFF_SENSOR(0.3m) → DELAY(1.0s) →
+  LAND(0,2.0s)。Ctrl+C 走 CANCEL,如果 CANCEL 本身发送失败再退化到 STOP。
+
+  这些都对齐吗?没问题的话我就写设计文档落盘,然后进入实现计划。
+  
+  校验通过后启动,记录起始 x0/y0/yaw0---记录的具体是什么值？从哪儿读的？                                    
+
+  Thought for 38s, searched for 1 pattern (ctrl+o to expand)
+
+● Bash(sed -n '1,40p' components/core/crazyflie/modules/src/crtp_commander_high_level.c | grep -n
+      "lockTraj"; grep -n "lockTraj" components/core/crazyflie/modules/src/…)
+  ⎿  105:static xSemaphoreHandle lockTraj;
+     106:static StaticSemaphore_t lockTrajBuffer;
+     270:  lockTraj = xSemaphoreCreateMutexStatic(&lockTrajBuffer);
+     … +24 lines (ctrl+o to expand)
+
+  Thought for 46s (ctrl+o to expand)
+
+● Good catch — worth pinning down exactly, since it determines whether the captured start position is
+  trustworthy.
+
+  pos/yaw are the existing static file-scope variables in crtp_commander_high_level.c (static struct vec 
+  pos; static float yaw;, line 98-100) — they're the module's notion of "last known setpoint," already used
+  by every existing high-level command (takeoff, go_to, etc.) as their starting point. They get kept in
+  sync with the live fused state estimate here (crtp_commander_high_level.c:304-309):
+
+  if (plan_is_stopped(&planner)) {
+      pos = state2vec(state->position);
+      vel = state2vec(state->velocity);
+      yaw = radians(state->attitude.yaw);
+  }
+
+  This runs every time crtpCommanderHighLevelGetSetpoint(setpoint, state) is called (from commander.c's
+  commanderGetSetpoint(), once per control tick whenever the low-level setpoint queue has gone stale and
+  commander.enHighLevel=1 — which in practice is "continuously," since a pure high-level flight never
+  streams low-level packets). The state here is the same fused state_t the actual attitude/position
+  controllers use — i.e. exactly what you see in the python logs as stateEstimate.x/y/z / stabilizer.yaw.
+  The sync only happens while plan_is_stopped(&planner) is true (old planner idle) — while a takeoff2/goto
+  trajectory is actively running, pos/yaw instead hold the last evaluated trajectory point, not the raw
+  estimate.
+
+  So for SEQ_START, x0/y0/yaw0 should be captured the same way every existing high-level command already
+  does it — read pos.x, pos.y, yaw under the existing lockTraj mutex at the moment START is processed. Two
+  things I'll add to make this safe for the new feature:
+
+  1. Expose a one-line accessor from crtp_commander_high_level.c/.h (e.g.
+     crtpCommanderHighLevelGetLastKnownPositionYaw(struct vec* pos, float* yaw), mutex-protected) so
+     sequencer.c doesn't reach into another file's statics directly.
+  2. SEQ_START should reject (return ENOEXEC) if plan_is_stopped(&planner) is false — i.e. refuse to start
+     a sequence while an old-style takeoff2/land2/goto trajectory is still active — because pos/yaw only
+     reflect the real current position when the old planner is idle; otherwise they'd be a stale trajectory
+     point, not where the drone actually is.
+
+  Does this match what you had in mind, or would you rather the sequencer capture x0/y0/yaw0 from its own
+  independent read of the state estimate (avoiding any dependency on crtp_commander_high_level.c's internal
+  tracking at all)?
+  
+  使用独立的设置，比如起始点x0和y0都保持0，yaw0也是0，然后yaw也融入QMC5883L计算                            
+
+  Thought for 2m 1s, searched for 4 patterns (ctrl+o to expand)
+
+● Confirmed by checking the estimator code: magnetometer data currently goes nowhere near yaw. The
+  QMC5883L/HMC5883L driver in sensors_mpu6050_hm5883L_ms5611.c reads raw mag x/y/z into sensorData.mag, and
+  the only consumer is a debug LOG_GROUP_START(mag) in stabilizer.c (raw gauss values for telemetry).
+  Neither estimator_complementary.c nor estimator_kalman.c (nor sensfusion6.c) ever reads .mag — yaw today
+  is pure gyro integration (complementary) or gyro+accel (kalman), with an arbitrary zero-reference
+  (whatever heading it happened to be at boot/reset), no compass correction at all.
+
+  That means "融入 QMC5883L 计算" isn't a small tweak to the sequencer — it's a genuinely separate piece of
+  work: tilt-compensated heading from raw mag readings, almost certainly needing hard/soft-iron
+  calibration to be usable, and a decision on how it enters the estimate (complementary filter yaw update
+  vs. Kalman measurement model). That's its own subsystem change with its own risk/testing profile,
+  independent of the CRTP sequence engine we've been designing.
+
+  For this round's 3 commands (TAKEOFF_SENSOR/DELAY/LAND), no step ever commands x/y motion or yaw rotation
+  — so a magnetometer-fused absolute heading isn't actually required yet: setting x0=y0=yaw0=0 as fixed
+  constants (independent of whatever crtp_commander_high_level.c tracks, and independent of whether yaw is
+  mag-fused or not) works fine either way — the attitude controller just holds whatever heading the
+  estimator reports as "0" at that moment. Mag-fusion only starts to matter once a future GOTO_SENSOR needs
+  offsets to be reliable in a consistent world frame across runs/orientations.
+
+● User answered Claude's questions:
+  ⎿  · QMC5883L 磁力计融合进 yaw 
+     估计，是现在就作为这个任务的一部分实现，还是先独立记录为后续任务，这次序列功能先用现有（无磁力计）的 
+     yaw 估计？ → 这次先不做，序列功能照常用 x0=y0=yaw0=0（推荐）
+
+  Thought for 2m 7s, listed 2 directories, wrote 4 memories (ctrl+o to expand)
+
+● With that resolved, here's the updated (simpler) design reflecting fixed x0=y0=yaw0=0:
+
+  Revised: horizontal/yaw reference
+
+  The sequencer no longer needs to read anything from crtp_commander_high_level.c's internal pos/yaw
+  tracking. Every tick while a sequence is active, it outputs a fixed setpoint: mode.x=modeAbs, 
+  position.x=0, mode.y=modeAbs, position.y=0, mode.yaw=modeAbs, attitude.yaw=0. Only position.z is dynamic
+  (the ramp target). This makes sequencer.c fully self-contained — no shared statics, no coupling to the
+  old planner's internal state for position capture.
+
+  The one place we still do need to read the live state is position.z for the TAKEOFF_SENSOR ramp's
+  starting point — but that's read directly from the state_t* state parameter that's already passed into
+  crtpCommanderHighLevelGetSetpoint(setpoint, state) (it's a function argument, not a shared static), so it
+  needs no new plumbing either.
+
+  One safety check remains from before: SEQ_START still requires plan_is_stopped(&planner)==true (old
+  planner idle) — not for reading position anymore, but as mutual exclusion: we can't have the old planner
+  and the new sequencer both trying to drive setpoints through the same crtpCommanderHighLevelGetSetpoint()
+  call at once.
+
+  Full design recap
+
+  Architecture: new components/core/crazyflie/modules/{src,interface}/sequencer.c/.h, a dedicated FreeRTOS
+  task (~20ms cadence, matching the VL53L1 driver's own 25ms update rate) that owns the step state machine
+  and publishes a mutex-protected setpoint. crtp_commander_high_level.c gets new opcodes in its existing
+  enum TrajectoryCommand_e dispatching into sequencer.c, and
+  crtpCommanderHighLevelGetSetpoint()/crtpCommanderHighLevelIsStopped() get a small hook to check "is the
+  sequencer active" first. Old takeoff2/land2/goto/planner.c code path is untouched.
+
+  Wire protocol (same CRTP port, CRTP_MAX_DATA_SIZE=30): SEQ_CLEAR(11)/SEQ_ADD_STEP(12, uint8_t type +
+  float[7], exactly 30 bytes)/SEQ_START(13)/SEQ_CANCEL(14, new); STOP(existing opcode 3) reused for e-stop.
+  Step types: 0=TAKEOFF_SENSOR(target_m, stable_hold_s, timeout_s), 1=DELAY(hold_time_s), 2=LAND(target_m,
+  duration_s), 3=GOTO_SENSOR reserved/rejected this round. Max 16 steps.
+
+  State machine: IDLE → RUNNING → (LANDING) → IDLE. TAKEOFF_SENSOR ramps z at a tunable fixed velocity,
+  completes on stable_hold_s continuous tolerance-match against raw range.zrange, aborts to LANDING on
+  timeout_s (your confirmed policy — same code path as CANCEL). DELAY just holds and waits out hold_time_s.
+  LAND ramps over duration_s, confirms touchdown via raw range.zrange threshold + confirm-time, hard-caps
+  the wait, then cuts motors. STOP reused opcode → both old planner and sequencer report idle → commander.c
+  nulls the setpoint immediately (true e-stop, no ramp). START requires the last uploaded step to be LAND
+  and the old planner idle.
+
+  Tunables (PARAM_GROUP_START(seq), defaults borrowed from already-flight-tuned Python values): takeoff
+  ramp velocity, takeoff tolerance, touchdown threshold + confirm time, land max-wait, cancel-land
+  duration, sane-range ceiling (4000mm).
+
+  Telemetry (LOG_GROUP_START(seq)): state, step index, step type, elapsed-in-step — enough for a Python
+  script to watch progress without driving it.
+
+  Python deliverable: python/t8_sensor_sequence_check.py, following t6/t7 conventions (connect, verify
+  commander.enHighLevel, hand-build the raw CRTP packets since cflib doesn't know these opcodes, subscribe
+  to range.zrange/seq.*, independent host-side watchdog that falls back to STOP — belt-and-suspenders even
+  though the drone is autonomous). Default demo sequence: your minimal 3-step case, TAKEOFF_SENSOR(0.3m) →
+  DELAY(1.0s) → LAND(0, 2.0s).
+
+  Ready for me to write this up as the spec doc, or anything else to adjust first?
+
+✻ Worked for 4m 9s · done 13:25
+
+TAKEOFF_SENSOR(0.3m) → DELAY(1.0s) → LAND(0, 2.0s) ---这个过程，无人机一直在同一个x0y0的位置不变对吧？如 
+  果偏离了，无人机会自动调整到这个位置对吧？还有yaw0的情况？                                               
+  
+  Thought for 52s (ctrl+o to expand)
+
+● Yes to "stays at the same x0/y0 the whole time" and "closed-loop, will try to correct if it drifts" — for
+  yaw, that correction is meaningful; for x/y, it depends on your hardware, and that caveat matters:
+
+  All three steps command the same fixed setpoint horizontally/rotationally: mode.x=modeAbs, position.x=0,
+  mode.y=modeAbs, position.y=0, mode.yaw=modeAbs, attitude.yaw=0, continuously, from SEQ_START through
+  touchdown. This runs through the same positionController() in position_controller_pid.c (lines 208-219)
+  that already closes the loop on x/y/yaw today — if the estimate says the drone has drifted off (0,0) or
+  rotated off yaw=0, the PID commands roll/pitch/yaw corrections to steer back, exactly like an ordinary
+  hover-hold.
+
+  The catch is what "the estimate says":
+  - Yaw: pure gyro integration (no magnetometer, per the earlier discussion). Over a few-second sequence
+    with no deliberate rotation, gyro drift is negligible — so yes, yaw-hold-at-0 is trustworthy here: if
+    something nudges the drone's heading, the correction is real and based on a real (if not
+    absolutely-referenced) measurement.
+  - x/y: only meaningfully closed-loop if you have a flow deck (PMW3901, flowdeck_v1v2.c) feeding the
+    Kalman estimator with real optical-flow velocity measurements. t7_hl_commander_check.py already checks
+    for this (stabilizer.estimator == 2 = kalman) and prints a warning otherwise: "没有检测到光流
+    deck...没有水平位置修正时飞机可能会缓慢漂移". Without a flow deck, state->position.x/y is just
+    double-integrated accelerometer noise — it doesn't represent where the drone actually is, so the PID is
+    "closed loop" against a fiction: if the drone physically drifts, the estimate won't necessarily
+    reflect it, and the controller won't correct it. The loop is real, but only as good as what it's
+    measuring against.
+
+  Do you have a flow deck on the airframe you'll be testing this sequence on? If not, I'd keep the same
+  estimator check t7/t6 already do in the new t8 script (warn if not kalman, don't block) rather than
+  promising position-hold behavior the hardware can't actually deliver.
+
+✻ Cooked for 52s · done 13:33
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 本机安装了PMW3901光流模块。另外LAND 也是新写的LAND_SENSOR, 跟原来land的差异，根据VL53L1测量值或基于该传
+  感器滤波后的估计值，作为落地的确定，然后关闭电机。整个过程表示land完成
+  
+The final whole-branch review came back — thorough, and it found something the task-level reviews
+  couldn't have caught: a real cross-file bug spanning sequencer.c and position_controller_pid.c. Verdict:
+  "Ready to merge" (meaning ready for Task 5's real build+flight test, not production-flight-ready) — with 
+  fixes. No Critical issues. Three Important findings:
+
+  1. Frame mismatch (the significant one): sequencerStart() seeds the takeoff ramp from rangeGet(rangeDown)
+     (raw sensor/floor frame), but position_controller_pid.c's PID actually closes the loop on
+     state->position.z (the estimator's own frame, zeroed at boot — not necessarily the floor). These two
+     "zero points" usually roughly agree on a flat floor right after boot, which is exactly why it slipped
+     through — but they diverge whenever the drone boots elsewhere before being placed down, or the
+     estimate drifts. The design spec actually specified the correct thing (state->position.z); this is a
+     real design mistake I made while writing the plan, not an implementer error — the final-review step
+     exists precisely to catch this class of issue.
+  2. No pre-flight sensor sanity check in t8_sensor_sequence_check.py — t5/t6/t7 all reject takeoff if the
+     ground range.zrange reading looks implausible before arming; t8 dropped that check entirely.
+  3. No sensor freshness/staleness detection — if the VL53L1 sensor hangs or returns a corrupt reading,
+     nothing currently distinguishes "the drone is on the ground" from "the sensor died," which could cut
+     motors at altitude.
+
+  #1 and #2 are small, contained fixes within files this branch already owns. #3 is the one I want your
+  call on, since the real fix touches range.c — shared code used by other sensors/estimators, outside this
+  feature's original file list, and something I can't compile-verify in this sandbox.
+  
+  Before dispatching the re-review, let me investigate something important that clangd just flagged: it
+  claims sequencerTellStateZ and rangeGetLastUpdateTick are called without a visible declaration — that
+  would be a real compile error, not environmental noise. Let me check directly.
+
+  Thought for 1m 21s, read 2 files (ctrl+o to expand)
+
+● Good catch avoided — that's a real, not environmental, issue: range.h declares functions using
+  uint32_t/bool but never includes <stdint.h>/<stdbool.h> itself, relying entirely on whichever .c file
+  happens to include something else first. My new declaration is very likely the one that finally broke
+  that fragile balance in sequencer.c's specific include order. Fixing this properly rather than dismissing
+  it as toolchain noise.
+  
+  
+  All work is complete: 9 commits on pydrone-cc implementing the sensor-gated sequencer (design doc,
+  firmware module, CRTP wiring, Python validation script), through two review rounds with all findings
+  resolved. Python tests: 16/16 passing. The firmware C code has never been compiled (no ESP-IDF toolchain
+  in this sandbox) — that first real build + flash + flight test is Task 5, which needs to happen on your
+  machine.
+
+  Since pydrone-cc is your existing long-lived branch (not one created fresh for this feature), merging or
+  PR-ing it against master would bundle in all its prior unrelated history too — worth keeping in mind when
+  picking below.
+
+  Implementation complete. What would you like to do?
+
+  1. Merge back to master locally
+  2. Push and create a Pull Request
+  3. Keep the branch as-is (I'll handle it later)
+  4. Discard this work
+
+  Which option?
+  
+  claude --resume 369883e2-c053-4348-a6e9-6069eb80af37
