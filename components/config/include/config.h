@@ -100,6 +100,7 @@
 #define WIFILINK_TASK_PRI       2
 #define CRTP_RX_TASK_PRI        2
 #define CMD_HIGH_LEVEL_TASK_PRI 3
+#define SEQUENCER_TASK_PRI      4
 #define INFO_TASK_PRI           2
 #define LOG_TASK_PRI            2
 #define MEM_TASK_PRI            2
@@ -134,6 +135,7 @@
 
 // Task names
 #define CMD_HIGH_LEVEL_TASK_NAME "CMDHL"
+#define SEQUENCER_TASK_NAME     "SEQUENCER"
 #define CRTP_RX_TASK_NAME       "CRTP-RX"
 #define CRTP_TX_TASK_NAME       "CRTP-TX"
 #define EXTRX_TASK_NAME         "EXTRX"
@@ -160,6 +162,7 @@
 //Task stack sizes
 #define configBASE_STACK_SIZE CONFIG_BASE_STACK_SIZE
 #define CMD_HIGH_LEVEL_TASK_STACKSIZE (2 * configBASE_STACK_SIZE)
+#define SEQUENCER_TASK_STACKSIZE      (2 * configBASE_STACK_SIZE)
 #define CRTP_RX_TASK_STACKSIZE        (3 * configBASE_STACK_SIZE)
 #define CRTP_TX_TASK_STACKSIZE        (3 * configBASE_STACK_SIZE)
 #define EXTRX_TASK_STACKSIZE          (1 * configBASE_STACK_SIZE)
