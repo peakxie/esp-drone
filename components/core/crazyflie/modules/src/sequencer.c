@@ -9,9 +9,21 @@ docs/superpowers/specs/2026-09-13-sensor-gated-sequencer-design.md 第1节。
 x/y/yaw 全程固定为 0（modeAbs 闭环，见设计文档第4节）：本次三种步骤都不会
 水平移动或转向。
 
-并发模型：state!=SEQ_IDLE 期间，sequencerTask 是所有可变字段的唯一写者；
-sequencerCancel() 从另一个任务跨线写入时，最坏情况是 commandedZM 被多写入
-一次至多 20ms 的过时值，物理上可忽略，因此不加互斥量，只用 volatile。
+并发模型：state!=SEQ_IDLE 期间，sequencerTask 是所有可变字段的唯一写者，
+但有四个例外，均从 CRTP 命令处理任务跨任务写入：sequencerClear()/
+sequencerAddStep()（仅在 state==SEQ_IDLE 时写 stepBuffer/stepCount）、
+sequencerStart()（IDLE->RUNNING/LANDING 的启动写入，见该函数注释）、
+sequencerCancel()（state==SEQ_RUNNING 时跨任务调用 enterLanding()）、
+sequencerAbortToIdle()（任意状态下可能被 STOP 命令调用，跨任务清空
+state/currentStepIdx/stepCount）。这些跨任务写入之间不加互斥量，只用
+volatile 保证不被编译器优化掉——因为 state 和 currentStepIdx 是两个独立
+变量，读者有可能读到"旧 state + 新 currentStepIdx"这种不一致组合（比如
+currentStepIdx 已经被改写成 abort 哨兵值，或者 stepCount 已经被清成 0，
+但这一次读到的 state 还是旧值 SEQ_RUNNING）。真正防止这类不一致导致越界
+读的，是 sequencerTick() 里对 stepBuffer[currentStepIdx] 解引用前的
+currentStepIdx < stepCount 边界检查（见该函数），不是"跨任务写入足够
+罕见"这类假设——不一致的一 tick（至多 20ms）会被这个检查安全地跳过，
+下一 tick 一定能读到一致的新状态，物理上无实际影响。
 */
 
 #include <errno.h>
@@ -249,11 +261,19 @@ static void sequencerTick(float now, float rangeMm)
 {
   switch (state) {
     case SEQ_RUNNING: {
-      const sequencerStep_t* step = &stepBuffer[currentStepIdx];
-      if (step->type == SEQUENCER_STEP_TAKEOFF_SENSOR) {
-        tickTakeoff(now, rangeMm);
-      } else if (step->type == SEQUENCER_STEP_DELAY) {
-        tickDelay(now);
+      // currentStepIdx 是另一个可能被 sequencerCancel()/sequencerAbortToIdle()
+      // 跨任务并发改写的 volatile 字段，跟这里读到的 state 不是同一次原子
+      // 快照：有可能读到"state 还是旧的 SEQ_RUNNING，但 currentStepIdx 已经
+      // 被改写成 abort 哨兵值，或 stepCount 已经被清成 0"这种不一致组合。
+      // 越界就跳过这一 tick 的派发，下一个 20ms tick 一定能读到一致的新
+      // 状态——不会有正确性损失，只是最多晚一个 tick 反应。
+      if (currentStepIdx < stepCount) {
+        const sequencerStep_t* step = &stepBuffer[currentStepIdx];
+        if (step->type == SEQUENCER_STEP_TAKEOFF_SENSOR) {
+          tickTakeoff(now, rangeMm);
+        } else if (step->type == SEQUENCER_STEP_DELAY) {
+          tickDelay(now);
+        }
       }
       // LAND_SENSOR 不会在这里被派发到：advanceToNextStep() 进入它时总是
       // 调用 enterLanding()，会先把 state 切到 SEQ_LANDING。
@@ -376,17 +396,26 @@ int sequencerStart(bool oldPlannerIsStopped)
   float now = usecTimestamp() / 1e6f;
   float startZM = rangeGet(rangeDown) / 1000.0f; // 原始 mm -> m，独立于 state_t，见设计文档第4节
 
-  currentStepIdx = 0;
   commandedZM = startZM;
-  state = SEQ_RUNNING;
 
+  // 注意顺序：state 必须在对应 enterXxx() 把 activeTakeoff/activeDelay/
+  // currentStepType 都填好之后才置为非 IDLE——sequencerTask 只看 state 是否
+  // 非 IDLE 就会开始读这些字段，如果 state 提前变成 SEQ_RUNNING，
+  // sequencerTask 有可能在 activeTakeoff/activeDelay 还是上一次序列的残留值
+  // 时就跑起来，导致虚假的立即超时。LAND_SENSOR 分支不用在这里单独设置
+  // state：enterLanding() 内部已经保证了同样"数据先备好、state 最后写"的
+  // 顺序。
   const sequencerStep_t* step = &stepBuffer[0];
   switch (step->type) {
     case SEQUENCER_STEP_TAKEOFF_SENSOR:
       enterTakeoff(now, startZM, step);
+      currentStepIdx = 0;
+      state = SEQ_RUNNING;
       break;
     case SEQUENCER_STEP_DELAY:
       enterDelay(now, startZM, step);
+      currentStepIdx = 0;
+      state = SEQ_RUNNING;
       break;
     case SEQUENCER_STEP_LAND_SENSOR:
       enterLanding(now, startZM, step->params[0], step->params[1], 0);
