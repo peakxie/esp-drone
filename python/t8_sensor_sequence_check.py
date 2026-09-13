@@ -283,6 +283,25 @@ def main():
         print(f"开始上传并启动序列（{len(DEFAULT_SEQUENCE)} 步）...", flush=True)
         upload_and_start_sequence(cf, DEFAULT_SEQUENCE)
 
+        # SEQ_START 有可能被固件拒绝（参数越界、最后一步不是 LAND_SENSOR、
+        # 或者 state->position.z 还没被喂过一次），拒绝时 seq.state 会一直停在
+        # 0（IDLE）。不确认这一点就直接进入下面的监控循环，会在 20s 硬上限
+        # 超时之前一直打印看起来"正常"的状态行，把"固件拒绝了"跟"序列正在
+        # 执行"混为一谈。这里用一个远短于硬上限的独立超时提前发现拒绝。
+        START_CONFIRM_TIMEOUT_S = 0.5
+        start_deadline = time.monotonic() + START_CONFIRM_TIMEOUT_S
+        while state["seq_state"] in (None, 0) and time.monotonic() < start_deadline:
+            time.sleep(0.02)
+        if state["seq_state"] in (None, 0):
+            print(
+                f"错误：SEQ_START 之后 {START_CONFIRM_TIMEOUT_S:.1f}s 内 seq.state 仍是 "
+                f"{state['seq_state']!r}（IDLE），序列大概率被固件拒绝，不是在正常执行。"
+                "放弃等待，不再进入下面的监控循环干等硬上限超时。",
+                flush=True,
+            )
+            return
+        print(f"已确认序列开始执行（seq.state={state['seq_state']}）。", flush=True)
+
         flight_deadline = time.monotonic() + MAX_FLIGHT_TIME_S
         last_status_print = [0.0]
 

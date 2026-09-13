@@ -52,7 +52,10 @@ void rangeSet(rangeDirection_t direction, float range_m);
  * Get the range for a certain direction
  *
  * @param direction Direction of the range
- * @return Distance to an object in meter
+ * @return Distance to an object in millimeter. Despite rangeSet()'s range_m
+ * parameter being in meters, the backing store and this getter are in mm
+ * (rangeSet() does the range_m*1000 scaling) -- this was misdocumented as
+ * meters before, don't rely on the old comment.
  */
 float rangeGet(rangeDirection_t direction);
 
