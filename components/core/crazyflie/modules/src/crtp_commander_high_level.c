@@ -51,6 +51,7 @@ such as: take-off, landing, polynomial trajectories.
 #include "crtp.h"
 #include "crtp_commander_high_level.h"
 #include "planner.h"
+#include "sequencer.h"
 #include "log.h"
 #include "param.h"
 #include "stm32_legacy.h"
@@ -137,6 +138,10 @@ enum TrajectoryCommand_e {
   COMMAND_LAND_2                  = 8,
   COMMAND_TAKEOFF_WITH_VELOCITY   = 9,
   COMMAND_LAND_WITH_VELOCITY      = 10,
+  COMMAND_SEQ_CLEAR               = 11,
+  COMMAND_SEQ_ADD_STEP            = 12,
+  COMMAND_SEQ_START               = 13,
+  COMMAND_SEQ_CANCEL              = 14,
 };
 
 struct data_set_group_mask {
@@ -263,6 +268,7 @@ void crtpCommanderHighLevelInit(void)
 
   memoryRegisterHandler(&memDef);
   plan_init(&planner);
+  sequencerInit();
 
   //Start the trajectory task
   STATIC_MEM_TASK_CREATE(crtpCommanderHighLevelTask, crtpCommanderHighLevelTask, CMD_HIGH_LEVEL_TASK_NAME, NULL, CMD_HIGH_LEVEL_TASK_PRI);
@@ -278,7 +284,11 @@ void crtpCommanderHighLevelInit(void)
 
 bool crtpCommanderHighLevelIsStopped()
 {
-  return plan_is_stopped(&planner);
+  // 老的（时间轴）规划器和新的传感器确认序列都必须空闲，commander.c 才会把
+  // setpoint 清零——否则序列 RUNNING 时收到这个查询会被误判为"已停"，导致
+  // commander.c 在序列还在跑的时候把 setpoint 清零，飞机永远飞不起来。见
+  // docs/superpowers/specs/2026-09-13-sensor-gated-sequencer-design.md 第3节。
+  return plan_is_stopped(&planner) && sequencerIsIdle();
 }
 
 void crtpCommanderHighLevelTellState(const state_t *state)
@@ -292,6 +302,13 @@ void crtpCommanderHighLevelTellState(const state_t *state)
 
 void crtpCommanderHighLevelGetSetpoint(setpoint_t* setpoint, const state_t *state)
 {
+  if (sequencerIsActive()) {
+    // 传感器确认序列正在跑（含降落阶段）：由它直接决定 setpoint，完全不走
+    // 下面的多项式规划器。
+    sequencerGetSetpoint(setpoint);
+    return;
+  }
+
   xSemaphoreTake(lockTraj, portMAX_DELAY);
   float t = usecTimestamp() / 1e6;
   struct traj_eval ev = plan_current_goal(&planner, t);
@@ -375,6 +392,18 @@ static int handleCommand(const enum TrajectoryCommand_e command, const uint8_t* 
       break;
     case COMMAND_DEFINE_TRAJECTORY:
       ret = define_trajectory((const struct data_define_trajectory*)data);
+      break;
+    case COMMAND_SEQ_CLEAR:
+      ret = sequencerClear();
+      break;
+    case COMMAND_SEQ_ADD_STEP:
+      ret = sequencerAddStep((const sequencerStep_t*)data);
+      break;
+    case COMMAND_SEQ_START:
+      ret = sequencerStart(plan_is_stopped(&planner));
+      break;
+    case COMMAND_SEQ_CANCEL:
+      ret = sequencerCancel();
       break;
     default:
       ret = ENOEXEC;
@@ -526,6 +555,7 @@ int stop(const struct data_stop* data)
     xSemaphoreTake(lockTraj, portMAX_DELAY);
     plan_stop(&planner);
     xSemaphoreGive(lockTraj);
+    sequencerAbortToIdle();
   }
   return result;
 }
