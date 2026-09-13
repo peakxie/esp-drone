@@ -54,6 +54,17 @@ void rangeSet(rangeDirection_t direction, float range_m);
 float rangeGet(rangeDirection_t direction);
 
 /**
+ * Get the FreeRTOS tick count (xTaskGetTickCount()) at which rangeSet() was
+ * last called for a certain direction. Callers can compare this against a
+ * current xTaskGetTickCount() to detect a stale/frozen sensor.
+ *
+ * @param direction Direction of the range
+ * @return Tick count of the last rangeSet() call for this direction, or 0 if
+ * it has never been set.
+ */
+uint32_t rangeGetLastUpdateTick(rangeDirection_t direction);
+
+/**
  * Enqueue a range measurement for distance to the ground in the current estimator.
  *
  * @param dstance Distance to the ground (m)

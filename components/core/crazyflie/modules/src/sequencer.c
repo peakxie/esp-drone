@@ -57,12 +57,18 @@ typedef enum {
 static bool isInit = false;
 
 static sequencerStep_t stepBuffer[SEQUENCER_MAX_STEPS];
-static uint8_t stepCount = 0;
+static volatile uint8_t stepCount = 0;
 
 static volatile sequencerState_t state = SEQ_IDLE;
 static volatile uint8_t currentStepIdx = SEQUENCER_IDLE_STEP_IDX;
 static volatile uint8_t currentStepType = 0;
 static volatile float commandedZM = 0.0f;
+
+// 由 sequencerTellStateZ() 持续更新的融合高度估计缓存，供 sequencerStart()
+// 做爬升/下降斜坡的起点——见该函数注释。stateZKnown 在第一次被告知之前保持
+// false，防止用静态初值 0.0f 当真实起点。
+static volatile float lastKnownStateZ = 0.0f;
+static volatile bool stateZKnown = false;
 
 STATIC_MEM_TASK_ALLOC(sequencerTask, SEQUENCER_TASK_STACKSIZE);
 
@@ -100,6 +106,7 @@ static float seqTouchdownConfirmS   = 0.3f;
 static float seqLandMaxWaitS        = 5.0f;
 static float seqCancelLandDurationS = 2.0f;
 static float seqRangeSaneMaxMm      = 4000.0f;
+static float seqRangeStaleMs        = 150.0f;
 
 // 遥测镜像，每个 tick 结束时统一刷新一次。
 static uint8_t seqStateLog;
@@ -178,9 +185,22 @@ static void advanceToNextStep(float now)
   }
 }
 
+static bool isRangeFresh(void)
+{
+  uint32_t lastUpdateTick = rangeGetLastUpdateTick(rangeDown);
+  if (lastUpdateTick == 0) {
+    return false; // 从来没更新过
+  }
+  uint32_t elapsedTicks = xTaskGetTickCount() - lastUpdateTick; // 无符号减法，tick 计数回绕也安全
+  return ((float)elapsedTicks * portTICK_PERIOD_MS) <= seqRangeStaleMs;
+}
+
 static void tickTakeoff(float now, float rangeMm)
 {
   float elapsed = now - activeTakeoff.stepStartTimeS;
+  // direction<0（下降爬升）目前不可达：sequencerAddStep() 要求 targetM>0，
+  // 起点 rampStartM 来自融合位置估计，正常情况下不会比目标更高；保留这个
+  // 分支只是防御性写法，不是遗漏。
   float direction = (activeTakeoff.targetM >= activeTakeoff.rampStartM) ? 1.0f : -1.0f;
   float rampZ = activeTakeoff.rampStartM + direction * seqTakeoffVelMps * elapsed;
   if ((direction > 0.0f && rampZ > activeTakeoff.targetM) ||
@@ -189,7 +209,7 @@ static void tickTakeoff(float now, float rangeMm)
   }
   commandedZM = rampZ;
 
-  bool sensorValid = rangeMm <= seqRangeSaneMaxMm;
+  bool sensorValid = rangeMm <= seqRangeSaneMaxMm && isRangeFresh();
   bool inTolerance = sensorValid && fabsf(rangeMm - activeTakeoff.targetM * 1000.0f) <= seqTolTakeoffMm;
   if (inTolerance) {
     if (activeTakeoff.inToleranceSinceS < 0.0f) {
@@ -223,7 +243,7 @@ static void tickLanding(float now, float rangeMm)
   float frac = activeLand.durationS > 0.0f ? fminf(1.0f, elapsed / activeLand.durationS) : 1.0f;
   commandedZM = activeLand.rampStartM + (activeLand.targetM - activeLand.rampStartM) * frac;
 
-  bool sensorValid = rangeMm <= seqRangeSaneMaxMm;
+  bool sensorValid = rangeMm <= seqRangeSaneMaxMm && isRangeFresh();
   bool touchedDown = sensorValid && rangeMm <= seqTouchdownMm;
   if (touchedDown) {
     if (activeLand.belowSinceS < 0.0f) {
@@ -392,9 +412,18 @@ int sequencerStart(bool oldPlannerIsStopped)
   if (stepBuffer[stepCount - 1].type != SEQUENCER_STEP_LAND_SENSOR) {
     return ENOEXEC;
   }
+  if (!stateZKnown) {
+    return ENOEXEC;
+  }
 
   float now = usecTimestamp() / 1e6f;
-  float startZM = rangeGet(rangeDown) / 1000.0f; // 原始 mm -> m，独立于 state_t，见设计文档第4节
+  // 爬升/下降斜坡的起点必须用融合位置估计（state->position.z，见
+  // sequencerTellStateZ()），跟 position_controller_pid.c 的 PID 同一个
+  // 坐标系——不能用 rangeGet(rangeDown) 这种传感器原始读数，它的零点是
+  // 地板，跟融合估计的零点（开机时的位置）不是一回事，两者不一致会导致
+  // PID 追着一个错误的绝对高度跑。完成判定（tickTakeoff/tickLanding 里的
+  // 容差/触地检查）仍然用原始传感器读数，那部分不受影响，也不应该受影响。
+  float startZM = lastKnownStateZ;
 
   commandedZM = startZM;
 
@@ -421,10 +450,19 @@ int sequencerStart(bool oldPlannerIsStopped)
       enterLanding(now, startZM, step->params[0], step->params[1], 0);
       break;
     default:
-      break; // 不可达：sequencerAddStep() 已经拒绝了未知类型
+      // 不可达：sequencerAddStep() 已经拒绝了未知类型。如果真的走到这里，
+      // state 还没被这次调用改动过（仍是进入本函数前的 SEQ_IDLE），返回
+      // 错误码而不是假装成功，避免调用方以为序列已经开始跑了。
+      return ENOEXEC;
   }
 
   return 0;
+}
+
+void sequencerTellStateZ(float z)
+{
+  lastKnownStateZ = z;
+  stateZKnown = true;
 }
 
 int sequencerCancel(void)
@@ -491,6 +529,7 @@ PARAM_ADD(PARAM_FLOAT, touchdownConfirmS, &seqTouchdownConfirmS)
 PARAM_ADD(PARAM_FLOAT, landMaxWaitS, &seqLandMaxWaitS)
 PARAM_ADD(PARAM_FLOAT, cancelLandDurationS, &seqCancelLandDurationS)
 PARAM_ADD(PARAM_FLOAT, rangeSaneMaxMm, &seqRangeSaneMaxMm)
+PARAM_ADD(PARAM_FLOAT, rangeStaleMs, &seqRangeStaleMs)
 PARAM_GROUP_STOP(seq)
 
 LOG_GROUP_START(seq)

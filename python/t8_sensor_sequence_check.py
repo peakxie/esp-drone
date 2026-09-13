@@ -29,6 +29,8 @@ STEP_TYPE_CODES = {
 MAX_STEPS = 16
 MAX_TAKEOFF_TARGET_M = 2.0
 MAX_LAND_TARGET_M = 2.0
+RANGE_SANE_MAX_MM = 4000  # 起飞前地面测距合理性上限，理由同 t5/t6/t7：不设下限，VL53L1X 贴近量程
+                          # 下限时读数本身偏随机，起飞前贴地见到几十 mm 以内的低读数是正常现象
 
 ESTIMATOR_NAMES = {0: "any", 1: "complementary", 2: "kalman"}
 
@@ -267,6 +269,16 @@ def main():
         if state["last_log_t"] is None:
             print("错误：等不到遥测，放弃执行。", flush=True)
             return
+
+        zrange0 = state["zrange_mm"]
+        if zrange0 is None or zrange0 > RANGE_SANE_MAX_MM:
+            print(
+                f"错误：起飞前 range.zrange={zrange0}mm 超出合理范围（上限 {RANGE_SANE_MAX_MM}mm），"
+                "怀疑测距传感器读数异常，放弃执行。请确认飞机放在平整地面、传感器朝下且未被遮挡。",
+                flush=True,
+            )
+            return
+        print(f"起飞前地面测距 = {zrange0}mm，遥测正常。", flush=True)
 
         print(f"开始上传并启动序列（{len(DEFAULT_SEQUENCE)} 步）...", flush=True)
         upload_and_start_sequence(cf, DEFAULT_SEQUENCE)

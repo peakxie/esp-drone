@@ -26,6 +26,9 @@
  */
 #include <stdint.h>
 
+#include "FreeRTOS.h"
+#include "task.h"
+
 #include "log.h"
 
 #include "range.h"
@@ -33,12 +36,14 @@
 #include "estimator.h"
 
 static uint16_t ranges[RANGE_T_END] = {0,};
+static uint32_t rangeLastUpdateTick[RANGE_T_END] = {0,};
 
 void rangeSet(rangeDirection_t direction, float range_m)
 {
   if (direction > (RANGE_T_END-1)) return;
 
   ranges[direction] = range_m * 1000;
+  rangeLastUpdateTick[direction] = xTaskGetTickCount();
 }
 
 float rangeGet(rangeDirection_t direction)
@@ -46,6 +51,13 @@ float rangeGet(rangeDirection_t direction)
     if (direction > (RANGE_T_END-1)) return 0;
 
   return ranges[direction];
+}
+
+uint32_t rangeGetLastUpdateTick(rangeDirection_t direction)
+{
+  if (direction > (RANGE_T_END-1)) return 0;
+
+  return rangeLastUpdateTick[direction];
 }
 
 bool rangeEnqueueDownRangeInEstimator(float distance, float stdDev, uint32_t timeStamp) {

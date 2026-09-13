@@ -302,6 +302,11 @@ void crtpCommanderHighLevelTellState(const state_t *state)
 
 void crtpCommanderHighLevelGetSetpoint(setpoint_t* setpoint, const state_t *state)
 {
+  // 序列尚未开始（IDLE）时也持续喂最新的融合高度估计，这样 SEQ_START 被
+  // 处理时（在另一个任务里，时间点不确定）能立刻拿到一个新鲜值做爬升/
+  // 下降斜坡的起点，不必等序列已经在跑才知道当前高度。
+  sequencerTellStateZ(state->position.z);
+
   if (sequencerIsActive()) {
     // 传感器确认序列正在跑（含降落阶段）：由它直接决定 setpoint，完全不走
     // 下面的多项式规划器。
