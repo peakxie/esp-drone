@@ -27,6 +27,9 @@
 
 #pragma once
 
+#include <stdbool.h>
+#include <stdint.h>
+
 typedef enum {
     rangeFront=0,
     rangeBack,
