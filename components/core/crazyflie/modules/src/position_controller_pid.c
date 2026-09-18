@@ -93,7 +93,12 @@ static struct this_s this = {
   .pidVX = {
     .init = {
       .kp = 25.0f,
+#if defined(CONFIG_TARGET_PYDRONE_S3)
+      .ki = 2.0f,  // T5/T6 台架实测校准值：默认 1.0f 定点/悬停偏软，改为 APP 直连后
+                   // 不再有 python 端 param.set_value 临时下发，需固化进固件默认值
+#else
       .ki = 1.0f,
+#endif
       .kd = 0.0f,
     },
     .pid.dt = DT,
@@ -102,7 +107,11 @@ static struct this_s this = {
   .pidVY = {
     .init = {
       .kp = 25.0f,
+#if defined(CONFIG_TARGET_PYDRONE_S3)
+      .ki = 2.0f,  // 同上，与 vxKi 保持一致
+#else
       .ki = 1.0f,
+#endif
       .kd = 0.0f,
     },
     .pid.dt = DT,
